@@ -1,0 +1,11 @@
+[package]
+name = "coralos-hal"
+version = "0.1.0"
+edition = "2021"
+# CoralOS's own hardware-access seam (not a port): the trait a host OS satisfies with volatile MMIO,
+# and a host test satisfies with a scripted register fake. Copied verbatim from the CoralOS tree's
+# coral-hal so the ported drivers compile standalone.
+license = "MIT OR Apache-2.0"
+description = "Minimal MMIO + cooperative-wait trait surface the coralos-drivers ports are written against"
+
+[dependencies]
