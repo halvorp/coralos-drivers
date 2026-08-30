@@ -87,31 +87,36 @@ impl Bus for RecordingRegs {
     }
 }
 
-/// A time source that never expires unless a test says so. Deliberately NOT a real clock: a
-/// deadline that expires on its own would make these vectors timing-dependent, which is the exact
-/// property that makes a witness unreliable.
+/// A time source in MICROSECONDS. Deliberately NOT a real clock: a deadline that expires on its
+/// own would make these vectors timing-dependent, which is the exact property that makes a witness
+/// unreliable. Time moves only when the code under test asks it to.
+///
+/// Microseconds, not milliseconds, because the reducer's reset poll calls `delay_us(10)` and a
+/// millisecond clock converts that to ZERO — the clock then never advances at all and a reset
+/// deadline can never expire, so the stuck-controller path is untestable while LOOKING testable.
 pub struct MockTime {
-    pub now: u64,
+    /// Microseconds since the start of the test.
+    pub now_us: u64,
 }
 
 impl Default for MockTime {
     fn default() -> Self {
-        MockTime { now: 0 }
+        MockTime { now_us: 0 }
     }
 }
 
 impl Time for MockTime {
     type Deadline = u64;
     fn deadline_after_ms(&mut self, ms: u64) -> u64 {
-        self.now + ms
+        self.now_us + ms.saturating_mul(1000)
     }
     fn expired(&mut self, deadline: u64) -> bool {
-        self.now > deadline
+        self.now_us > deadline
     }
     fn delay_us(&mut self, us: u32) {
-        self.now += us as u64 / 1000;
+        self.now_us += us as u64;
     }
     fn park_ms(&mut self, ms: u64) {
-        self.now += ms;
+        self.now_us += ms.saturating_mul(1000);
     }
 }

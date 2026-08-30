@@ -45,6 +45,30 @@ const MAX_DEADLINES: usize = 4;
 /// Maximum pending events per iteration.
 const MAX_EVENTS: usize = 16;
 
+/// What a [`Executor::run`] actually did.
+///
+/// `run` used to return `()`, and its event queue silently DISCARDED anything past `MAX_EVENTS`
+/// (`push_event` had no error path). A recovery that had NOT completed was therefore
+/// indistinguishable from one that had: the loop drained what was left and returned normally.
+/// That is the worst of the three possible outcomes and the one a caller cannot detect.
+///
+/// It is not hypothetical. A controller that will not clear its reset bit is precisely the case
+/// this crate exists to handle, and it is precisely the case that generates unbounded events: the
+/// reducer correctly polls (`DelayUs` + `Read8`) on every iteration, one event each, and reaches
+/// the ceiling. Found 2026-08-30 by an executor vector run against a mock that modelled a stuck
+/// controller by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use = "an overflowed run did not finish the recovery — the caller must escalate"]
+pub enum RunOutcome {
+    /// The queue drained with no work left. The recovery ran to whatever conclusion the reducer
+    /// reached; inspect the emitted actions for the result.
+    Drained,
+    /// The queue OVERFLOWED and `dropped` events were discarded, so the recovery is INCOMPLETE and
+    /// its outcome is unknown. Do not treat this as success. Typically a controller that never
+    /// clears `SOFTWARE_RESET`.
+    Overflowed { dropped: usize },
+}
+
 /// Reference executor that drives a `Recovery` state machine to completion.
 ///
 /// The executor owns a `Bus` and a `Time` implementation.  Call `run` with an
@@ -55,6 +79,8 @@ const MAX_EVENTS: usize = 16;
 pub struct Executor<B: Bus, T: Time> {
     bus: B,
     time: T,
+    /// Events discarded because the queue was full — see [`RunOutcome::Overflowed`].
+    dropped: usize,
     /// Token → deadline handle, paired for later expiry checks.
     deadlines_tok: [Token; MAX_DEADLINES],
     deadlines_hdl: [T::Deadline; MAX_DEADLINES],
@@ -79,6 +105,7 @@ impl<B: Bus, T: Time> Executor<B, T> {
             deadlines_tok: unsafe { MaybeUninit::zeroed().assume_init() },
             deadlines_hdl: unsafe { MaybeUninit::zeroed().assume_init() },
             deadlines_len: 0,
+            dropped: 0,
         }
     }
 
@@ -88,7 +115,7 @@ impl<B: Bus, T: Time> Executor<B, T> {
     /// pending deadlines have expired.  In a real system the executor would
     /// block waiting for the next interrupt or deadline; this reference
     /// implementation polls deadlines once after each action batch.
-    pub fn run(&mut self, recovery: &mut Recovery, initial: Event) {
+    pub fn run(&mut self, recovery: &mut Recovery, initial: Event) -> RunOutcome {
         let mut events: [Event; MAX_EVENTS] = unsafe { core::mem::MaybeUninit::zeroed().assume_init() };
         let mut ev_head: usize = 0;
         let mut ev_tail: usize = 0;
@@ -116,6 +143,11 @@ impl<B: Bus, T: Time> Executor<B, T> {
 
             // Check for expired deadlines after processing all actions from this event.
             self.check_deadlines(&mut events, &mut ev_tail);
+        }
+        if self.dropped > 0 {
+            RunOutcome::Overflowed { dropped: self.dropped }
+        } else {
+            RunOutcome::Drained
         }
     }
 
@@ -185,10 +217,14 @@ impl<B: Bus, T: Time> Executor<B, T> {
         }
     }
 
-    fn push_event(&self, events: &mut [Event], ev_tail: &mut usize, ev: Event) {
+    fn push_event(&mut self, events: &mut [Event], ev_tail: &mut usize, ev: Event) {
         if *ev_tail < MAX_EVENTS {
             events[*ev_tail] = ev;
             *ev_tail += 1;
+        } else {
+            // NAME THE REFUSAL. Dropping here silently is what made a stalled recovery look like a
+            // completed one; `run` reports this to the caller instead.
+            self.dropped = self.dropped.saturating_add(1);
         }
     }
 

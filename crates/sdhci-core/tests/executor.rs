@@ -15,7 +15,7 @@ mod common;
 
 use common::{MockTime, RecordingRegs};
 use sdhci_core::core::*;
-use sdhci_core::executor::Executor;
+use sdhci_core::executor::{Executor, RunOutcome};
 use sdhci_core::regs::*;
 
 /// A request with no data — the shape the cmd_timeout reducer vector uses.
@@ -58,7 +58,12 @@ fn command_timeout_writes_cmd_then_data_reset_to_the_bus() {
     let mut ex = Executor::new(bus, time);
     let mut rec = Recovery::new(bare_request(2));
 
-    ex.run(&mut rec, Event::CommandTimeout { id: 2 });
+    let outcome = ex.run(&mut rec, Event::CommandTimeout { id: 2 });
+    assert_eq!(
+        outcome,
+        RunOutcome::Drained,
+        "a healthy controller's recovery must drain, not overflow the event queue"
+    );
 
     let bus = ex.bus();
     let resets = bus.writes_to(SDHCI_SOFTWARE_RESET);
@@ -80,4 +85,41 @@ fn command_timeout_writes_cmd_then_data_reset_to_the_bus() {
          observed reads: {:?}",
         bus.reads
     );
+}
+
+/// A controller that NEVER clears SOFTWARE_RESET must be REPORTED, not silently abandoned.
+///
+/// This is the case the crate exists to handle, and it is the one that generates unbounded events:
+/// the reducer correctly polls (`DelayUs` + `Read8`) on every iteration — one event each — and
+/// reaches the executor's fixed `MAX_EVENTS` ceiling. Before RunOutcome, `push_event` discarded the
+/// overflow with no error and `run` returned normally, so a recovery that had NOT completed was
+/// indistinguishable from one that had. That is the worst of the three outcomes: the caller cannot
+/// detect it, and the reducer's own escalation (Error::ResetStuck, a deliberate CoralOS extension
+/// over Linux, which only logs and returns void at sdhci.c:226-231) can be swallowed before its
+/// deadline is ever consumed.
+///
+/// `hold_reset_bits` selects the stuck controller ON PURPOSE. It exists because a mock that merely
+/// stores the written value models one BY ACCIDENT — which is how this defect was found.
+#[test]
+fn a_controller_that_never_clears_reset_is_reported_not_silently_abandoned() {
+    let mut bus = RecordingRegs::default();
+    bus.hold_reset_bits = true; // the reset bit stays set forever
+    let mut ex = Executor::new(bus, MockTime::default());
+    let mut rec = Recovery::new(bare_request(7));
+
+    let outcome = ex.run(&mut rec, Event::CommandTimeout { id: 7 });
+
+    match outcome {
+        RunOutcome::Overflowed { dropped } => {
+            assert!(dropped > 0, "Overflowed must count what it discarded");
+        }
+        RunOutcome::Drained => panic!(
+            "a stuck controller was reported as a clean drain — the recovery did NOT complete. \
+             writes seen: {:?}",
+            ex.bus().writes
+        ),
+    }
+    // It really was polling the reset register, not failing for some unrelated reason.
+    let polls = ex.bus().reads.iter().filter(|&&r| r == SDHCI_SOFTWARE_RESET).count();
+    assert!(polls > 1, "expected repeated SOFTWARE_RESET polls, saw {}", polls);
 }
