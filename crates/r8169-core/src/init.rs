@@ -11,6 +11,10 @@ use crate::regs::{self, cfg9346, chip_cmd};
 pub trait Bus {
     fn r8(&mut self, reg: u32) -> u8;
     fn w8(&mut self, reg: u32, val: u8);
+    /// 16-bit access. IntrMask and IntrStatus are both 16-bit and must be accessed as such — a
+    /// byte-wise read of IntrStatus would see half an event word.
+    fn r16(&mut self, reg: u32) -> u16;
+    fn w16(&mut self, reg: u32, val: u16);
     /// Wait between status polls. A host test satisfies this with a counter; a real driver yields,
     /// because a non-yielding spin in task context starves whatever shares the core.
     fn delay_us(&mut self, us: u32);

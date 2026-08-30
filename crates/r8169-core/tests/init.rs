@@ -12,6 +12,8 @@ use r8169_core::regs::{self, cfg9346, chip_cmd};
 enum Op {
     R8(u32, u8),
     W8(u32, u8),
+    R16(u32, u16),
+    W16(u32, u16),
     Delay(u32),
 }
 
@@ -49,6 +51,13 @@ impl Bus for Fake {
     }
     fn w8(&mut self, reg: u32, val: u8) {
         self.log.push(Op::W8(reg, val));
+    }
+    fn r16(&mut self, reg: u32) -> u16 {
+        self.log.push(Op::R16(reg, 0));
+        0
+    }
+    fn w16(&mut self, reg: u32, val: u16) {
+        self.log.push(Op::W16(reg, val));
     }
     fn delay_us(&mut self, us: u32) {
         self.log.push(Op::Delay(us));

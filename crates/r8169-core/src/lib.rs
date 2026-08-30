@@ -23,5 +23,6 @@
 
 pub mod desc;
 pub mod init;
+pub mod irq;
 pub mod regs;
 pub mod ring;
