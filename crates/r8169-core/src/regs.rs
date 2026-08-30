@@ -57,3 +57,31 @@ pub const PHYAR: u32 = 0x60;
 
 /// PHY link status. (r8169_main.c:297)
 pub const PHY_STATUS: u32 = 0x6c;
+
+// ── Register VALUES, as distinct from offsets ───────────────────────────────────────────────────
+
+/// `ChipCmd` bits. (r8169_main.c:474-477)
+pub mod chip_cmd {
+    /// Stop request. (r8169_main.c:474)
+    pub const STOP_REQ: u8 = 0x80;
+    /// Software reset. Self-clearing: the chip drops it when the reset completes, which is why the
+    /// driver POLLS it low rather than sleeping a fixed time. (r8169_main.c:475)
+    pub const RESET: u8 = 0x10;
+    /// Receiver enable. (r8169_main.c:476)
+    pub const RX_ENB: u8 = 0x08;
+    /// Transmitter enable. (r8169_main.c:477)
+    pub const TX_ENB: u8 = 0x04;
+}
+
+/// `Cfg9346` values. RealTek gates writes to Config0..5 behind this register: without the unlock
+/// those writes are silently DISCARDED, which is the classic RealTek bring-up bug — the config
+/// appears to be written, reads back wrong, and nothing reports an error. (r8169_main.c:486-487)
+pub mod cfg9346 {
+    pub const LOCK: u8 = 0x00;
+    pub const UNLOCK: u8 = 0xc0;
+}
+
+/// Reset poll budget, from `rtl_loop_wait_low(tp, &rtl_chipcmd_cond, 100, 100)` — 100 iterations,
+/// 100 microseconds apart. (r8169_main.c:2675)
+pub const RESET_POLL_INTERVAL_US: u32 = 100;
+pub const RESET_POLL_MAX: u32 = 100;

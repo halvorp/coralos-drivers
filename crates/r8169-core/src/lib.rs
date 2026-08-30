@@ -22,4 +22,5 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod desc;
+pub mod init;
 pub mod regs;
