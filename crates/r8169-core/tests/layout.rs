@@ -98,6 +98,24 @@ fn handing_a_descriptor_to_the_nic_preserves_the_ring_end_bit() {
     assert_eq!(middle & desc::RING_END, 0, "a non-final descriptor must not gain RingEnd");
 }
 
+/// The length field is bits 13..0 — FOURTEEN bits — and the RX buffer size the driver advertises
+/// must FIT IN IT. This is the test that would have caught the 13-bit mask the first version of
+/// this port shipped: 16383 does not fit in 0x1fff, so the check fails loudly instead of silently
+/// halving every buffer.
+#[test]
+fn the_length_field_is_fourteen_bits_and_holds_the_rx_buffer_size() {
+    assert_eq!(desc::OPTS1_LEN_MASK, 0x3fff, "GENMASK(13, 0), r8169_main.c:4803");
+    assert_eq!(desc::RX_BUF_SIZE, 16383, "SZ_16K - 1, r8169_main.c:72");
+    assert_eq!(
+        desc::RX_BUF_SIZE & desc::OPTS1_LEN_MASK,
+        desc::RX_BUF_SIZE,
+        "the advertised RX buffer size must survive the length mask intact"
+    );
+    // And the mask must stop exactly below the flag bits.
+    assert_eq!(desc::OPTS1_LEN_MASK + 1, 1 << 14);
+    assert_eq!(desc::OPTS1_LEN_MASK & desc::LAST_FRAG, 0);
+}
+
 /// A length larger than the field must not corrupt the flags — the mask is what stops a caller's
 /// bad length from setting DescOwn or RingEnd by accident.
 #[test]

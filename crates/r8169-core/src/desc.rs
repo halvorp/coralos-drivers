@@ -30,10 +30,21 @@ pub const FIRST_FRAG: u32 = 1 << 29;
 /// Final segment of a packet. (r8169_main.c:582)
 pub const LAST_FRAG: u32 = 1 << 28;
 
-/// The low 13 bits of `opts1` are the buffer length; the flags above occupy the top nibble.
-/// Derived from Linux's use in `rtl8169_mark_to_asic`, which writes `DescOwn | eor |
-/// R8169_RX_BUF_SIZE` into opts1 as a single word (r8169_main.c:4151).
-pub const OPTS1_LEN_MASK: u32 = 0x1fff;
+/// The length field in `opts1`: bits 13..0, FOURTEEN bits.
+///
+/// From `pkt_size = status & GENMASK(13, 0)` (r8169_main.c:4803), which is how Linux extracts a
+/// received frame's length. CORRECTED: the first version of this port wrote `0x1fff` — thirteen
+/// bits — "derived from" `rtl8169_mark_to_asic` writing `DescOwn | eor | R8169_RX_BUF_SIZE` as one
+/// word (r8169_main.c:4151), which shows the field is wide enough for that value but never says how
+/// wide. It is one bit too narrow, and the consequence is not subtle: R8169_RX_BUF_SIZE is
+/// `SZ_16K - 1` = 16383 (r8169_main.c:72), so every descriptor handed to the NIC would have
+/// advertised an 8191-byte buffer, and any received frame of 8192 bytes or more would have had its
+/// length truncated. Inferring a mask from a value that happens to fit is exactly the guess this
+/// repository's provenance rule exists to prevent.
+pub const OPTS1_LEN_MASK: u32 = 0x3fff;
+
+/// RX buffer size the driver advertises in every descriptor: `SZ_16K - 1`. (r8169_main.c:72)
+pub const RX_BUF_SIZE: u32 = 16383;
 
 /// Build an RX descriptor's `opts1`: hand the buffer to the NIC, preserving the ring-end bit.
 ///

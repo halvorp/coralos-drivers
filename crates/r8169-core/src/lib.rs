@@ -24,3 +24,4 @@
 pub mod desc;
 pub mod init;
 pub mod regs;
+pub mod ring;
