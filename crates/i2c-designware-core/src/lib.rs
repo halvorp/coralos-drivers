@@ -19,5 +19,6 @@
 
 pub mod abort;
 pub mod enable;
+pub mod lpss;
 pub mod regs;
 pub mod timing;
