@@ -15,6 +15,10 @@ pub trait Bus {
     /// byte-wise read of IntrStatus would see half an event word.
     fn r16(&mut self, reg: u32) -> u16;
     fn w16(&mut self, reg: u32, val: u16);
+    /// 32-bit access. PHYAR (0x60) and GPHY_OCP (0xb8) are both 32-bit and carry a busy flag in bit
+    /// 31 alongside the data, so a narrower access cannot see the completion it must poll for.
+    fn r32(&mut self, reg: u32) -> u32;
+    fn w32(&mut self, reg: u32, val: u32);
     /// Wait between status polls. A host test satisfies this with a counter; a real driver yields,
     /// because a non-yielding spin in task context starves whatever shares the core.
     fn delay_us(&mut self, us: u32);

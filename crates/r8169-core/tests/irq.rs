@@ -37,6 +37,10 @@ impl Bus for Fake {
     fn w16(&mut self, reg: u32, val: u16) {
         self.log.push(Op::W16(reg, val));
     }
+    // This fake drives no 32-bit register. Panicking rather than returning 0 keeps a future
+    // test that reaches one from passing against an answer nobody wrote.
+    fn r32(&mut self, reg: u32) -> u32 { panic!("unexpected 32-bit read of {reg:#x}") }
+    fn w32(&mut self, reg: u32, val: u32) { panic!("unexpected 32-bit write {val:#x} -> {reg:#x}") }
     fn delay_us(&mut self, _us: u32) {}
 }
 

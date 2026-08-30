@@ -27,3 +27,4 @@ pub mod irq;
 pub mod regs;
 pub mod ring;
 pub mod chip;
+pub mod mdio;
