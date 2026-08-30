@@ -18,5 +18,6 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod abort;
+pub mod enable;
 pub mod regs;
 pub mod timing;
