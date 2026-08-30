@@ -19,3 +19,4 @@
 
 pub mod abort;
 pub mod regs;
+pub mod timing;
