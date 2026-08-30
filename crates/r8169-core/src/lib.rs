@@ -28,3 +28,4 @@ pub mod regs;
 pub mod ring;
 pub mod chip;
 pub mod mdio;
+pub mod rx;
