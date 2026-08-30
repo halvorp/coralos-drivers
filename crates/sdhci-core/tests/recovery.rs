@@ -6,15 +6,14 @@
 //! sequence of `Event`s, and asserts the resulting `Action`s match the expected
 //! reducer output.
 //!
-//! SCOPE, stated plainly so it is not mistaken for more than it is: these vectors
-//! exercise the PURE REDUCER (`Recovery::step`) and nothing else. They do not run
-//! the `Executor`, so the `Bus`/`Time` implementations below are not exercised by
-//! any assertion here and the executor layer currently has NO test coverage.
-//! An earlier draft of this helper built an `Executor` and then never used it —
-//! four of the five compile errors that blocked this file came from that dead
-//! line, and deleting it is what fixed them. The mocks are kept because they are
-//! the scaffolding an executor-level vector will need; they are marked dead-code
-//! so the gap stays visible instead of reading as coverage that exists.
+//! SCOPE: these vectors exercise the PURE REDUCER (`Recovery::step`) and assert the
+//! `Action` sequence it emits. They do NOT run the `Executor` — that layer has its
+//! own vectors in tests/executor.rs, which assert the REGISTER WRITES those Actions
+//! actually produce. The two are different questions: a reducer can emit a perfect
+//! sequence while the executor writes the wrong register, width or order.
+//! The test doubles live in tests/common/mod.rs (one home). They used to sit here
+//! as dead code, constructed by a helper that never used them — four of the five
+//! compile errors that once blocked this file came from that dead line.
 //!
 //! The six vectors documented in the crate-level specification are
 //! tested here: adma_error, clean_multiblock_read_auto_cmd23,
@@ -24,71 +23,6 @@
 use core::cell::RefCell;
 use sdhci_core::core::*;
 use sdhci_core::regs::*;
-
-/// A mock register file for testing.
-#[allow(dead_code)] // see SCOPE above: the executor layer is not yet covered
-struct MockRegs {
-    regs: [u32; 0x100],
-}
-
-impl Default for MockRegs {
-    fn default() -> Self {
-        MockRegs { regs: [0; 0x100] }
-    }
-}
-
-impl sdhci_core::executor::Bus for MockRegs {
-    fn r8(&mut self, reg: u16) -> u8 {
-        (self.regs[reg as usize] & 0xFF) as u8
-    }
-    fn r16(&mut self, reg: u16) -> u16 {
-        (self.regs[reg as usize] & 0xFFFF) as u16
-    }
-    fn r32(&mut self, reg: u16) -> u32 {
-        self.regs[reg as usize]
-    }
-    fn w8(&mut self, reg: u16, val: u8) {
-        self.regs[reg as usize] = (self.regs[reg as usize] & !0xFF) | val as u32;
-    }
-    fn w16(&mut self, reg: u16, val: u16) {
-        self.regs[reg as usize] = (self.regs[reg as usize] & !0xFFFF) | val as u32;
-    }
-    fn w32(&mut self, reg: u16, val: u32) {
-        self.regs[reg as usize] = val;
-    }
-}
-
-/// A mock time source that never expires unless explicitly set.
-#[allow(dead_code)] // see SCOPE above: the executor layer is not yet covered
-struct MockTime {
-    deadline: u64,
-    now: u64,
-}
-
-impl Default for MockTime {
-    fn default() -> Self {
-        MockTime { deadline: u64::MAX, now: 0 }
-    }
-}
-
-impl sdhci_core::executor::Time for MockTime {
-    type Deadline = u64;
-    fn deadline_after_ms(&mut self, ms: u64) -> u64 {
-        let d = self.now + ms;
-        self.deadline = d;
-        d
-    }
-    fn expired(&mut self, deadline: u64) -> bool {
-        self.now >= deadline
-    }
-    fn delay_us(&mut self, _us: u32) {
-        self.now += 1; // advance for polling simplicity
-    }
-    fn park_ms(&mut self, ms: u64) {
-        self.now += ms;
-        self.deadline = self.now; // expire immediately
-    }
-}
 
 /// Helper to run a test scenario and collect actions.
 fn run_test(req: RequestCtx, events: &[Event]) -> Vec<Action> {

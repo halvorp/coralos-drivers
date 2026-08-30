@@ -62,6 +62,14 @@ pub struct Executor<B: Bus, T: Time> {
 }
 
 impl<B: Bus, T: Time> Executor<B, T> {
+    /// Borrow the bus. Added so a test can assert what actually REACHED the registers rather
+    /// than only what the reducer emitted — the reducer can produce a perfect Action sequence
+    /// while the executor writes the wrong register, width or order, and no reducer vector would
+    /// notice. A driver also legitimately needs this to read back state after a recovery run.
+    pub fn bus(&self) -> &B {
+        &self.bus
+    }
+
     pub fn new(bus: B, time: T) -> Self {
         use core::mem::MaybeUninit;
         Executor {
