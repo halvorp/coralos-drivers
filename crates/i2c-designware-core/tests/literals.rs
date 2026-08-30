@@ -135,3 +135,72 @@ fn a_bit_no_cause_explains_is_reported_not_dropped() {
     assert_eq!(causes_in(mixed).map(|c| c.name).collect::<Vec<_>>(), vec!["TXDATA_NOACK"]);
     assert_eq!(undecoded(mixed), 1 << 6);
 }
+
+/// THE COVERAGE RECONCILIATION THAT WAS MISSING. The first extraction of this corpus silently
+/// shipped 91 of the header's 109 `DW_IC_` defines: the 16 abort masks are written `BIT(ABRT_x)`
+/// where `ABRT_x` is a bare position define, and two more (`COMP_TYPE_VALUE`, `SDA_HOLD_MIN_VERS`)
+/// carry a trailing C comment that the value parser choked on. Nothing failed; the constants were
+/// simply absent, and the errno mapping that needs them could not have been written.
+///
+/// This pins the count so a future re-extraction cannot quietly drop a subset again. 108 ported
+/// plus 3 command bits Linux does not name (see regs.rs) = 111.
+#[test]
+fn the_corpus_covers_the_header_rather_than_a_subset_of_it() {
+    // Spot-check one member of each family that the broken extraction lost, so this test fails for
+    // a reason a reader can act on rather than only as a count mismatch.
+    assert_eq!(bits::TX_ABRT_7B_ADDR_NOACK, 1 << 0, "BIT(ABRT_7B_ADDR_NOACK), core.h:181");
+    assert_eq!(bits::TX_ARB_LOST, 1 << 12, "BIT(ARB_LOST), core.h:191");
+    assert_eq!(bits::TX_ABRT_GCALL_READ, 1 << 5, "BIT(ABRT_GCALL_READ), core.h:186");
+    assert_eq!(bits::COMP_TYPE_VALUE, 0x4457_0140, "core.h:100, \"DW\" + 0x0140");
+    assert_eq!(bits::SDA_HOLD_MIN_VERS, 0x3131_312A, "core.h:98, \"111*\" == v1.11*");
+    // The composite NOACK is the OR of the five NAK causes (core.h:196-:200).
+    assert_eq!(
+        bits::TX_ABRT_NOACK,
+        bits::TX_ABRT_7B_ADDR_NOACK
+            | bits::TX_ABRT_10ADDR1_NOACK
+            | bits::TX_ABRT_10ADDR2_NOACK
+            | bits::TX_ABRT_TXDATA_NOACK
+            | bits::TX_ABRT_GCALL_NOACK
+    );
+}
+
+/// i2c-designware-master.c:611-:618. The clear is a READ of CLR_TX_ABRT, and it destroys
+/// TX_ABRT_SOURCE — so the source must be read FIRST. Linux says so in a comment; this asserts it.
+#[test]
+fn the_abort_source_is_captured_before_the_clear_that_destroys_it() {
+    use i2c_designware_core::abort::CAPTURE_THEN_CLEAR;
+    assert_eq!(CAPTURE_THEN_CLEAR, [off::TX_ABRT_SOURCE, off::CLR_TX_ABRT]);
+    assert_eq!(CAPTURE_THEN_CLEAR[0], 0x80, "TX_ABRT_SOURCE, core.h:92");
+    assert_eq!(CAPTURE_THEN_CLEAR[1], 0x54, "CLR_TX_ABRT, core.h:81");
+    assert_ne!(CAPTURE_THEN_CLEAR[0], CAPTURE_THEN_CLEAR[1]);
+}
+
+/// i2c-designware-common.c:769-:785. The ORDER of the checks is the contract: NOACK is tested
+/// first and returns immediately, so a word carrying BOTH a NAK and a lost arbitration reports
+/// NoAck — not the RETRYABLE ArbitrationLost. Swapping them turns a permanent failure into an
+/// infinite retry, or the reverse.
+#[test]
+fn the_verdict_order_decides_whether_a_failure_is_retryable() {
+    use i2c_designware_core::abort::{verdict, AbortVerdict};
+    assert_eq!(verdict(bits::TX_ABRT_7B_ADDR_NOACK), AbortVerdict::NoAck);
+    assert_eq!(verdict(bits::TX_ARB_LOST), AbortVerdict::ArbitrationLost);
+    assert_eq!(verdict(bits::TX_ABRT_GCALL_READ), AbortVerdict::BadRequest);
+    assert_eq!(verdict(bits::TX_ABRT_MASTER_DIS), AbortVerdict::Io, "anything else is -EIO");
+    assert_eq!(verdict(0), AbortVerdict::Io);
+    // BOTH set: NOACK wins, because Linux returns before it ever looks at ARB_LOST.
+    assert_eq!(
+        verdict(bits::TX_ABRT_7B_ADDR_NOACK | bits::TX_ARB_LOST),
+        AbortVerdict::NoAck,
+        "NOACK is tested first and returns immediately (:769-:775)"
+    );
+}
+
+/// :769-:772 logs NAKs at DEBUG, :776-:777 logs everything else at ERROR. Probing an absent
+/// address NAKs on every scan; an error line per probe trains the reader to ignore the log.
+#[test]
+fn a_nak_is_expected_traffic_and_the_rest_is_not() {
+    use i2c_designware_core::abort::is_expected_traffic;
+    assert!(is_expected_traffic(bits::TX_ABRT_7B_ADDR_NOACK));
+    assert!(!is_expected_traffic(bits::TX_ARB_LOST));
+    assert!(!is_expected_traffic(bits::TX_ABRT_MASTER_DIS));
+}

@@ -60,3 +60,64 @@ pub fn undecoded(abort_source: u32) -> u32 {
     let known: u32 = ABORT_CAUSES.iter().map(|c| 1u32 << c.bit).fold(0, |a, b| a | b);
     abort_source & !known
 }
+
+/// What a caller is told when a transfer aborts.
+///
+/// From `i2c_dw_handle_tx_abort` (i2c-designware-common.c:764-:785). The distinctions are the
+/// point: a NAK is not a bus fault, and a lost arbitration is RETRYABLE where the others are not.
+/// Collapsing these into one error throws away the only diagnosis the controller offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbortVerdict {
+    /// `-EREMOTEIO` (:775) — the device did not acknowledge. Linux logs these at DEBUG, not error,
+    /// because a NAK while probing an address is expected traffic rather than a fault.
+    NoAck,
+    /// `-EAGAIN` (:780) — arbitration lost to another master. The transfer may simply be retried;
+    /// reporting it as a generic I/O error turns a recoverable collision into a hard failure.
+    ArbitrationLost,
+    /// `-EINVAL` (:782) — a general-call read, which Linux comments as "wrong msgs[] data": the
+    /// CALLER built an impossible request, and no amount of retrying will help.
+    BadRequest,
+    /// `-EIO` (:784) — anything else.
+    Io,
+}
+
+/// Map a raw TX_ABRT_SOURCE to what the caller is told.
+///
+/// THE ORDER OF THESE CHECKS IS THE CONTRACT, not a style choice. Linux tests NOACK FIRST and
+/// returns immediately (:769-:775), so a word carrying BOTH a NAK and a lost arbitration is
+/// reported as `NoAck` — NOT as the retryable `ArbitrationLost`. Reordering them silently converts
+/// a permanent failure into an infinite retry loop, or the reverse.
+pub fn verdict(abort_source: u32) -> AbortVerdict {
+    use crate::regs::bits;
+    if abort_source & bits::TX_ABRT_NOACK != 0 {
+        return AbortVerdict::NoAck;
+    }
+    if abort_source & bits::TX_ARB_LOST != 0 {
+        return AbortVerdict::ArbitrationLost;
+    }
+    if abort_source & bits::TX_ABRT_GCALL_READ != 0 {
+        return AbortVerdict::BadRequest;
+    }
+    AbortVerdict::Io
+}
+
+/// Whether the abort log belongs at debug level rather than error level.
+///
+/// i2c-designware-common.c:769-:772 vs :776-:777 — a NAK is logged at DEBUG because probing an
+/// absent address produces one on every scan, and an error-level line per probe is noise that
+/// trains the reader to ignore the log.
+pub fn is_expected_traffic(abort_source: u32) -> bool {
+    abort_source & crate::regs::bits::TX_ABRT_NOACK != 0
+}
+
+/// The order in which the abort registers must be touched.
+///
+/// i2c-designware-master.c:611-:618, with Linux's own comment: "The IC_TX_ABRT_SOURCE register is
+/// cleared whenever the IC_CLR_TX_ABRT is read. Preserve it beforehand."
+///
+/// Reading CLR_TX_ABRT first destroys the diagnosis — all fourteen causes become zero and the
+/// transfer fails with nothing to say. The clear is a READ, not a write, which is exactly why this
+/// is easy to get wrong: a reader scanning for `write(CLR_...)` finds nothing and concludes the
+/// register is never cleared.
+pub const CAPTURE_THEN_CLEAR: [u32; 2] =
+    [crate::regs::off::TX_ABRT_SOURCE, crate::regs::off::CLR_TX_ABRT];

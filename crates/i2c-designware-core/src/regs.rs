@@ -45,8 +45,8 @@ pub mod off {
     pub const ERR_TX_ABRT: u32 = 0x01; // :139
 }
 
-/// Bit definitions and composite masks. A composite is the OR of the bits Linux selects —
-/// listed here as its computed value, with the C expression beside it so the two can be compared.
+/// Bit definitions, composite masks and identifying values. A composite is the OR of the bits
+/// Linux selects — its computed value, with the C expression beside it so the two can be compared.
 pub mod bits {
     pub const CON_MASTER: u32 = 0x1; // :28  BIT(0)
     pub const CON_SPEED_STD: u32 = 0x2; // :29  (1 << 1)
@@ -63,20 +63,13 @@ pub mod bits {
     pub const CON_BUS_CLEAR_CTRL: u32 = 0x800; // :40  BIT(11)
     pub const DATA_CMD_DAT: u32 = 0xff; // :42  GENMASK(7, 0)
     pub const DATA_CMD_FIRST_DATA_BYTE: u32 = 0x800; // :43  BIT(11)
-
-    // THE COMMAND BITS ARE NOT NAMED IN THE HEADER. Linux writes them as bare literals inside
-    // i2c_dw_xfer_msg (i2c-designware-master.c): `cmd |= BIT(9)` at :429 for STOP, `cmd |= BIT(10)`
-    // at :432 for RESTART, and `cmd | 0x100` at :442 for a read request. They are named here — with
-    // the lines that give them meaning — because a driver that ORs a bare BIT(9) into a register is
-    // one typo away from a silent wrong transfer, and the reviewer has nothing to check it against.
-    pub const DATA_CMD_STOP: u32 = 1 << 9; // master.c:429 — last byte of the last message
-    pub const DATA_CMD_RESTART: u32 = 1 << 10; // master.c:432 — a repeated start is needed
-    pub const DATA_CMD_READ: u32 = 1 << 8; // master.c:442, written as 0x100 — a read request
     pub const REG_STEP_BYTES: u32 = 0x2; // :48  2
     pub const REG_WORD_SHIFT: u32 = 0x10; // :49  16
     pub const FIFO_TX_FIELD: u32 = 0xff0000; // :54  GENMASK(23, 16)
     pub const FIFO_RX_FIELD: u32 = 0xff00; // :55  GENMASK(15, 8)
     pub const FIFO_MIN_DEPTH: u32 = 0x2; // :56  2
+    pub const SDA_HOLD_MIN_VERS: u32 = 0x3131312a; // :98  0x3131312A
+    pub const COMP_TYPE_VALUE: u32 = 0x44570140; // :100  0x44570140
     pub const INTR_RX_UNDER: u32 = 0x1; // :102  BIT(0)
     pub const INTR_RX_OVER: u32 = 0x2; // :103  BIT(1)
     pub const INTR_RX_FULL: u32 = 0x4; // :104  BIT(2)
@@ -91,9 +84,9 @@ pub mod bits {
     pub const INTR_GEN_CALL: u32 = 0x800; // :113  BIT(11)
     pub const INTR_RESTART_DET: u32 = 0x1000; // :114  BIT(12)
     pub const INTR_MST_ON_HOLD: u32 = 0x2000; // :115  BIT(13)
-    pub const INTR_DEFAULT_MASK: u32 = 0x244; // :117  (DW_IC_INTR_RX_FULL | 						 DW_IC_INTR_TX_ABRT | 						 DW_IC_INTR_STOP_DET)
+    pub const INTR_DEFAULT_MASK: u32 = 0x244; // :117  (DW_IC_INTR_RX_FULL | 						 DW_IC_INTR_TX_ABRT | 		...
     pub const INTR_MASTER_MASK: u32 = 0x254; // :120  (DW_IC_INTR_DEFAULT_MASK | 						 DW_IC_INTR_TX_EMPTY)
-    pub const INTR_SLAVE_MASK: u32 = 0x265; // :122  (DW_IC_INTR_DEFAULT_MASK | 						 DW_IC_INTR_RX_UNDER | 						 DW_IC_INTR_RD_REQ)
+    pub const INTR_SLAVE_MASK: u32 = 0x265; // :122  (DW_IC_INTR_DEFAULT_MASK | 						 DW_IC_INTR_RX_UNDE...
     pub const ENABLE_ENABLE: u32 = 0x1; // :126  BIT(0)
     pub const ENABLE_ABORT: u32 = 0x2; // :127  BIT(1)
     pub const STATUS_ACTIVITY: u32 = 0x1; // :129  BIT(0)
@@ -109,4 +102,27 @@ pub mod bits {
     pub const COMP_PARAM_1_SPEED_MODE_MASK: u32 = 0xc; // :144  GENMASK(3, 2)
     pub const MASTER: u32 = 0x0; // :157  0
     pub const SLAVE: u32 = 0x1; // :158  1
+    pub const TX_ABRT_7B_ADDR_NOACK: u32 = 0x1; // :181  BIT(ABRT_7B_ADDR_NOACK)
+    pub const TX_ABRT_10ADDR1_NOACK: u32 = 0x2; // :182  BIT(ABRT_10ADDR1_NOACK)
+    pub const TX_ABRT_10ADDR2_NOACK: u32 = 0x4; // :183  BIT(ABRT_10ADDR2_NOACK)
+    pub const TX_ABRT_TXDATA_NOACK: u32 = 0x8; // :184  BIT(ABRT_TXDATA_NOACK)
+    pub const TX_ABRT_GCALL_NOACK: u32 = 0x10; // :185  BIT(ABRT_GCALL_NOACK)
+    pub const TX_ABRT_GCALL_READ: u32 = 0x20; // :186  BIT(ABRT_GCALL_READ)
+    pub const TX_ABRT_SBYTE_ACKDET: u32 = 0x80; // :187  BIT(ABRT_SBYTE_ACKDET)
+    pub const TX_ABRT_SBYTE_NORSTRT: u32 = 0x200; // :188  BIT(ABRT_SBYTE_NORSTRT)
+    pub const TX_ABRT_10B_RD_NORSTRT: u32 = 0x400; // :189  BIT(ABRT_10B_RD_NORSTRT)
+    pub const TX_ABRT_MASTER_DIS: u32 = 0x800; // :190  BIT(ABRT_MASTER_DIS)
+    pub const TX_ARB_LOST: u32 = 0x1000; // :191  BIT(ARB_LOST)
+    pub const RX_ABRT_SLAVE_RD_INTX: u32 = 0x8000; // :192  BIT(ABRT_SLAVE_RD_INTX)
+    pub const RX_ABRT_SLAVE_ARBLOST: u32 = 0x4000; // :193  BIT(ABRT_SLAVE_ARBLOST)
+    pub const RX_ABRT_SLAVE_FLUSH_TXFIFO: u32 = 0x2000; // :194  BIT(ABRT_SLAVE_FLUSH_TXFIFO)
+    pub const TX_ABRT_NOACK: u32 = 0x1f; // :196  (DW_IC_TX_ABRT_7B_ADDR_NOACK | 						 DW_IC_TX_ABRT_...
+    // THE COMMAND BITS ARE NOT NAMED IN THE HEADER. Linux writes them as bare literals inside
+    // i2c_dw_xfer_msg (i2c-designware-master.c): `cmd |= BIT(9)` at :429 for STOP, `cmd |= BIT(10)`
+    // at :432 for RESTART, and `cmd | 0x100` at :442 for a read request. They are named here — with
+    // the lines that give them meaning — because a driver that ORs a bare BIT(9) into a register is
+    // one typo away from a silent wrong transfer, and the reviewer has nothing to check it against.
+    pub const DATA_CMD_STOP: u32 = 1 << 9; // master.c:429 — last byte of the last message
+    pub const DATA_CMD_RESTART: u32 = 1 << 10; // master.c:432 — a repeated start is needed
+    pub const DATA_CMD_READ: u32 = 1 << 8; // master.c:442, written as 0x100 — a read request
 }
