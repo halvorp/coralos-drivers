@@ -33,3 +33,4 @@ pub mod tx;
 pub mod phy;
 pub mod eri;
 pub mod mac;
+pub mod link;
