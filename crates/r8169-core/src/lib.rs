@@ -30,3 +30,4 @@ pub mod chip;
 pub mod mdio;
 pub mod rx;
 pub mod tx;
+pub mod phy;
