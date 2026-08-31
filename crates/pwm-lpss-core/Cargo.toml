@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Intel LPSS PWM core, ported from Linux drivers/pwm/pwm-lpss.c and pwm-lpss.h.
+# Copyright (C) 2014 Intel Corporation and the Linux pwm-lpss authors.
+
+[package]
+name = "pwm-lpss-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
