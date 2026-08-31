@@ -83,3 +83,113 @@ pub const ADJUST_10M_ALDPS: [PagedModify; 4] = [
     // :735  phy_modify_paged(phydev, 0x0a43, 0x10, 0x0000, 0x1003)
     PagedModify { page: 0x0a43, reg: 0x10, mask: 0x0000, set: 0x1003 },
 ];
+
+/// The page-select register. `phy_write(phydev, 0x1f, page)` switches page directly, and the 8168g
+/// sequence uses it that way for its raw block (:772-:781).
+pub const PAGE_SELECT_REG: u16 = 0x1f;
+
+/// A PHY the configuration talks to. A real one is MDIO; a test one is scripted.
+///
+/// The test implementation must PANIC on any page/register nobody scripted — returning zero would
+/// let a mis-transcribed read take a branch nobody chose, and the test would pass against an answer
+/// nobody wrote.
+pub trait Phy {
+    /// Read `reg` on `page`, restoring the previous page (phylib's `phy_read_paged`).
+    fn read_paged(&mut self, page: u16, reg: u16) -> u16;
+    /// Read-modify-write `reg` on `page` (phylib's `phy_modify_paged`).
+    fn modify_paged(&mut self, page: u16, reg: u16, mask: u16, set: u16);
+    /// A bare `phy_write` against whatever page is currently selected.
+    fn write(&mut self, reg: u16, val: u16);
+}
+
+/// `rtl8168g_1_hw_phy_config` (r8169_phy_config.c:738-:783) — the configuration for the part on the
+/// CoralOS reference board (VER_40 / RTL8168g, XID 0x4c0).
+///
+/// THE TWO CONDITIONALS HAVE OPPOSITE POLARITY, AND THAT IS THE WHOLE HAZARD.
+///   * :745-:748 — bit 8 of 0x0a46:0x10 SET means CLEAR bit 15 of 0x0bcc:0x12; clear means SET it.
+///   * :751-:754 — bit 8 of 0x0a46:0x13 SET means SET bit 1 of 0x0c41:0x15; clear means CLEAR it.
+/// They read like the same idiom and are inverses of each other. A port that writes one loop for
+/// both, or copies the first and edits the registers, gets exactly one of them backwards — and a
+/// PHY does not report a wrongly-configured tuning bit, it just performs worse.
+///
+/// NOT INCLUDED: `r8169_apply_firmware` (:743), `rtl8168g_disable_aldps` and
+/// `rtl8168g_config_eee_phy` (:782-:783). The first needs a firmware blob; the other two are their
+/// own sequences and belong in their own increment rather than being half-transcribed here.
+pub fn rtl8168g_1_hw_phy_config<P: Phy>(phy: &mut P) {
+    // :745-:748 — INVERTED: bit set means clear.
+    let v = phy.read_paged(0x0a46, 0x10);
+    if v & (1 << 8) != 0 {
+        phy.modify_paged(0x0bcc, 0x12, 1 << 15, 0);
+    } else {
+        phy.modify_paged(0x0bcc, 0x12, 0, 1 << 15);
+    }
+
+    // :751-:754 — DIRECT: bit set means set. The opposite of the block above.
+    let v = phy.read_paged(0x0a46, 0x13);
+    if v & (1 << 8) != 0 {
+        phy.modify_paged(0x0c41, 0x15, 0, 1 << 1);
+    } else {
+        phy.modify_paged(0x0c41, 0x15, 1 << 1, 0);
+    }
+
+    // :757 Enable PHY auto speed down
+    phy.modify_paged(0x0a44, 0x11, 0, (1 << 3) | (1 << 2));
+
+    // :760 rtl8168g_phy_adjust_10m_aldps — the sequence carried as data above.
+    for op in ADJUST_10M_ALDPS {
+        if op.page == PARAM_PAGE && op.reg > 0xff {
+            // The indirect entry: its `reg` is a PARAMETER number, not a register.
+            for step in param_sequence(op.reg, op.mask, op.set) {
+                match step {
+                    PhyOp::SelectPage(p) => phy.write(PAGE_SELECT_REG, p),
+                    PhyOp::Write { reg, val } => phy.write(reg, val),
+                    PhyOp::Modify { reg, mask, set } => phy.modify_paged(PARAM_PAGE, reg, mask, set),
+                    PhyOp::RestorePage => phy.write(PAGE_SELECT_REG, 0x0000),
+                }
+            }
+        } else {
+            phy.modify_paged(op.page, op.reg, op.mask, op.set);
+        }
+    }
+
+    // :763 EEE auto-fallback
+    phy.modify_paged(0x0a4b, 0x11, 0, 1 << 2);
+
+    // :766 Enable UC LPF tune — the indirect parameter file.
+    for step in param_sequence(0x8012, 0x0000, 0x8000) {
+        match step {
+            PhyOp::SelectPage(p) => phy.write(PAGE_SELECT_REG, p),
+            PhyOp::Write { reg, val } => phy.write(reg, val),
+            PhyOp::Modify { reg, mask, set } => phy.modify_paged(PARAM_PAGE, reg, mask, set),
+            PhyOp::RestorePage => phy.write(PAGE_SELECT_REG, 0x0000),
+        }
+    }
+
+    // :768 — clears BIT(13) AND sets BIT(14): the one call in this function using both arguments.
+    phy.modify_paged(0x0c42, 0x11, 1 << 13, 1 << 14);
+
+    // :771-:781 "Improve SWR Efficiency" — raw writes with 0x1f as the page register.
+    for (reg, val) in SWR_EFFICIENCY {
+        phy.write(reg, val);
+    }
+}
+
+/// The "Improve SWR Efficiency" block (:772-:781), verbatim and in order.
+///
+/// TEN writes, and the repetition is deliberate. `0x14` receives 0x5065 then 0xd065 — the same value
+/// with bit 15 toggled — and later 0x1065, 0x9065, 0x1065: written, pulsed, written AGAIN. The
+/// trailing duplicate reads like a copy-paste slip and is a pulse; removing it "tidies" the sequence
+/// into one that does not perform the toggle the hardware is waiting for. The block ends by
+/// selecting page 0x0000, so it leaves no page behind.
+pub const SWR_EFFICIENCY: [(u16, u16); 10] = [
+    (0x1f, 0x0bcd),
+    (0x14, 0x5065),
+    (0x14, 0xd065),
+    (0x1f, 0x0bc8),
+    (0x11, 0x5655),
+    (0x1f, 0x0bcd),
+    (0x14, 0x1065),
+    (0x14, 0x9065),
+    (0x14, 0x1065),
+    (0x1f, 0x0000),
+];
