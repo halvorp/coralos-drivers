@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/rtc/rtc-cmos.c.
+# Original copyright: Paul Gortmaker, David Brownell, and the Linux RTC authors.
+
+[package]
+name = "rtc-cmos-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+rtc-mc146818-core = { path = "../rtc-mc146818-core" }
+
+[workspace]
