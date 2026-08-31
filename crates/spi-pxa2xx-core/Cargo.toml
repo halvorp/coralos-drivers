@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/spi/spi-pxa2xx.c and drivers/spi/spi-pxa2xx.h.
+# Copyright (C) 2005 Stephen Street / StreetFire Sound Labs
+# Copyright (C) 2013, 2021 Intel Corporation
+
+[package]
+name = "spi-pxa2xx-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
