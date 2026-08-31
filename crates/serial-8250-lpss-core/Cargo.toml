@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/tty/serial/8250/8250_dw.c and 8250_lpss.c.
+# Copyright 2011 Picochip, Jamie Iles; Copyright 2013, 2016 Intel Corporation.
+
+[package]
+name = "serial-8250-lpss-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
