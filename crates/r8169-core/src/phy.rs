@@ -112,9 +112,10 @@ pub trait Phy {
 /// both, or copies the first and edits the registers, gets exactly one of them backwards — and a
 /// PHY does not report a wrongly-configured tuning bit, it just performs worse.
 ///
-/// NOT INCLUDED: `r8169_apply_firmware` (:743), `rtl8168g_disable_aldps` and
-/// `rtl8168g_config_eee_phy` (:782-:783). The first needs a firmware blob; the other two are their
-/// own sequences and belong in their own increment rather than being half-transcribed here.
+/// NOT INCLUDED: `r8169_apply_firmware` (:743), which needs a firmware blob. The trailing
+/// `rtl8168g_disable_aldps` and `rtl8168g_config_eee_phy` (:782-:783) ARE included — they were
+/// deferred from the first pass rather than half-transcribed, and are now carried as constants
+/// beside the sequence they belong to.
 pub fn rtl8168g_1_hw_phy_config<P: Phy>(phy: &mut P) {
     // :745-:748 — INVERTED: bit set means clear.
     let v = phy.read_paged(0x0a46, 0x10);
@@ -172,6 +173,14 @@ pub fn rtl8168g_1_hw_phy_config<P: Phy>(phy: &mut P) {
     for (reg, val) in SWR_EFFICIENCY {
         phy.write(reg, val);
     }
+
+    // :782 rtl8168g_disable_aldps. NOTE this is the SECOND write to 0x0a43:0x10 in one run — the
+    // aldps ADJUSTMENT at :735 set bits 0, 1 and 12 there, and this CLEARS bit 2. The two do not
+    // overlap, so the order between them does not change the result; but both must happen, and a
+    // reader who sees one write to a register tends to assume it is the only one.
+    phy.modify_paged(DISABLE_ALDPS.page, DISABLE_ALDPS.reg, DISABLE_ALDPS.mask, DISABLE_ALDPS.set);
+    // :783 rtl8168g_config_eee_phy.
+    phy.modify_paged(CONFIG_EEE_PHY.page, CONFIG_EEE_PHY.reg, CONFIG_EEE_PHY.mask, CONFIG_EEE_PHY.set);
 }
 
 /// The "Improve SWR Efficiency" block (:772-:781), verbatim and in order.
@@ -192,4 +201,26 @@ pub const SWR_EFFICIENCY: [(u16, u16); 10] = [
     (0x14, 0x9065),
     (0x14, 0x1065),
     (0x1f, 0x0000),
+];
+
+/// `rtl8168g_disable_aldps` (r8169_phy_config.c:720-:723) — CLEAR bit 2 of 0x0a43:0x10.
+///
+/// PAGE 0x0a43 IS NOT ONLY THE PARAMETER FILE. Registers 0x13 and 0x14 on this page are the
+/// indirect selector/value pair used by [`param_sequence`]; registers 0x10 and 0x11 on the SAME
+/// page are ordinary direct registers. Treating the whole page as the parameter file — an easy
+/// assumption once you have seen `r8168g_phy_param` — turns these two writes into parameter
+/// selections that go nowhere.
+pub const DISABLE_ALDPS: PagedModify =
+    PagedModify { page: 0x0a43, reg: 0x10, mask: 1 << 2, set: 0 };
+
+/// `rtl8168g_config_eee_phy` (r8169_phy_config.c:88-:91) — SET bit 4 of 0x0a43:0x11.
+pub const CONFIG_EEE_PHY: PagedModify =
+    PagedModify { page: 0x0a43, reg: 0x11, mask: 0, set: 1 << 4 };
+
+/// `rtl8168h_config_eee_phy` (:93-:98) — the 8168h EXTENDS the 8168g sequence rather than replacing
+/// it: it calls the g version first and then adds two more modifies. Carried so the relationship is
+/// visible; the reference board is a g, so only [`CONFIG_EEE_PHY`] is on its path.
+pub const CONFIG_EEE_PHY_8168H_EXTRA: [PagedModify; 2] = [
+    PagedModify { page: 0x0a4a, reg: 0x11, mask: 0x0000, set: 0x0200 },
+    PagedModify { page: 0x0a42, reg: 0x14, mask: 0x0000, set: 0x0080 },
 ];

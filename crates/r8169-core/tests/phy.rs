@@ -227,3 +227,70 @@ fn an_unscripted_read_is_refused_by_name() {
     let mut phy = ScriptedPhy::new(&[((0x0a46, 0x10), 0)]);
     rtl8168g_1_hw_phy_config(&mut phy);
 }
+
+use r8169_core::phy::{CONFIG_EEE_PHY, CONFIG_EEE_PHY_8168H_EXTRA, DISABLE_ALDPS};
+
+/// :720-:723 and :88-:91 — one modify each, on the SAME page, in opposite senses.
+#[test]
+fn the_two_trailing_helpers_match_linux() {
+    assert_eq!(DISABLE_ALDPS, PagedModify { page: 0x0a43, reg: 0x10, mask: 1 << 2, set: 0 });
+    assert_eq!(CONFIG_EEE_PHY, PagedModify { page: 0x0a43, reg: 0x11, mask: 0, set: 1 << 4 });
+    // disable_aldps CLEARS; config_eee SETS. Same page, adjacent registers, opposite argument slots.
+    assert!(DISABLE_ALDPS.mask != 0 && DISABLE_ALDPS.set == 0);
+    assert!(CONFIG_EEE_PHY.mask == 0 && CONFIG_EEE_PHY.set != 0);
+}
+
+/// PAGE 0x0a43 HOSTS BOTH the indirect parameter file (registers 0x13/0x14) AND ordinary direct
+/// registers (0x10, 0x11). Treating the whole page as the parameter file — an easy assumption once
+/// you have seen `r8168g_phy_param` — turns these writes into parameter selections that go nowhere.
+#[test]
+fn the_parameter_page_also_carries_direct_registers() {
+    assert_eq!(DISABLE_ALDPS.page, PARAM_PAGE);
+    assert_eq!(CONFIG_EEE_PHY.page, PARAM_PAGE);
+    for r in [DISABLE_ALDPS.reg, CONFIG_EEE_PHY.reg] {
+        assert!(r != 0x13 && r != 0x14, "{r:#x} is a direct register, not the selector/value pair");
+    }
+}
+
+/// :93-:98 — the 8168h EXTENDS the g sequence rather than replacing it. The reference board is a g,
+/// so only the g modify is on its path; the extra pair is carried so the relationship is visible.
+#[test]
+fn the_8168h_variant_extends_rather_than_replaces() {
+    assert_eq!(CONFIG_EEE_PHY_8168H_EXTRA.len(), 2);
+    assert_eq!(CONFIG_EEE_PHY_8168H_EXTRA[0],
+               PagedModify { page: 0x0a4a, reg: 0x11, mask: 0x0000, set: 0x0200 });
+    assert_eq!(CONFIG_EEE_PHY_8168H_EXTRA[1],
+               PagedModify { page: 0x0a42, reg: 0x14, mask: 0x0000, set: 0x0080 });
+    // It is an ADDITION: neither extra touches what the g version does.
+    for e in CONFIG_EEE_PHY_8168H_EXTRA {
+        assert_ne!((e.page, e.reg), (CONFIG_EEE_PHY.page, CONFIG_EEE_PHY.reg));
+    }
+}
+
+/// The config function now runs both helpers, LAST and in Linux's order (:782 then :783).
+#[test]
+fn the_config_runs_both_helpers_at_the_end_in_order() {
+    let phy = run(false, false);
+    let mods: Vec<(u16, u16, u16, u16)> = phy.log.iter().filter_map(|o| match o {
+        Op::Modify { page, reg, mask, set } => Some((*page, *reg, *mask, *set)),
+        _ => None,
+    }).collect();
+    let last_two = &mods[mods.len() - 2..];
+    assert_eq!(last_two[0], (0x0a43, 0x10, 1 << 2, 0), "disable_aldps at :782");
+    assert_eq!(last_two[1], (0x0a43, 0x11, 0, 1 << 4), "config_eee_phy at :783");
+}
+
+/// 0x0a43:0x10 IS WRITTEN TWICE PER RUN — bits 0/1/12 set by the aldps ADJUSTMENT at :735, bit 2
+/// cleared by disable_aldps at :782. The same shape that caught a wrong test of mine on the
+/// scripted PHY's first outing, so it is asserted here rather than assumed.
+#[test]
+fn the_aldps_register_is_written_twice_with_non_overlapping_bits() {
+    let phy = run(false, false);
+    let at: Vec<(u16, u16)> = phy.modifies_of(0x0a43, 0x10);
+    assert_eq!(at, vec![(0x0000, 0x1003), (1 << 2, 0)], "the adjustment, then the disable");
+    // They do not overlap, so their order does not change the result — but both must happen.
+    let (adjust_mask, adjust_set) = at[0];
+    let (disable_mask, disable_set) = at[1];
+    assert_eq!(adjust_set & disable_mask, 0, "the disable must not clear what the adjustment set");
+    assert_eq!(disable_set & adjust_mask, 0);
+}
