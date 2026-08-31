@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Pure Crystal Cove PMIC core data ported from Linux drivers/mfd/intel_soc_pmic_crc.c.
+# Copyright (C) 2012-2014, 2022 Intel Corporation. All rights reserved.
+
+[package]
+name = "pmic-crc-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
