@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/rtc/rtc-mc146818-lib.c and include/linux/mc146818rtc.h.
+# Original copyright: Torsten Duwe, Motorola, and the Linux RTC authors.
+
+[package]
+name = "rtc-mc146818-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
