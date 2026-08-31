@@ -7,6 +7,10 @@ name = "coralos-hal"
 version = "0.1.0"
 
 [[package]]
+name = "i2c-designware-core"
+version = "0.1.0"
+
+[[package]]
 name = "r8169-core"
 version = "0.1.0"
 
