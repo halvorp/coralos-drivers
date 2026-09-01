@@ -128,7 +128,7 @@ pub const SDHCI_TRNS_AUTO_CMD12: u16 = 0x0004; // sdhci.h (value from pinned hea
 pub const SDHCI_TRNS_AUTO_CMD23: u16 = 0x0008; // sdhci.h (value from pinned header)
 pub const SDHCI_TRNS_READ: u16 = 0x0010; // sdhci.h (value from pinned header)
 pub const SDHCI_TRNS_MULTI: u16 = 0x0020; // sdhci.h (value from pinned header)
-pub const SDHCI_TRNS_AUTO_SEL: u16 = 0x0040; // sdhci.h (value from pinned header)
+pub const SDHCI_TRNS_AUTO_SEL: u16 = 0x000C; // sdhci.h:42
 
 // Command register fields and helpers.
 pub const SDHCI_CMD_RESP_MASK: u16 = 0x0003; // sdhci.h (value from pinned header)
@@ -205,10 +205,10 @@ pub const SDHCI_QUIRK2_USE_32BIT_BLK_CNT: u32 = 1 << 18; // sdhci.h:536
 pub const SDHCI_QUIRK2_ISSUE_CMD_DAT_RESET_TOGETHER: u32 = 1 << 19; // sdhci.h:538
 
 // Host flag bits used by this port.
-pub const SDHCI_USE_SDMA: u32 = 1 << 2; // sdhci.h (value from pinned header)
-pub const SDHCI_USE_ADMA: u32 = 1 << 3; // sdhci.h (value from pinned header)
-pub const SDHCI_REQ_USE_DMA: u32 = 1 << 4; // sdhci.h (value from pinned header)
-pub const SDHCI_DEVICE_DEAD: u32 = 1 << 5; // sdhci.h (value from pinned header)
+pub const SDHCI_USE_SDMA: u32 = 1 << 0; // sdhci.h:562
+pub const SDHCI_USE_ADMA: u32 = 1 << 1; // sdhci.h:563
+pub const SDHCI_REQ_USE_DMA: u32 = 1 << 2; // sdhci.h:564
+pub const SDHCI_DEVICE_DEAD: u32 = 1 << 3; // sdhci.h:565
 pub const SDHCI_AUTO_CMD12: u32 = 1 << 6; // sdhci.h (value from pinned header)
 pub const SDHCI_AUTO_CMD23: u32 = 1 << 7; // sdhci.h (value from pinned header)
 pub const SDHCI_USE_64_BIT_DMA: u32 = 1 << 12; // sdhci.h (value from pinned header)
@@ -220,4 +220,4 @@ pub const SDHCI_MAX_MRQS: usize = 2; // sdhci.h (value from pinned header)
 // It lived as a PRIVATE `const` in BOTH core.rs and executor.rs — two copies of one fact, which is
 // the single-source-of-truth violation the doctrine names, and it also made the value unreachable
 // from the test vector that must assert STOP_WITH_TC sets it on the emitted CMD12. One home, public.
-pub const MMC_RSP_BUSY: u16 = 1 << 10;
+pub const MMC_RSP_BUSY: u16 = 1 << 3; // include/linux/mmc/core.h:38
