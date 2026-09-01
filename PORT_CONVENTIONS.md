@@ -32,6 +32,39 @@ a comment.
 the table cannot detect a deletion from that table: the test case disappears together with the thing
 it guards. Write the expected names/values out by hand, and assert the production table matches.
 
+## 3a. THE FOUR WAYS A GREEN SUITE STILL LEAVES A CONSTANT UNGUARDED
+
+Every one of these was found by mutating a crate whose tests passed, whose names read correctly, and
+whose porting was right. Not one was caught by reading the tests. Check your own crate against all
+four before you report it done.
+
+**1. COMPOSITE.** Pinning a composite does not pin its components. Asserting `R2_FLAGS == 0x7` says
+nothing about `RSP_136`, `RSP_CRC` or `RSP_OPCODE` unless the assertion is written as the OR of the
+NAMED components. Otherwise a wrong component and a compensating wrong composite pass together.
+*Fix:* assert `COMPOSITE == A | B | C` using the constants, and assert each of A, B, C by value.
+
+**2. ZERO-VALUED.** A constant whose value is `0` cannot be covered by value: ORing zero changes
+nothing, and a zero is indistinguishable from an absent entry. `KEY_RESERVED = 0` and `REP_DELAY = 0`
+both survived mutation in a suite that named them. `REP_DELAY` is an INDEX — setting it to 1 collides
+with `REP_PERIOD` and silently swaps a keyboard's repeat delay and period.
+*Fix:* pin it by BEHAVIOUR — assert it is distinct from its siblings and that it selects the thing it
+names.
+
+**3. TYPE-PINNED — and this one is the INVERSE trap.** If a constant is load-bearing for a type, e.g.
+`TRIP_TYPES: [TripType; TRIP_TYPE_COUNT]`, then a wrong value does not fail a test, it fails to
+COMPILE. Zero `test result:` lines means the compiler pinned it, which is STRONGER than any test and
+cannot be unpinned by deleting one. Do not "fix" it by adding a test; do not report it as a gap.
+*Fix:* nothing. Recognise it, and say so in your report.
+
+**4. RESTATED — the most dangerous, because from outside it is indistinguishable from coverage.** If
+an assertion hardcodes the value instead of routing through the constant, the test and production
+hold two independent copies that drift apart in silence. A test that hardcodes `0x80` does not notice
+`DIRECTION_MASK` becoming `0x81`. A crate shipped with the right test names, sixteen passing tests,
+and three unguarded masks for exactly this reason.
+*Fix:* the EXPECTED side of an assertion is a Linux literal; the ACTUAL side must travel THROUGH the
+constant that production code uses. If changing the constant cannot change the test result, the test
+is testing itself.
+
 ## 4. Every test must be PROVEN able to fail
 
 Before claiming a test works, mutate the source and confirm the test goes red. Classify any
