@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/i2c/busses/i2c-designware-master.c.
+# Copyright (C) 2006 Texas Instruments; 2007 MontaVista Software Inc.; 2009 Provigent Ltd.
+
+[package]
+name = "i2c-designware-master-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[dependencies]
+i2c-designware-core = { path = "../i2c-designware-core" }
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
