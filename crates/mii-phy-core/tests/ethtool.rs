@@ -5,6 +5,40 @@
 use mii_phy_core::ethtool::*;
 
 #[test]
+fn every_public_advertised_bit_is_pinned_to_its_linux_literal() {
+    // include/uapi/linux/ethtool.h:1964-1978,2149-2163. The macros are 1UL shifted by the
+    // independently listed bit indices; write the resulting masks literally here.
+    let got = [
+        ("10baseT_Half", ADVERTISED_10BASE_T_HALF),
+        ("10baseT_Full", ADVERTISED_10BASE_T_FULL),
+        ("100baseT_Half", ADVERTISED_100BASE_T_HALF),
+        ("100baseT_Full", ADVERTISED_100BASE_T_FULL),
+        ("1000baseT_Half", ADVERTISED_1000BASE_T_HALF),
+        ("1000baseT_Full", ADVERTISED_1000BASE_T_FULL),
+        ("Autoneg", ADVERTISED_AUTONEG),
+        ("TP", ADVERTISED_TP),
+        ("MII", ADVERTISED_MII),
+        ("Pause", ADVERTISED_PAUSE),
+        ("Asym_Pause", ADVERTISED_ASYM_PAUSE),
+    ];
+    let expected = [
+        ("10baseT_Half", 0x0001),
+        ("10baseT_Full", 0x0002),
+        ("100baseT_Half", 0x0004),
+        ("100baseT_Full", 0x0008),
+        ("1000baseT_Half", 0x0010),
+        ("1000baseT_Full", 0x0020),
+        ("Autoneg", 0x0040),
+        ("TP", 0x0080),
+        ("MII", 0x0200),
+        ("Pause", 0x2000),
+        ("Asym_Pause", 0x4000),
+    ];
+    assert_eq!(got.len(), 11);
+    assert_eq!(got, expected);
+}
+
+#[test]
 fn eleven_mii_link_modes_are_frozen_by_count_name_and_literal() {
     // include/uapi/linux/ethtool.h:1964-1978. Literal masks are 1 << the listed bit index.
     assert_eq!(MII_LINK_MODES.len(), 11);
