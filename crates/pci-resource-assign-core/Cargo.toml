@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "pci-resource-assign-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+pci-config-core = { path = "../pci-config-core" }
+
+[workspace]
