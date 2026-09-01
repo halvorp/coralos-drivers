@@ -5,8 +5,10 @@
 //! Copyright Drew Eckhardt, Martin Mares, and the Linux PCI authors.
 
 use pci_config_core::bar::{
-    bar_size, bars, decode_bar, size_bar, Bar, BarError, BarKind, BAR_NAMES, BASE_ADDRESS_IO_MASK,
-    BASE_ADDRESS_MEM_MASK,
+    bar_size, bars, decode_bar, size_bar, Bar, BarError, BarKind, BAR_NAMES,
+    BASE_ADDRESS_IO_MASK, BASE_ADDRESS_MEM_MASK, BASE_ADDRESS_MEM_PREFETCH,
+    BASE_ADDRESS_MEM_TYPE_1M, BASE_ADDRESS_MEM_TYPE_32, BASE_ADDRESS_MEM_TYPE_64,
+    BASE_ADDRESS_MEM_TYPE_MASK, BASE_ADDRESS_SPACE, BASE_ADDRESS_SPACE_IO,
 };
 
 fn put(c: &mut [u8], offset: usize, value: u32) {
@@ -78,22 +80,83 @@ fn a_64_bit_bar_consumes_two_slots_in_the_walk() {
 }
 
 #[test]
-fn bar_kind_literals_and_standard_count_are_pinned() {
-    // pci_regs.h:102-111.
-    let expected = [
-        ("SPACE", 0x01u32),
-        ("SPACE_IO", 0x01),
-        ("MEM_TYPE_MASK", 0x06),
-        ("MEM_TYPE_32", 0x00),
-        ("MEM_TYPE_1M", 0x02),
-        ("MEM_TYPE_64", 0x04),
-        ("MEM_PREFETCH", 0x08),
-        ("MEM_MASK", 0xffff_fff0),
-        ("IO_MASK", 0xffff_fffc),
+fn every_base_address_space_type_and_prefetch_encoding_is_decoded() {
+    // pci_regs.h:102-111. Pin every constant against an independent Linux literal, then drive
+    // frozen config-space words through the production decoder so every branch is guarded.
+    let fields = [
+        ("SPACE", BASE_ADDRESS_SPACE, 0x01u32),
+        ("SPACE_IO", BASE_ADDRESS_SPACE_IO, 0x01),
+        ("MEM_TYPE_MASK", BASE_ADDRESS_MEM_TYPE_MASK, 0x06),
+        ("MEM_TYPE_32", BASE_ADDRESS_MEM_TYPE_32, 0x00),
+        ("MEM_TYPE_1M", BASE_ADDRESS_MEM_TYPE_1M, 0x02),
+        ("MEM_TYPE_64", BASE_ADDRESS_MEM_TYPE_64, 0x04),
+        ("MEM_PREFETCH", BASE_ADDRESS_MEM_PREFETCH, 0x08),
+        ("MEM_MASK", BASE_ADDRESS_MEM_MASK, 0xffff_fff0),
+        ("IO_MASK", BASE_ADDRESS_IO_MASK, 0xffff_fffc),
     ];
-    assert_eq!(expected.len(), 9);
-    assert_eq!(BASE_ADDRESS_MEM_MASK, expected[7].1);
-    assert_eq!(BASE_ADDRESS_IO_MASK, expected[8].1);
+    assert_eq!(fields.len(), 9);
+    for (name, actual, linux_literal) in fields {
+        assert_eq!(actual, linux_literal, "{name}, pci_regs.h:102-111");
+    }
+
+    let mut c = [0u8; 256];
+    // Frozen config-space words, not values derived from the constants under test. In particular,
+    // TYPE_32 is zero-valued and must be guarded by selecting a literal 32-bit BAR correctly.
+    put(&mut c, 0x10, 0x0000_c001); // I/O, pci_regs.h:102-104
+    put(&mut c, 0x14, 0x8123_4000); // 32-bit memory, pci_regs.h:105-106
+    put(&mut c, 0x18, 0x0008_000a); // 1M memory + prefetch, pci_regs.h:107,109
+    put(&mut c, 0x1c, 0x3456_7004); // 64-bit memory, pci_regs.h:108
+    put(&mut c, 0x20, 0x0000_0012); // upper dword of the 64-bit BAR
+
+    assert_eq!(
+        decode_bar(&c, 0),
+        Ok(Bar {
+            index: 0,
+            offset: 0x10,
+            kind: BarKind::Io,
+            address: 0x0000_c000,
+            prefetchable: false,
+            slots: 1,
+        }),
+        "PCI_BASE_ADDRESS_SPACE_IO, pci_regs.h:103; probe.c:139-142"
+    );
+    assert_eq!(
+        decode_bar(&c, 1),
+        Ok(Bar {
+            index: 1,
+            offset: 0x14,
+            kind: BarKind::Memory32,
+            address: 0x8123_4000,
+            prefetchable: false,
+            slots: 1,
+        }),
+        "PCI_BASE_ADDRESS_MEM_TYPE_32, pci_regs.h:106; probe.c:150-153"
+    );
+    assert_eq!(
+        decode_bar(&c, 2),
+        Ok(Bar {
+            index: 2,
+            offset: 0x18,
+            kind: BarKind::Memory32,
+            address: 0x0008_0000,
+            prefetchable: true,
+            slots: 1,
+        }),
+        "PCI_BASE_ADDRESS_MEM_TYPE_1M and PREFETCH, pci_regs.h:107,109; probe.c:145-156"
+    );
+    assert_eq!(
+        decode_bar(&c, 3),
+        Ok(Bar {
+            index: 3,
+            offset: 0x1c,
+            kind: BarKind::Memory64,
+            address: 0x0000_0012_3456_7000,
+            prefetchable: false,
+            slots: 2,
+        }),
+        "PCI_BASE_ADDRESS_MEM_TYPE_64, pci_regs.h:108; probe.c:157-159,267-273"
+    );
+
     assert_eq!(pci_config_core::regs::STD_NUM_BARS, 6, "pci_regs.h:37");
     assert_eq!(BAR_NAMES.len(), 6);
     assert_eq!(

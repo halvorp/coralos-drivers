@@ -217,6 +217,35 @@ pub const HEADER_TYPE_BRIDGE: u8 = 1; // pci_regs.h:81
 pub const HEADER_TYPE_CARDBUS: u8 = 2; // pci_regs.h:82
 pub const HEADER_TYPE_MFD: u8 = 0x80; // pci_regs.h:83
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderLayout {
+    Normal,
+    Bridge,
+    CardBus,
+    Unknown(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderType {
+    pub layout: HeaderLayout,
+    pub multifunction: bool,
+}
+
+/// Decode both the layout field and multifunction flag from a configuration header byte.
+pub const fn decode_header_type(header_type: u8) -> HeaderType {
+    let layout_number = header_type & HEADER_TYPE_MASK; // pci_regs.h:79; pci.c:504-506
+    let layout = match layout_number {
+        HEADER_TYPE_NORMAL => HeaderLayout::Normal, // pci_regs.h:80
+        HEADER_TYPE_BRIDGE => HeaderLayout::Bridge, // pci_regs.h:81
+        HEADER_TYPE_CARDBUS => HeaderLayout::CardBus, // pci_regs.h:82
+        other => HeaderLayout::Unknown(other),
+    };
+    HeaderType {
+        layout,
+        multifunction: header_type & HEADER_TYPE_MFD != 0, // pci_regs.h:83
+    }
+}
+
 pub mod command {
     pub const IO: u16 = 0x001; // pci_regs.h:41
     pub const MEMORY: u16 = 0x002; // pci_regs.h:42

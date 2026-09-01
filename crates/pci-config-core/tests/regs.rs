@@ -4,7 +4,9 @@
 //! Ported from `include/uapi/linux/pci_regs.h`, `drivers/pci/pci.c`, and
 //! `include/linux/pci.h`. Copyright Drew Eckhardt, Martin Mares, and Linux PCI authors.
 
-use pci_config_core::regs::{self, command, status, Register};
+use pci_config_core::regs::{
+    self, command, status, HeaderLayout, HeaderType, Register,
+};
 
 #[test]
 fn common_header_names_offsets_and_count_match_linux() {
@@ -266,13 +268,93 @@ fn command_and_status_literals_match_linux() {
 }
 
 #[test]
-fn public_register_decoders_have_linux_vectors() {
+fn every_header_type_and_multifunction_encoding_is_decoded() {
+    // pci_regs.h:79-83. Frozen config-space header bytes exercise every layout and MFD combined
+    // with each layout. Keeping these literals independent makes a mutated constant fail here.
+    let vectors = [
+        (
+            "NORMAL",
+            0x00u8,
+            HeaderType {
+                layout: HeaderLayout::Normal,
+                multifunction: false,
+            },
+        ),
+        (
+            "BRIDGE",
+            0x01,
+            HeaderType {
+                layout: HeaderLayout::Bridge,
+                multifunction: false,
+            },
+        ),
+        (
+            "CARDBUS",
+            0x02,
+            HeaderType {
+                layout: HeaderLayout::CardBus,
+                multifunction: false,
+            },
+        ),
+        (
+            "MFD_NORMAL",
+            0x80,
+            HeaderType {
+                layout: HeaderLayout::Normal,
+                multifunction: true,
+            },
+        ),
+        (
+            "MFD_BRIDGE",
+            0x81,
+            HeaderType {
+                layout: HeaderLayout::Bridge,
+                multifunction: true,
+            },
+        ),
+        (
+            "MFD_CARDBUS",
+            0x82,
+            HeaderType {
+                layout: HeaderLayout::CardBus,
+                multifunction: true,
+            },
+        ),
+    ];
+    assert_eq!(vectors.len(), 6);
+    for (name, header_byte, expected) in vectors {
+        assert_eq!(
+            regs::decode_header_type(header_byte),
+            expected,
+            "{name}, pci_regs.h:79-83; pci.c:504-506"
+        );
+    }
     assert_eq!(
-        regs::header_layout(0x80),
-        0,
+        regs::decode_header_type(0x83),
+        HeaderType {
+            layout: HeaderLayout::Unknown(3),
+            multifunction: true,
+        },
+        "unknown layout remains named while pci_regs.h:83 MFD is decoded"
+    );
+    assert_eq!(regs::HEADER_TYPE_MASK, 0x7f, "pci_regs.h:79");
+    assert_eq!(regs::HEADER_TYPE_NORMAL, 0, "pci_regs.h:80");
+    assert_eq!(regs::HEADER_TYPE_BRIDGE, 1, "pci_regs.h:81");
+    assert_eq!(regs::HEADER_TYPE_CARDBUS, 2, "pci_regs.h:82");
+    assert_eq!(regs::HEADER_TYPE_MFD, 0x80, "pci_regs.h:83");
+}
+
+#[test]
+fn header_layout_compatibility_decoder_has_a_linux_vector() {
+    assert_eq!(
+        regs::header_layout(0x81),
+        1,
         "pci_regs.h:79-83; pci.c:504-506"
     );
-    assert_eq!(regs::header_layout(0x81), 1);
+}
+
+#[test]
+fn status_decoder_and_configuration_sizes_have_linux_vectors() {
     assert_eq!(
         regs::status_errors(0xffff),
         0xf900,
