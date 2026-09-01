@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
-//! Literal vectors for definitions ported from Linux `drivers/mmc/host/sdhci.h` and
-//! `include/linux/mmc/core.h`.
+//! Literal vectors for definitions ported from Linux `drivers/mmc/host/sdhci.h`, Linux
+//! `include/linux/mmc/core.h`, and U-Boot `include/sdhci.h`.
 //!
 //! Original copyright: Copyright (C) 2005-2008 Pierre Ossman, All Rights Reserved.
 
@@ -192,7 +192,7 @@ fn interrupt_composites_match_linux_and_named_members() {
 
 #[test]
 fn present_state_and_auto_cmd_bits_match_linux() {
-    // Linux drivers/mmc/host/sdhci.h:81-95 and 218-224.
+    // Linux drivers/mmc/host/sdhci.h:81-95 and 218-224; U-Boot include/sdhci.h:61.
     // SDHCI_DAT_ACTIVE is the SDHCI specification's DAT Line Active bit retained by this port.
     let expected: [(&str, u32); 15] = [
         ("SDHCI_CMD_INHIBIT", 0x00000001),

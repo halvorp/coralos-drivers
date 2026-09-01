@@ -1,20 +1,21 @@
-//! Register and flag definitions from the pinned Linux `drivers/mmc/host/sdhci.h`.
+//! Register and flag definitions from the pinned Linux `drivers/mmc/host/sdhci.h`, Linux
+//! `include/linux/mmc/core.h`, and U-Boot `include/sdhci.h`.
 
 // Standard SDHCI register offsets.
-pub const SDHCI_DMA_ADDRESS: u16 = 0x00; // sdhci.h (value from pinned header)
-pub const SDHCI_BLOCK_SIZE: u16 = 0x04; // sdhci.h (value from pinned header)
-pub const SDHCI_BLOCK_COUNT: u16 = 0x06; // sdhci.h (value from pinned header)
-pub const SDHCI_ARGUMENT: u16 = 0x08; // sdhci.h (value from pinned header)
-pub const SDHCI_TRANSFER_MODE: u16 = 0x0C; // sdhci.h (value from pinned header)
-pub const SDHCI_COMMAND: u16 = 0x0E; // sdhci.h (value from pinned header)
-pub const SDHCI_RESPONSE: u16 = 0x10; // sdhci.h (value from pinned header)
-pub const SDHCI_BUFFER: u16 = 0x20; // sdhci.h (value from pinned header)
-pub const SDHCI_PRESENT_STATE: u16 = 0x24; // sdhci.h (value from pinned header)
-pub const SDHCI_HOST_CONTROL: u16 = 0x28; // sdhci.h (value from pinned header)
-pub const SDHCI_POWER_CONTROL: u16 = 0x29; // sdhci.h (value from pinned header)
-pub const SDHCI_BLOCK_GAP_CONTROL: u16 = 0x2A; // sdhci.h (value from pinned header)
-pub const SDHCI_WAKE_UP_CONTROL: u16 = 0x2B; // sdhci.h (value from pinned header)
-pub const SDHCI_CLOCK_CONTROL: u16 = 0x2C; // sdhci.h (value from pinned header)
+pub const SDHCI_DMA_ADDRESS: u16 = 0x00; // sdhci.h:26
+pub const SDHCI_BLOCK_SIZE: u16 = 0x04; // sdhci.h:30
+pub const SDHCI_BLOCK_COUNT: u16 = 0x06; // sdhci.h:33
+pub const SDHCI_ARGUMENT: u16 = 0x08; // sdhci.h:35
+pub const SDHCI_TRANSFER_MODE: u16 = 0x0C; // sdhci.h:37
+pub const SDHCI_COMMAND: u16 = 0x0E; // sdhci.h:53
+pub const SDHCI_RESPONSE: u16 = 0x10; // sdhci.h:76
+pub const SDHCI_BUFFER: u16 = 0x20; // sdhci.h:78
+pub const SDHCI_PRESENT_STATE: u16 = 0x24; // sdhci.h:80
+pub const SDHCI_HOST_CONTROL: u16 = 0x28; // sdhci.h:110
+pub const SDHCI_POWER_CONTROL: u16 = 0x29; // sdhci.h:124
+pub const SDHCI_BLOCK_GAP_CONTROL: u16 = 0x2A; // sdhci.h:137
+pub const SDHCI_WAKE_UP_CONTROL: u16 = 0x2B; // sdhci.h:139
+pub const SDHCI_CLOCK_CONTROL: u16 = 0x2C; // sdhci.h:144
 pub const SDHCI_TIMEOUT_CONTROL: u16 = 0x2E; // sdhci.h:156
 pub const SDHCI_SOFTWARE_RESET: u16 = 0x2F; // sdhci.h:158
 pub const SDHCI_INT_STATUS: u16 = 0x30; // sdhci.h:163
@@ -22,12 +23,12 @@ pub const SDHCI_INT_ENABLE: u16 = 0x34; // sdhci.h:164
 pub const SDHCI_SIGNAL_ENABLE: u16 = 0x38; // sdhci.h:165
 pub const SDHCI_AUTO_CMD_STATUS: u16 = 0x3C; // sdhci.h:217
 pub const SDHCI_HOST_CONTROL2: u16 = 0x3E; // sdhci.h:226
-pub const SDHCI_CAPABILITIES: u16 = 0x40; // sdhci.h (value from pinned header)
-pub const SDHCI_CAPABILITIES_1: u16 = 0x44; // sdhci.h (value from pinned header)
-pub const SDHCI_MAX_CURRENT: u16 = 0x48; // sdhci.h (value from pinned header)
-pub const SDHCI_ADMA_ERROR: u16 = 0x54; // sdhci.h (value from pinned header)
-pub const SDHCI_ADMA_ADDRESS: u16 = 0x58; // sdhci.h (value from pinned header)
-pub const SDHCI_ADMA_ADDRESS_HI: u16 = 0x5C; // sdhci.h (value from pinned header)
+pub const SDHCI_CAPABILITIES: u16 = 0x40; // sdhci.h:251
+pub const SDHCI_CAPABILITIES_1: u16 = 0x44; // sdhci.h:273
+pub const SDHCI_MAX_CURRENT: u16 = 0x48; // sdhci.h:289
+pub const SDHCI_ADMA_ERROR: u16 = 0x54; // sdhci.h:304
+pub const SDHCI_ADMA_ADDRESS: u16 = 0x58; // sdhci.h:308
+pub const SDHCI_ADMA_ADDRESS_HI: u16 = 0x5C; // sdhci.h:309
 
 // Software reset masks.
 pub const SDHCI_RESET_ALL: u8 = 0x01; // sdhci.h:159
@@ -95,16 +96,16 @@ pub const SDHCI_CQE_INT_ERR_MASK: u32 = SDHCI_INT_ADMA_ERROR // sdhci.h:210-213
 pub const SDHCI_CQE_INT_MASK: u32 = SDHCI_CQE_INT_ERR_MASK | SDHCI_INT_CQE; // sdhci.h:215
 
 // Present-state inhibit and status bits.
-pub const SDHCI_CMD_INHIBIT: u32 = 0x00000001; // sdhci.h (value from pinned header)
-pub const SDHCI_DATA_INHIBIT: u32 = 0x00000002; // sdhci.h (value from pinned header)
-pub const SDHCI_DAT_ACTIVE: u32 = 0x00000004; // sdhci.h (value from pinned header)
-pub const SDHCI_DOING_WRITE: u32 = 0x00000100; // sdhci.h (value from pinned header)
-pub const SDHCI_DOING_READ: u32 = 0x00000200; // sdhci.h (value from pinned header)
-pub const SDHCI_SPACE_AVAILABLE: u32 = 0x00000400; // sdhci.h (value from pinned header)
-pub const SDHCI_DATA_AVAILABLE: u32 = 0x00000800; // sdhci.h (value from pinned header)
-pub const SDHCI_CARD_PRESENT: u32 = 0x00010000; // sdhci.h (value from pinned header)
-pub const SDHCI_CD_STABLE: u32 = 0x00020000; // sdhci.h (value from pinned header)
-pub const SDHCI_WRITE_PROTECT: u32 = 0x00080000; // sdhci.h (value from pinned header)
+pub const SDHCI_CMD_INHIBIT: u32 = 0x00000001; // sdhci.h:81
+pub const SDHCI_DATA_INHIBIT: u32 = 0x00000002; // sdhci.h:82
+pub const SDHCI_DAT_ACTIVE: u32 = 0x00000004; // u-boot/include/sdhci.h:61
+pub const SDHCI_DOING_WRITE: u32 = 0x00000100; // sdhci.h:86
+pub const SDHCI_DOING_READ: u32 = 0x00000200; // sdhci.h:87
+pub const SDHCI_SPACE_AVAILABLE: u32 = 0x00000400; // sdhci.h:88
+pub const SDHCI_DATA_AVAILABLE: u32 = 0x00000800; // sdhci.h:89
+pub const SDHCI_CARD_PRESENT: u32 = 0x00010000; // sdhci.h:90
+pub const SDHCI_CD_STABLE: u32 = 0x00020000; // sdhci.h:92
+pub const SDHCI_WRITE_PROTECT: u32 = 0x00080000; // sdhci.h:95
 
 // Auto-CMD status bits.
 pub const SDHCI_AUTO_CMD_TIMEOUT: u16 = 0x0002; // sdhci.h:218
@@ -118,28 +119,28 @@ pub const SDHCI_CTRL_UHS_MASK: u16 = 0x0007; // sdhci.h:227
 pub const SDHCI_CTRL_UHS_SDR12: u16 = 0x0000; // sdhci.h:228
 pub const SDHCI_CTRL_UHS_SDR25: u16 = 0x0001; // sdhci.h:229
 pub const SDHCI_CTRL_UHS_SDR50: u16 = 0x0002; // sdhci.h:230
-pub const SDHCI_CTRL_EXEC_TUNING: u16 = 0x0040; // sdhci.h (value from pinned header)
-pub const SDHCI_CTRL_TUNED_CLK: u16 = 0x0080; // sdhci.h (value from pinned header)
+pub const SDHCI_CTRL_EXEC_TUNING: u16 = 0x0040; // sdhci.h:241
+pub const SDHCI_CTRL_TUNED_CLK: u16 = 0x0080; // sdhci.h:242
 
 // Transfer Mode register fields.
-pub const SDHCI_TRNS_DMA: u16 = 0x0001; // sdhci.h (value from pinned header)
-pub const SDHCI_TRNS_BLK_CNT_EN: u16 = 0x0002; // sdhci.h (value from pinned header)
-pub const SDHCI_TRNS_AUTO_CMD12: u16 = 0x0004; // sdhci.h (value from pinned header)
-pub const SDHCI_TRNS_AUTO_CMD23: u16 = 0x0008; // sdhci.h (value from pinned header)
-pub const SDHCI_TRNS_READ: u16 = 0x0010; // sdhci.h (value from pinned header)
-pub const SDHCI_TRNS_MULTI: u16 = 0x0020; // sdhci.h (value from pinned header)
+pub const SDHCI_TRNS_DMA: u16 = 0x0001; // sdhci.h:38
+pub const SDHCI_TRNS_BLK_CNT_EN: u16 = 0x0002; // sdhci.h:39
+pub const SDHCI_TRNS_AUTO_CMD12: u16 = 0x0004; // sdhci.h:40
+pub const SDHCI_TRNS_AUTO_CMD23: u16 = 0x0008; // sdhci.h:41
+pub const SDHCI_TRNS_READ: u16 = 0x0010; // sdhci.h:43
+pub const SDHCI_TRNS_MULTI: u16 = 0x0020; // sdhci.h:44
 pub const SDHCI_TRNS_AUTO_SEL: u16 = 0x000C; // sdhci.h:42
 
 // Command register fields and helpers.
-pub const SDHCI_CMD_RESP_MASK: u16 = 0x0003; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_RESP_NONE: u16 = 0x0000; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_RESP_LONG: u16 = 0x0001; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_RESP_SHORT: u16 = 0x0002; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_RESP_SHORT_BUSY: u16 = 0x0003; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_CRC: u16 = 0x0008; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_INDEX: u16 = 0x0010; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_DATA: u16 = 0x0020; // sdhci.h (value from pinned header)
-pub const SDHCI_CMD_ABORTCMD: u16 = 0x00C0; // sdhci.h (value from pinned header)
+pub const SDHCI_CMD_RESP_MASK: u16 = 0x0003; // sdhci.h:54
+pub const SDHCI_CMD_RESP_NONE: u16 = 0x0000; // sdhci.h:68
+pub const SDHCI_CMD_RESP_LONG: u16 = 0x0001; // sdhci.h:69
+pub const SDHCI_CMD_RESP_SHORT: u16 = 0x0002; // sdhci.h:70
+pub const SDHCI_CMD_RESP_SHORT_BUSY: u16 = 0x0003; // sdhci.h:71
+pub const SDHCI_CMD_CRC: u16 = 0x0008; // sdhci.h:63
+pub const SDHCI_CMD_INDEX: u16 = 0x0010; // sdhci.h:64
+pub const SDHCI_CMD_DATA: u16 = 0x0020; // sdhci.h:65
+pub const SDHCI_CMD_ABORTCMD: u16 = 0x00C0; // sdhci.h:66
 
 /// Build a COMMAND register value from an opcode and flags.
 pub const fn SDHCI_MAKE_CMD(opcode: u16, flags: u16) -> u16 {
@@ -209,12 +210,12 @@ pub const SDHCI_USE_SDMA: u32 = 1 << 0; // sdhci.h:562
 pub const SDHCI_USE_ADMA: u32 = 1 << 1; // sdhci.h:563
 pub const SDHCI_REQ_USE_DMA: u32 = 1 << 2; // sdhci.h:564
 pub const SDHCI_DEVICE_DEAD: u32 = 1 << 3; // sdhci.h:565
-pub const SDHCI_AUTO_CMD12: u32 = 1 << 6; // sdhci.h (value from pinned header)
-pub const SDHCI_AUTO_CMD23: u32 = 1 << 7; // sdhci.h (value from pinned header)
-pub const SDHCI_USE_64_BIT_DMA: u32 = 1 << 12; // sdhci.h (value from pinned header)
+pub const SDHCI_AUTO_CMD12: u32 = 1 << 6; // sdhci.h:567
+pub const SDHCI_AUTO_CMD23: u32 = 1 << 7; // sdhci.h:568
+pub const SDHCI_USE_64_BIT_DMA: u32 = 1 << 12; // sdhci.h:570
 
 // Maximum number of completed requests tracked by the host.
-pub const SDHCI_MAX_MRQS: usize = 2; // sdhci.h (value from pinned header)
+pub const SDHCI_MAX_MRQS: usize = 2; // sdhci.h:409
 
 // MMC response flag for busy signalling. Ported from linux/mmc/core.h (MMC_RSP_BUSY), not sdhci.h.
 // It lived as a PRIVATE `const` in BOTH core.rs and executor.rs — two copies of one fact, which is
