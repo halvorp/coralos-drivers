@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/mmc/core/core.c and sd_ops.c.
+# Copyright (C) 2003-2004 Russell King; 2004 Ian Molton; 2005-2008 Pierre Ossman;
+# 2006 Philip Langdale.
+
+[package]
+name = "mmc-request-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mmc-core-cmd = { path = "../mmc-core-cmd" }
+
+[workspace]
