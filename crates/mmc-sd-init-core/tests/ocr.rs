@@ -5,6 +5,12 @@
 use mmc_sd_init_core::ocr::*;
 
 #[test]
+fn request_and_response_1v8_bits_are_pinned_independently() {
+    assert_eq!(SD_OCR_S18R, 0x0100_0000); // include/linux/mmc/sd.h:40
+    assert_eq!(SD_ROCR_S18A, 0x0100_0000); // include/linux/mmc/sd.h:41
+}
+
+#[test]
 fn every_sd_ocr_literal_is_pinned_by_name_and_mask() {
     let expected = [
         ("S18R_S18A", 0x0100_0000),            // include/linux/mmc/sd.h:40-41
@@ -46,9 +52,22 @@ fn acmd41_request_sets_capacity_uhs_and_power_bits_independently() {
 
 #[test]
 fn voltage_switch_requires_native_bus_request_and_acceptance() {
-    // sd.c:889-890.
+    // drivers/mmc/core/sd.c:883-891.
     assert!(should_switch_to_1v8(false, 0x0100_0000, 0x0100_0000));
     assert!(!should_switch_to_1v8(true, 0x0100_0000, 0x0100_0000));
     assert!(!should_switch_to_1v8(false, 0, 0x0100_0000));
     assert!(!should_switch_to_1v8(false, 0x0100_0000, 0));
+}
+
+#[test]
+fn real_r3_ocr_words_decode_the_exact_signalling_decision() {
+    // A powered-up SDHC response with S18A set: busy, CCS, S18A, and the voltage window.
+    let accepted_r3 = 0xc1ff_8000;
+    // The same real-style R3/OCR response with S18A clear must remain at 3.3 V.
+    let refused_r3 = 0xc0ff_8000;
+    let request_ocr = 0x4130_0000;
+
+    assert!(should_switch_to_1v8(false, request_ocr, accepted_r3));
+    assert!(!should_switch_to_1v8(false, request_ocr, refused_r3));
+    // include/linux/mmc/sd.h:40-41; drivers/mmc/core/sd.c:883-891
 }
