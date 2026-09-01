@@ -5,7 +5,14 @@
 
 use sdhci_ops_core::timeout::{
     decode_timeout_us, target_timeout_us, timeout_control, TimeoutControl, TimeoutError, TimeoutSpec,
+    TIMEOUT_BASE_KUS,
 };
+
+/// `drivers/mmc/host/sdhci.c:1010` — `(1 << 13) * 1000`, in kHz·microseconds.
+#[test]
+fn timeout_base_is_pinned_to_the_linux_literal() {
+    assert_eq!(TIMEOUT_BASE_KUS, 8_192_000);
+}
 
 /// sdhci.c:912-:930: command milliseconds become microseconds; data ns and cycles round up.
 #[test]
