@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# GPIO descriptor semantics mechanically ported from Linux gpiolib.
+
+[package]
+name = "gpiolib-desc-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
