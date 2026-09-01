@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+
+[package]
+name = "sdhci-ops-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "Pure SDHCI command and transfer setup ported from Linux sdhci.c"
+
+[dependencies]
+sdhci-core = { path = "../sdhci-core" }
+
+[workspace]
