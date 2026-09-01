@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/mmc/core/mmc_ops.c and include/linux/mmc/{core.h,mmc.h}.
+# Copyright 2006-2007 Pierre Ossman and the Linux MMC authors.
+
+[package]
+name = "mmc-ops-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mmc-core-cmd = { path = "../mmc-core-cmd" }
+
+[workspace]
