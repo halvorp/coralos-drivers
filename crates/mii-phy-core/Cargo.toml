@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/net/mii.c, include/linux/mii.h, and
+# include/uapi/linux/{mii,ethtool}.h. Copyright Jeff Garzik, Donald Becker,
+# David S. Miller, and the Linux networking authors.
+
+[package]
+name = "mii-phy-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
