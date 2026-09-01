@@ -47,6 +47,18 @@ fn event_type_names_and_values_are_literal() {
 }
 
 #[test]
+fn reserved_key_is_distinct_from_every_real_key_code() {
+    // KEY_RESERVED is the no-key sentinel and KEY_ESC starts the real key-code space at 0x01
+    // (input-event-codes.h:76-77). A collision must not silently turn the sentinel into a key.
+    for real_key_code in 0x01..=0x2ff {
+        assert_ne!(
+            KEY_RESERVED, real_key_code,
+            "KEY_RESERVED no-key sentinel collides with real key code {real_key_code:#x}"
+        );
+    }
+}
+
+#[test]
 fn max_code_maps_only_linux_bounded_types() {
     assert_eq!(max_code(EV_KEY), Some(0x2ff)); // input.c:55
     assert_eq!(max_code(EV_ABS), Some(0x3f)); // input.c:57

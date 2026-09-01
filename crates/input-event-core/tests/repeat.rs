@@ -3,7 +3,18 @@
 //!
 //! Copyright (c) 1999-2002 Vojtech Pavlik and the Linux input subsystem authors.
 
+use input_event_core::codes::{REP_DELAY, REP_PERIOD};
 use input_event_core::repeat::*;
+
+#[test]
+fn repeat_indices_are_distinct_and_select_the_named_values() {
+    // Linux stores delay at index 0 and period at index 1 (input-event-codes.h:989-990), then uses
+    // those exact indices to arm and rearm the timer (input.c:89-95, input.c:2230-2233).
+    assert_ne!(REP_DELAY, REP_PERIOD, "REP_DELAY must not collide with REP_PERIOD");
+    let settings = [250_u32, 33_u32];
+    assert_eq!(settings[REP_DELAY as usize], 250, "REP_DELAY must select the repeat delay");
+    assert_eq!(settings[REP_PERIOD as usize], 33, "REP_PERIOD must select the repeat period");
+}
 
 #[test]
 fn constructors_preserve_driver_values_and_apply_linux_defaults() {
