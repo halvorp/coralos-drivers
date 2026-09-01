@@ -75,6 +75,24 @@ reports success.
 *Fix:* for each ENUM-LIKE FAMILY, one test that drives a real input through the decode for EVERY
 member and asserts the exact classification. A family is covered as a family or not at all.
 
+**6. SYMMETRIC USE — the INVERSE of RESTATED, and it looks like good practice.** If a test builds
+its INPUT from the same constant production then tests that input AGAINST, mutating the constant
+changes both sides and cancels out. `USB_DIR_IN` survived a whole crate's sweep for exactly this
+reason: every test passed `request_type: USB_DIR_IN` and production checked `request_type &
+USB_DIR_IN`. Routing an assertion through the constant is normally what makes it honest — but when
+BOTH sides route through it, nothing is pinned at all.
+*Fix:* pin the constant by VALUE against the Linux literal at least once, independently of any test
+that uses it to construct input.
+
+## 3b. COVERAGE IS NOT CORRECTNESS
+
+A mutation sweep proves a constant is PINNED. It says nothing about whether the value is RIGHT.
+
+sdhci-core measured 154 of 154 constants caught — and that number would have been exactly as green
+with six WRONG values in place, because the test and the constant hold the same value. Those six
+were found by re-deriving from the header, which is the only thing that settles it. ``tools/check-citations.sh`` guards the
+provenance that makes re-derivation possible; do not let a green sweep stand in for it.
+
 ## 4. Every test must be PROVEN able to fail
 
 Before claiming a test works, mutate the source and confirm the test goes red. Classify any
