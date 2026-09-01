@@ -32,11 +32,11 @@ a comment.
 the table cannot detect a deletion from that table: the test case disappears together with the thing
 it guards. Write the expected names/values out by hand, and assert the production table matches.
 
-## 3a. THE FOUR WAYS A GREEN SUITE STILL LEAVES A CONSTANT UNGUARDED
+## 3a. THE FIVE WAYS A GREEN SUITE STILL LEAVES A CONSTANT UNGUARDED
 
 Every one of these was found by mutating a crate whose tests passed, whose names read correctly, and
 whose porting was right. Not one was caught by reading the tests. Check your own crate against all
-four before you report it done.
+five before you report it done.
 
 **1. COMPOSITE.** Pinning a composite does not pin its components. Asserting `R2_FLAGS == 0x7` says
 nothing about `RSP_136`, `RSP_CRC` or `RSP_OPCODE` unless the assertion is written as the OR of the
@@ -64,6 +64,16 @@ and three unguarded masks for exactly this reason.
 *Fix:* the EXPECTED side of an assertion is a Linux literal; the ACTUAL side must travel THROUGH the
 constant that production code uses. If changing the constant cannot change the test result, the test
 is testing itself.
+
+**5. GUARDED BY CONVENIENCE.** The family member a test happened to exercise is pinned; its SIBLINGS
+inherit nothing. `BASE_ADDRESS_MEM_TYPE_64` was caught because the 64-bit BAR walk drives it, while
+`TYPE_32`, `TYPE_1M`, `TYPE_MASK` and `PREFETCH` were read only in decode branches no test drove.
+`HEADER_TYPE_NORMAL` and `CARDBUS` were caught; `BRIDGE` and `MFD` were not. Nothing announces this:
+a wrong `BASE_ADDRESS_MEM_TYPE_MASK` misclassifies every BAR on every device, and a wrong
+`HEADER_TYPE_MFD` loses every function past zero — the machine enumerates the wrong hardware and
+reports success.
+*Fix:* for each ENUM-LIKE FAMILY, one test that drives a real input through the decode for EVERY
+member and asserts the exact classification. A family is covered as a family or not at all.
 
 ## 4. Every test must be PROVEN able to fail
 
