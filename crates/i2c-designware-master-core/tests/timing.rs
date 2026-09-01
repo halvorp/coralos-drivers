@@ -17,16 +17,26 @@ fn input() -> TimingInput {
     }
 }
 
+/// Frozen independently of `FREQUENCY_MODES`: do not generate this list from the production
+/// table. Each value is Linux's literal for the named mode.
+const LINUX_FREQUENCY_MODES: [(&str, u32); 4] = [
+    ("standard", 100000),  // include/linux/i2c.h:44
+    ("fast", 400000),      // include/linux/i2c.h:45
+    ("fast-plus", 1000000), // include/linux/i2c.h:46
+    ("high-speed", 3400000), // include/linux/i2c.h:48
+];
+
 /// include/linux/i2c.h:44-48 and i2c-designware-master.c:53-54.
 #[test]
-fn frequency_and_fall_literals_match_linux() {
-    assert_eq!(FREQUENCY_MODES.len(), 4);
-    assert_eq!(FREQUENCY_MODES, [
-        ("standard", 100000),
-        ("fast", 400000),
-        ("fast-plus", 1000000),
-        ("high-speed", 3400000),
-    ]);
+fn every_frequency_mode_name_and_value_matches_linux() {
+    assert_eq!(FREQUENCY_MODES.len(), 4, "Linux modes consumed by this master");
+    for index in 0..4 {
+        let (actual_name, actual_value) = FREQUENCY_MODES[index];
+        let (linux_name, linux_value) = LINUX_FREQUENCY_MODES[index];
+        assert_eq!(actual_name, linux_name, "FREQUENCY_MODES[{index}] name");
+        assert_eq!(actual_value, linux_value, "FREQUENCY_MODES[{index}] value");
+    }
+
     assert_eq!(STANDARD_FREQ_HZ, 100000);
     assert_eq!(FAST_FREQ_HZ, 400000);
     assert_eq!(FAST_PLUS_FREQ_HZ, 1000000);
