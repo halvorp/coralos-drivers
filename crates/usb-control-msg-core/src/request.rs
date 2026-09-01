@@ -119,7 +119,9 @@ pub const STANDARD_REQUESTS: &[StandardRequest] = &[
 
 /// Pack the three independent `bmRequestType` subfields.
 pub const fn pack(direction: Direction, request_type: RequestType, recipient: Recipient) -> u8 {
-    direction as u8 | request_type as u8 | recipient as u8
+    (direction as u8 & DIRECTION_MASK)
+        | (request_type as u8 & TYPE_MASK)
+        | (recipient as u8 & RECIPIENT_MASK)
 }
 
 /// Decode direction independently from bit 7.

@@ -7,7 +7,7 @@
 
 use usb_control_msg_core::request::{
     direction, pack, recipient, request_type, Direction, Recipient, RequestType, DIRECTIONS,
-    RECIPIENTS, REQUEST_TYPES, STANDARD_REQUESTS,
+    DIRECTION_MASK, RECIPIENTS, RECIPIENT_MASK, REQUEST_TYPES, STANDARD_REQUESTS, TYPE_MASK,
 };
 
 const LINUX_DIRECTIONS: [(&str, u8); 2] = [("OUT", 0x00), ("IN", 0x80)]; // ch9.h:47-:48
@@ -30,28 +30,43 @@ fn every_subfield_count_name_and_literal_is_pinned() {
 }
 
 #[test]
-fn subfields_are_separate_then_pack_in_both_directions() {
-    // Assert direction, type, and recipient separately before asserting the packed byte.
-    assert_eq!(Direction::Out as u8, 0x00); // ch9.h:47
-    assert_eq!(RequestType::Class as u8, 0x20); // ch9.h:55
-    assert_eq!(Recipient::Endpoint as u8, 0x02); // ch9.h:65
-    assert_eq!(pack(Direction::Out, RequestType::Class, Recipient::Endpoint), 0x22);
+fn every_request_type_mask_matches_its_linux_literal() {
+    assert_eq!(DIRECTION_MASK, 0x80); // include/uapi/linux/usb/ch9.h:48
+    assert_eq!(TYPE_MASK, 0x60); // include/uapi/linux/usb/ch9.h:53
+    assert_eq!(RECIPIENT_MASK, 0x1f); // include/uapi/linux/usb/ch9.h:62
+}
 
-    assert_eq!(Direction::In as u8, 0x80); // ch9.h:48
-    assert_eq!(RequestType::Vendor as u8, 0x40); // ch9.h:56
-    assert_eq!(Recipient::Rpipe as u8, 0x05); // ch9.h:69
-    assert_eq!(pack(Direction::In, RequestType::Vendor, Recipient::Rpipe), 0xc5);
+#[test]
+fn subfields_are_separate_then_pack_in_both_directions() {
+    let out_class_endpoint = pack(Direction::Out, RequestType::Class, Recipient::Endpoint);
+    assert_eq!(out_class_endpoint & DIRECTION_MASK, 0x00); // include/uapi/linux/usb/ch9.h:47
+    assert_eq!(out_class_endpoint & TYPE_MASK, 0x20); // include/uapi/linux/usb/ch9.h:55
+    assert_eq!(out_class_endpoint & RECIPIENT_MASK, 0x02); // include/uapi/linux/usb/ch9.h:65
+    assert_eq!(out_class_endpoint, 0x22);
+
+    let in_vendor_rpipe = pack(Direction::In, RequestType::Vendor, Recipient::Rpipe);
+    assert_eq!(in_vendor_rpipe & DIRECTION_MASK, 0x80); // include/uapi/linux/usb/ch9.h:48
+    assert_eq!(in_vendor_rpipe & TYPE_MASK, 0x40); // include/uapi/linux/usb/ch9.h:56
+    assert_eq!(in_vendor_rpipe & RECIPIENT_MASK, 0x05); // include/uapi/linux/usb/ch9.h:69
+    assert_eq!(in_vendor_rpipe, 0xc5);
 }
 
 #[test]
 fn packed_bytes_decode_each_field_independently() {
+    assert_eq!(0x22 & DIRECTION_MASK, 0x00); // include/uapi/linux/usb/ch9.h:47
     assert_eq!(direction(0x22), Direction::Out);
+    assert_eq!(0x22 & TYPE_MASK, 0x20); // include/uapi/linux/usb/ch9.h:55
     assert_eq!(request_type(0x22), RequestType::Class);
+    assert_eq!(0x22 & RECIPIENT_MASK, 0x02); // include/uapi/linux/usb/ch9.h:65
     assert_eq!(recipient(0x22), 0x02);
+    assert_eq!(0xc5 & DIRECTION_MASK, 0x80); // include/uapi/linux/usb/ch9.h:48
     assert_eq!(direction(0xc5), Direction::In);
+    assert_eq!(0xc5 & TYPE_MASK, 0x40); // include/uapi/linux/usb/ch9.h:56
     assert_eq!(request_type(0xc5), RequestType::Vendor);
+    assert_eq!(0xc5 & RECIPIENT_MASK, 0x05); // include/uapi/linux/usb/ch9.h:69
     assert_eq!(recipient(0xc5), 0x05);
-    assert_eq!(recipient(0xff), 0x1f, "recipient mask is five bits, ch9.h:62");
+    assert_eq!(0xff & RECIPIENT_MASK, 0x1f); // include/uapi/linux/usb/ch9.h:62
+    assert_eq!(recipient(0xff), 0x1f);
 }
 
 const LINUX_STANDARD_REQUESTS: [(&str, u8); 31] = [

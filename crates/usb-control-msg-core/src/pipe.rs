@@ -57,10 +57,10 @@ pub const fn encode(
     if endpoint > 0x0f {
         return Err(PipeError::EndpointOutOfRange { value: endpoint, maximum: 0x0f });
     }
-    Ok(((pipe_type as u32) << 30)
-        | ((endpoint as u32) << 15)
-        | ((device_address as u32) << 8)
-        | direction as u32)
+    Ok((((pipe_type as u32) << 30) & TYPE_MASK)
+        | (((endpoint as u32) << 15) & ENDPOINT_MASK)
+        | (((device_address as u32) << 8) & DEVICE_MASK)
+        | (direction as u32 & DIRECTION_MASK))
 }
 
 /// Encode `usb_sndctrlpipe`.
@@ -76,10 +76,10 @@ pub const fn receive_control(device_address: u8, endpoint: u8) -> Result<u32, Pi
 pub const fn direction(pipe: u32) -> Direction {
     if pipe & DIRECTION_MASK != 0 { Direction::In } else { Direction::Out }
 }
-pub const fn device_address(pipe: u32) -> u8 { ((pipe >> 8) & 0x7f) as u8 }
-pub const fn endpoint(pipe: u32) -> u8 { ((pipe >> 15) & 0x0f) as u8 }
+pub const fn device_address(pipe: u32) -> u8 { ((pipe & DEVICE_MASK) >> 8) as u8 }
+pub const fn endpoint(pipe: u32) -> u8 { ((pipe & ENDPOINT_MASK) >> 15) as u8 }
 pub const fn pipe_type(pipe: u32) -> PipeType {
-    match (pipe >> 30) & 3 {
+    match (pipe & TYPE_MASK) >> 30 {
         0 => PipeType::Isochronous,
         1 => PipeType::Interrupt,
         2 => PipeType::Control,
