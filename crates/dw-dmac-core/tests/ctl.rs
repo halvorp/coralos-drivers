@@ -98,6 +98,156 @@ fn every_width_encoding_is_log2_bytes() {
 }
 
 #[test]
+fn every_ctl_field_constant_matches_its_linux_literal() {
+    assert_eq!(INT_EN, 0x0000_0001); // regs.h:148, 1 << 0
+    assert_eq!(DST_WIDTH_SHIFT, 1); // regs.h:149, n << 1
+    assert_eq!(SRC_WIDTH_SHIFT, 4); // regs.h:150, n << 4
+    assert_eq!(DST_ADDR_MODE_SHIFT, 7); // regs.h:151-153, values << 7
+    assert_eq!(SRC_ADDR_MODE_SHIFT, 9); // regs.h:154-156, values << 9
+    assert_eq!(DST_MSIZE_SHIFT, 11); // regs.h:157, n << 11
+    assert_eq!(SRC_MSIZE_SHIFT, 14); // regs.h:158, n << 14
+    assert_eq!(SRC_GATHER_EN, 0x0002_0000); // regs.h:159, 1 << 17
+    assert_eq!(DST_SCATTER_EN, 0x0004_0000); // regs.h:160, 1 << 18
+    assert_eq!(FLOW_CONTROL_SHIFT, 20); // regs.h:161, n << 20
+    assert_eq!(DST_MASTER_SHIFT, 23); // regs.h:167, n << 23
+    assert_eq!(SRC_MASTER_SHIFT, 25); // regs.h:168, n << 25
+    assert_eq!(LLP_DST_EN, 0x0800_0000); // regs.h:169, 1 << 27
+    assert_eq!(LLP_SRC_EN, 0x1000_0000); // regs.h:170, 1 << 28
+    assert_eq!(BLOCK_TS_MASK, 0x0000_0fff); // regs.h:173, GENMASK(11, 0)
+    assert_eq!(DONE, 0x0000_1000); // regs.h:175, 1 << 12
+}
+
+fn empty_control_low() -> ControlLow {
+    ControlLow {
+        interrupt_enabled: false,
+        destination_width: TransferWidth::Bits8,
+        source_width: TransferWidth::Bits8,
+        destination_mode: AddressMode::Increment,
+        source_mode: AddressMode::Increment,
+        destination_burst: BurstSize::Msize1,
+        source_burst: BurstSize::Msize1,
+        source_gather: false,
+        destination_scatter: false,
+        flow_control: FlowControl::DmacMemoryToMemory,
+        destination_master: 0,
+        source_master: 0,
+        destination_llp: false,
+        source_llp: false,
+    }
+}
+
+#[test]
+fn every_ctl_low_field_has_an_isolated_linux_vector() {
+    let base = empty_control_low();
+    assert_eq!(encode_ctl_lo(base), Ok(0x0000_0000)); // regs.h:148-170
+
+    let vectors = [
+        (
+            ControlLow {
+                interrupt_enabled: true,
+                ..base
+            },
+            0x0000_0001,
+        ), // regs.h:148
+        (
+            ControlLow {
+                destination_width: TransferWidth::Bits16,
+                ..base
+            },
+            0x0000_0002,
+        ), // regs.h:149
+        (
+            ControlLow {
+                source_width: TransferWidth::Bits16,
+                ..base
+            },
+            0x0000_0010,
+        ), // regs.h:150
+        (
+            ControlLow {
+                destination_mode: AddressMode::Decrement,
+                ..base
+            },
+            0x0000_0080,
+        ), // regs.h:152
+        (
+            ControlLow {
+                source_mode: AddressMode::Decrement,
+                ..base
+            },
+            0x0000_0200,
+        ), // regs.h:155
+        (
+            ControlLow {
+                destination_burst: BurstSize::Msize4,
+                ..base
+            },
+            0x0000_0800,
+        ), // regs.h:157
+        (
+            ControlLow {
+                source_burst: BurstSize::Msize4,
+                ..base
+            },
+            0x0000_4000,
+        ), // regs.h:158
+        (
+            ControlLow {
+                source_gather: true,
+                ..base
+            },
+            0x0002_0000,
+        ), // regs.h:159
+        (
+            ControlLow {
+                destination_scatter: true,
+                ..base
+            },
+            0x0004_0000,
+        ), // regs.h:160
+        (
+            ControlLow {
+                flow_control: FlowControl::DmacMemoryToPeripheral,
+                ..base
+            },
+            0x0010_0000,
+        ), // regs.h:161-163
+        (
+            ControlLow {
+                destination_master: 1,
+                ..base
+            },
+            0x0080_0000,
+        ), // regs.h:167
+        (
+            ControlLow {
+                source_master: 1,
+                ..base
+            },
+            0x0200_0000,
+        ), // regs.h:168
+        (
+            ControlLow {
+                destination_llp: true,
+                ..base
+            },
+            0x0800_0000,
+        ), // regs.h:169
+        (
+            ControlLow {
+                source_llp: true,
+                ..base
+            },
+            0x1000_0000,
+        ), // regs.h:170
+    ];
+
+    for (control, linux_literal) in vectors {
+        assert_eq!(encode_ctl_lo(control), Ok(linux_literal));
+    }
+}
+
+#[test]
 fn ctl_low_all_fields_land_at_linux_positions() {
     let all = ControlLow {
         interrupt_enabled: true,
