@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/mmc/core/sd.c and the MMC/SD headers it uses.
+# Copyright (C) 2003-2004 Russell King; 2004 Ian Molton; 2005-2007 Pierre Ossman.
+
+[package]
+name = "mmc-sd-init-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[dependencies]
+mmc-core-cmd = { path = "../mmc-core-cmd" }
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
