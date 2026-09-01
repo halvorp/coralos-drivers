@@ -294,3 +294,22 @@ fn the_aldps_register_is_written_twice_with_non_overlapping_bits() {
     assert_eq!(adjust_set & disable_mask, 0, "the disable must not clear what the adjustment set");
     assert_eq!(disable_set & adjust_mask, 0);
 }
+
+/// `PAGE_SELECT_REG` is pinned BY VALUE, and it was the one constant in this crate a mutation sweep
+/// could not detect a change to.
+///
+/// Every use of it in production is `phy.write(PAGE_SELECT_REG, ..)`, and every test that exercises
+/// a page switch drives that same path — so mutating the constant moved the expected register and
+/// the observed register together and cancelled out (PORT_CONVENTIONS §3a.6, SYMMETRIC USE).
+///
+/// Linux writes page selects as the literal pair `{ 0x1f, 0x0001 }` throughout
+/// drivers/net/ethernet/realtek/r8169_phy_config.c — register 0x1f is the RTL PHY's page-select
+/// register. A wrong value here would write every page switch into some OTHER PHY register and
+/// leave the PHY on page 0, so every subsequent paged write would land on the wrong page's
+/// registers. The link would come up wrong, or not at all, with nothing reporting an error.
+#[test]
+fn page_select_register_is_0x1f() {
+    use r8169_core::phy::PAGE_SELECT_REG;
+    assert_eq!(PAGE_SELECT_REG, 0x1f, "r8169_phy_config.c uses {{ 0x1f, page }} throughout");
+    assert!(PAGE_SELECT_REG <= 0x1f, "MDIO register addresses are five bits");
+}
