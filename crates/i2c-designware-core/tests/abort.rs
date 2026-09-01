@@ -145,13 +145,19 @@ fn noack_is_reported_ahead_of_arbitration_lost() {
 /// Each verdict class maps to the errno Linux returns.
 #[test]
 fn verdict_maps_each_class() {
-    // -EREMOTEIO (:775). Every one of the five NOACK bits alone yields NoAck.
-    for bit in 0..=4 {
-        assert_eq!(verdict(1 << bit), AbortVerdict::NoAck, "bit {bit} is part of TX_ABRT_NOACK");
+    // -EREMOTEIO (i2c-designware-common.c:775). Every named NOACK bit alone yields NoAck.
+    for cause in [
+        bits::TX_ABRT_7B_ADDR_NOACK,
+        bits::TX_ABRT_10ADDR1_NOACK,
+        bits::TX_ABRT_10ADDR2_NOACK,
+        bits::TX_ABRT_TXDATA_NOACK,
+        bits::TX_ABRT_GCALL_NOACK,
+    ] {
+        assert_eq!(verdict(cause), AbortVerdict::NoAck, "named cause {cause:#x} is NOACK");
     }
-    assert_eq!(verdict(bits::TX_ARB_LOST), AbortVerdict::ArbitrationLost); // -EAGAIN (:780)
-    assert_eq!(verdict(bits::TX_ABRT_GCALL_READ), AbortVerdict::BadRequest); // -EINVAL (:782)
-    assert_eq!(verdict(1 << 15), AbortVerdict::Io); // -EIO (:784)
+    assert_eq!(verdict(bits::TX_ARB_LOST), AbortVerdict::ArbitrationLost); // i2c-designware-common.c:780
+    assert_eq!(verdict(bits::TX_ABRT_GCALL_READ), AbortVerdict::BadRequest); // i2c-designware-common.c:782
+    assert_eq!(verdict(bits::RX_ABRT_SLAVE_RD_INTX), AbortVerdict::Io); // i2c-designware-common.c:784
     assert_eq!(verdict(0), AbortVerdict::Io, "no known cause set falls through to -EIO");
 }
 
@@ -161,10 +167,20 @@ fn verdict_maps_each_class() {
 /// bit, four NAK classes start reporting as generic I/O errors.
 #[test]
 fn noack_mask_covers_all_five_nak_causes() {
-    assert_eq!(bits::TX_ABRT_NOACK, 0x1f, "core.h:196 — bits 0..=4");
-    for bit in 0..=4 {
-        assert_ne!(bits::TX_ABRT_NOACK & (1 << bit), 0, "bit {bit} must be in the NAK mask");
-    }
+    assert_eq!(bits::TX_ABRT_7B_ADDR_NOACK, 0x1); // i2c-designware-core.h:181
+    assert_eq!(bits::TX_ABRT_10ADDR1_NOACK, 0x2); // i2c-designware-core.h:182
+    assert_eq!(bits::TX_ABRT_10ADDR2_NOACK, 0x4); // i2c-designware-core.h:183
+    assert_eq!(bits::TX_ABRT_TXDATA_NOACK, 0x8); // i2c-designware-core.h:184
+    assert_eq!(bits::TX_ABRT_GCALL_NOACK, 0x10); // i2c-designware-core.h:185
+    assert_eq!(bits::TX_ABRT_NOACK, 0x1f); // i2c-designware-core.h:196
+    assert_eq!(
+        bits::TX_ABRT_NOACK,
+        bits::TX_ABRT_7B_ADDR_NOACK
+            | bits::TX_ABRT_10ADDR1_NOACK
+            | bits::TX_ABRT_10ADDR2_NOACK
+            | bits::TX_ABRT_TXDATA_NOACK
+            | bits::TX_ABRT_GCALL_NOACK
+    ); // i2c-designware-core.h:196-200
 }
 
 /// A NAK is expected traffic; everything else is not.
@@ -174,7 +190,10 @@ fn noack_mask_covers_all_five_nak_causes() {
 #[test]
 fn only_naks_are_expected_traffic() {
     assert!(is_expected_traffic(bits::TX_ABRT_NOACK));
-    assert!(is_expected_traffic(1 << 0), "a bare 7-bit address NAK is expected");
+    assert!(
+        is_expected_traffic(bits::TX_ABRT_7B_ADDR_NOACK),
+        "the named 7-bit address NAK is expected"
+    );
     assert!(!is_expected_traffic(bits::TX_ARB_LOST), "lost arbitration is a real fault");
     assert!(!is_expected_traffic(1 << 15));
     assert!(!is_expected_traffic(0));
