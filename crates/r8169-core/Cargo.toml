@@ -8,3 +8,5 @@ license = "GPL-2.0-only"
 description = "Pure-Rust cited port of the Linux r8169 register map and descriptor format (drivers/net/ethernet/realtek/r8169_main.c)"
 
 [dependencies]
+
+[workspace]

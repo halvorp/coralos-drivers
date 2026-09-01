@@ -1,3 +1,16 @@
+# The root workspace covers ONLY `hal`. It deliberately does NOT glob `crates/*`.
+#
+# Every ported driver crate is a STANDALONE workspace (PORT_CONVENTIONS.md: "[workspace] stanza"),
+# because parallel port workers each hold their own git worktree and a shared root manifest would be
+# the one file they all had to write. §8 tells them never to touch it; this is what makes that
+# instruction affordable.
+#
+# Globbing `crates/*` here made cargo refuse the ENTIRE repo with "multiple workspace roots found in
+# the same workspace" — and it refused for exactly the three crates that lacked their own stanza:
+# i2c-designware-core, r8169-core, sdhci-core, the three founding ports. The error names twenty
+# UNRELATED crates, so it reads like somebody else's problem while the headline drivers are the
+# untestable ones. tools/check-crates-test.sh now fails if any crate stops running its tests.
 [workspace]
 resolver = "2"
-members = ["hal", "crates/*"]
+members = ["hal"]
+exclude = ["crates"]

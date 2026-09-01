@@ -101,6 +101,18 @@ for GPL-derived ports. Do not copy code into any other tree.
 - Counts are pinned: if Linux defines N of something, a test asserts N and asserts the names.
 - No `unsafe`. No `alloc` unless unavoidable and justified in a comment.
 
+## 7a. The crate is a STANDALONE workspace, and that is load-bearing
+
+Your `Cargo.toml` carries a bare `[workspace]` stanza. This is not boilerplate: it is what lets N
+port workers hold N git worktrees and never contend on a shared root manifest, which is what §8 below
+is asking of you.
+
+The repo root's `Cargo.toml` therefore does NOT glob `crates/*`. When it did, cargo refused every
+crate that had omitted the stanza with `multiple workspace roots found in the same workspace` — and
+the error text names twenty OTHER crates, so it reads like somebody else's problem. The three crates
+that omitted it were the three founding ports, and 181 of their tests stopped running with nothing
+to say. `tools/check-crates-test.sh` now fails if any crate stops running its tests.
+
 ## 8. Scope discipline
 
 Do ONLY the crate named in your task. Do not touch `Cargo.toml` at the workspace root, other

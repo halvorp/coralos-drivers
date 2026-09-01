@@ -8,3 +8,5 @@ license = "GPL-2.0-or-later"
 description = "Pure-Rust cited port of the Linux sdhci error-recovery core (drivers/mmc/host/sdhci.c @ 9147566d, v7.0-rc)"
 
 [dependencies]
+
+[workspace]
