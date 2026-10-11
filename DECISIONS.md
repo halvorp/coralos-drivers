@@ -3,6 +3,16 @@
 The owner's rulings that govern this repository. Newest first. Each is recorded as given; where a ruling is
 still being worked out, it says so and names what is pending rather than guessing.
 
+## 2026-10-11 — Architect (Astra), keyboard ruling
+
+**D7 — rt extended with capability-scoped port I/O and the physical key-event frame.** *Exposing an operation is not
+granting it.* `rt/` gains `PORT_IO` (system call 52: ops IN8/OUT8/IN16/OUT16/IN32/OUT32 = 0..5, QUERY = 6, refusal
+`u64::MAX`, rights IN/OUT/W8/W16/W32 = 1/2/4/8/16, 4 slots) behind an opaque `PortRange` handle, and the key frame
+`[0x90, HID usage, state]` on endpoint 12 (state RELEASE 0 / PRESS 1 / REPEAT 2 / ALL_UP 3). A driver never names a raw port;
+the loader grants `i8042.device` byte access to 0x60 and 0x64 as two ranges, plus IRQ 1. `devices/i8042` is the first
+public GPL `.device`: it links only rt, hal and the three cores (i8042-core, atkbd-scancode-core, hid-input-keyboard-core).
+It emits PHYSICAL key events; layout, modifiers, CapsLock, text and the ChromeOS top-row policy stay in the input layer.
+
 ## 2026-10-11 — Peter (owner)
 
 **D1 — Linux drivers are ported, not reinvented.** In the owner's words: *"we have the open source repo for the GPL

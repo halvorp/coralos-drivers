@@ -8,20 +8,30 @@
 //!
 //! WHAT IS HERE (every fact this crate makes public):
 //!   numbers  WRITE 0 · EXIT 1 · SEND 3 · RECV 4 · MMIO_MAP 8 · IRQ_WAIT 10 · TRY_RECV 20 · CONNECT 21 · TICKS 24 ·
-//!            MMAP 25 · WAIT_ANY_IRQ 80 · MMIO_LEN 90 · DMA_ALLOC_TYPED 103 · DMA_QUOTA 105 · IRQ_LINE 109 · IRQ_ARM 110
+//!            MMAP 25 · PORT_IO 52 · WAIT_ANY_IRQ 80 · MMIO_LEN 90 · DMA_ALLOC_TYPED 103 · DMA_QUOTA 105 · IRQ_LINE 109 · IRQ_ARM 110
 //!   words    SYSCALL_ERR / SEND_DENIED / WAIT_TIMEOUT = u64::MAX · WAIT_IRQ_FIRED = MAX-1 · WAIT_IRQ_DENIED = MAX-2 ·
 //!            PEER_DEAD = MAX-6 · SEND_OK 0 · SEND_RING_FULL 1 · DMA_ALLOC_TYPED refusals MAX-120..=MAX-127 (8, named)
 //!   layout   the DMA out-record `{ uva: u64, phys: u64 }` (repr C, 16 bytes) · DMA cache argument: low byte WB 0 / WC 1 /
 //!            UC 2, bit 8 = whole run below 4 GiB
+//!   port I/O (2026-10-11, Astra's ruling; portio.rs) PORT_IO ops IN8/OUT8/IN16/OUT16/IN32/OUT32 = 0..5 and QUERY = 6;
+//!            refusal u64::MAX; QUERY(slot) = `base | len << 16 | rights << 32`; rights IN 1 · OUT 2 · W8 4 · W16 8 · W32 16;
+//!            4 slots. A driver holds an opaque `PortRange`, never a raw port.
+//!   key wire (2026-10-11; keywire.rs) the physical key event frame `[0x90, HID usage, state]` on endpoint 12 (KEY_EP);
+//!            state RELEASE 0 · PRESS 1 · REPEAT 2 · ALL_UP 3
 //!   entry    `_start(role: u64)` in RDI, no return (EXIT); the image is a static ELF linked at 0x40_0000 with no page
 //!            holding both code and writable data (the loader refuses W∧X)
 //! WHAT IS NOT: process spawning, the capability DAG, the shared-memory and display ABIs, the Firmament config page —
 //! a driver needs none of them.
 
 #![cfg_attr(not(test), no_std)]
+#[cfg(test)]
+extern crate std;
 
 use coralos_hal::dma::{check_grant, check_request};
 use coralos_hal::{Coherence, Dma, DmaRefusal, DmaRegion, Irq, IrqRefusal, IrqWait};
+
+pub mod keywire;
+pub mod portio;
 
 /// The syscall numbers.
 pub mod nr {
@@ -35,6 +45,7 @@ pub mod nr {
     pub const CONNECT: u64 = 21;
     pub const TICKS: u64 = 24;
     pub const MMAP: u64 = 25;
+    pub const PORT_IO: u64 = 52;
     pub const WAIT_ANY_IRQ: u64 = 80;
     pub const MMIO_LEN: u64 = 90;
     pub const DMA_ALLOC_TYPED: u64 = 103;
@@ -170,6 +181,16 @@ pub fn wait_outcome(w: u64, line: u32) -> Result<IrqWait, IrqRefusal> {
     }
 }
 
+/// The CPU's time-stamp counter (`rdtsc`). A CPU fact, not a kernel one: a driver calibrates it against [`ticks`] to build
+/// the microsecond delays a controller's protocol is written in.
+#[cfg(target_arch = "x86_64")]
+#[inline]
+pub fn tsc() -> u64 {
+    let (lo, hi): (u32, u32);
+    unsafe { core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi, options(nomem, nostack, preserves_flags)) };
+    (hi as u64) << 32 | lo as u64
+}
+
 /// The task's DMA window.
 pub struct RtDma;
 impl Dma for RtDma {
@@ -203,6 +224,9 @@ impl Irq for RtIrq {
         }
     }
 }
+
+#[cfg(test)]
+mod portio_tests;
 
 #[cfg(test)]
 mod tests {

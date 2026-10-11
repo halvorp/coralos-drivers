@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# i8042.device — the Pixelbook Go / QEMU q35 PS/2 keyboard as a ring-3 CoralOS `.device`. It links ONLY the three public
+# cores (i8042-core: controller + AT keyboard bring-up, atkbd-scancode-core: the byte decoder, hid-input-keyboard-core:
+# Linux keycode -> HID usage) plus coralos-rt (the runtime, MIT OR Apache-2.0) and coralos-hal; no CoralOS-proprietary
+# crate. It emits PHYSICAL key events (rt/src/keywire.rs); layout, modifiers, CapsLock and text are the reader's.
+[package]
+name = "i8042-device"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i8042.device: the PS/2 keyboard controller as a CoralOS ring-3 device, emitting physical key events"
+
+[lib]
+name = "i8042_device"
+path = "src/lib.rs"
+
+[features]
+# Builds the standalone ELF (src/main.rs); off for the library and its host tests.
+entry = []
+
+[[bin]]
+name = "i8042-device"
+path = "src/main.rs"
+test = false
+required-features = ["entry"]
+
+[dependencies]
+coralos-hal = { path = "../../hal" }
+coralos-rt = { path = "../../rt" }
+i8042-core = { path = "../../crates/i8042-core" }
+atkbd-scancode-core = { path = "../../crates/atkbd-scancode-core" }
+hid-input-keyboard-core = { path = "../../crates/hid-input-keyboard-core" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[workspace]

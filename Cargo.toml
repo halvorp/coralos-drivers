@@ -13,4 +13,4 @@
 [workspace]
 resolver = "2"
 members = ["hal", "rt"]
-exclude = ["crates"]
+exclude = ["crates", "devices"]
