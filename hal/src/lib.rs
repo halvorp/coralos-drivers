@@ -1,4 +1,4 @@
-// Copied verbatim from CoralOS userland/coral-hal/src/lib.rs (2026-08-29).
+// Copied verbatim from CoralOS userland/coral-hal/src/lib.rs (2026-10-11).
 //! coral-hal — the shared hardware-access seam: the [`Mmio`] register trait + the
 //! cooperative-wait hooks every EL0 driver busy-wait must use.
 //!
@@ -6,8 +6,23 @@
 //! `mmio_map`'d BAR; a host test satisfies it with a scripted register fake. Moved here from
 //! coral-emmc (which re-exports it, so its consumers are unchanged) — see this crate's
 //! Cargo.toml header for the extraction rationale and the wait-hook doctrine.
+//!
+//! The [`Dma`] (coherent DMA memory) and [`Irq`] (one interrupt line: wait + ack) seams are the
+//! rest of what a DMA driver needs from its host (added 2026-10-11 for the first DMA port, Intel
+//! 9260 iwlwifi); `fake` (feature `fake`) is their scripted host-test backing. The `Mmio` trait
+//! below is unchanged.
 
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(any(test, feature = "fake")), no_std)]
+
+pub mod dma;
+pub mod irq;
+#[cfg(any(test, feature = "fake"))]
+pub mod fake;
+#[cfg(test)]
+mod tests;
+
+pub use dma::{Coherence, Dma, DmaRefusal, DmaRegion};
+pub use irq::{Irq, IrqRefusal, IrqWait};
 
 /// Byte/16/32-bit MMIO access to a device register file. `&mut self` because some reads are
 /// FIFO-consuming (e.g. SDHCI_BUFFER advances the data FIFO) and the host fake needs to mutate.
