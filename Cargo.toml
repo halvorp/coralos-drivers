@@ -12,5 +12,5 @@
 # untestable ones. tools/check-crates-test.sh now fails if any crate stops running its tests.
 [workspace]
 resolver = "2"
-members = ["hal"]
+members = ["hal", "rt"]
 exclude = ["crates"]

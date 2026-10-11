@@ -28,12 +28,17 @@ for MMIO, DMA, IRQ, IPC and logging) that will live in this repository. The `.de
 here too. CoralOS uses a driver only as a separate process, across its process / capability boundary — never by
 linking it into its own binaries.
 
-*Pending:* the runtime crate and the exact system-call surface it exposes are being designed now. Until that design
-lands (see "How CoralOS consumes these crates" in README.md), no runtime crate or `.device` crate exists here, and
-CoralOS depends on nothing in this repository except `coralos-hal`.
+The runtime is `rt/` (`coralos-rt`, MIT OR Apache-2.0), published with the owner's approval on 2026-10-11 ("yes,
+publish rt/ to the drivers repo"). Its header lists every CoralOS ABI fact it makes public: the `syscall` calling
+convention, sixteen system-call numbers, the return words, the DMA out-record and cache argument, and the `_start(role)`
+entry. Anything a driver needs beyond that list is added here deliberately, with the same review — never by linking a
+proprietary CoralOS crate. Still to come: logging/formatting and a heap usable by a GPL `.device`, per-device slot
+numbers, the network and Wi-Fi frame formats, and a kernel call that frees DMA memory.
 
 **D5 — Consumption is pinned.** CoralOS builds consume this repository at a pinned revision, and a check in the
-CoralOS build verifies the pin. *Pending:* designed together with D4's consumption path.
+CoralOS build verifies the pin: a driver crate names this repository as a cargo git dependency with an exact `rev`,
+pinned once in CoralOS's `tools/drivers.lock`, and CoralOS's `tools/check-drivers-pin.sh` fails the build on a branch,
+another rev, a local path, a stale Cargo.lock, or a rev not on this repository's `main`.
 
 **D6 — Primary evidence over summaries.** A hardware fact is taken from primary evidence — the board's firmware or
 recovery image, coreboot, the Linux source, a measurement on the machine — never from an external summary of it.

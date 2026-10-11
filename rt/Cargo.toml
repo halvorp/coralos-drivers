@@ -1,0 +1,18 @@
+# DRAFT — NOT TO BE PUBLISHED WITHOUT OWNER OK (coral_handoffs/atlas/DRIVER-CONSUMPTION-PATH.md).
+#
+# coralos-rt — the minimal ring-3 runtime a GPL-2.0 `.device` driver links INSTEAD of CoralOS's proprietary
+# runtime crates (coral-libuser-x86, coral-sys, coral-firmament-abi, coral-syscall-x86, …). A binary that links a
+# GPL port is a GPL work, so everything it links must be GPL-compatible; this crate is that runtime, under the same
+# permissive licence as `hal/`, so the closed tree may also link it. It states ONLY the kernel ABI facts a device
+# driver needs — the syscall numbers, argument registers, return words and one struct layout listed in src/lib.rs —
+# and implements `coralos-hal`'s Dma / Irq seams over them.
+[package]
+name = "coralos-rt"
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "DRAFT: the minimal CoralOS x86_64 ring-3 syscall surface a GPL .device driver links"
+publish = false
+
+[dependencies]
+coralos-hal = { path = "../hal" }
