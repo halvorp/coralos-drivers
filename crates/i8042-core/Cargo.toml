@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/input/serio/i8042.c, drivers/input/serio/i8042.h, include/linux/i8042.h,
+# drivers/input/serio/libps2.c and drivers/input/keyboard/atkbd.c (the keyboard-command half).
+# Original copyright: Vojtech Pavlik, Dmitry Torokhov, and the Linux input authors.
+
+[package]
+name = "i8042-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+# The typing vectors drive the controller's output through the existing decoder and keycode->usage
+# ports, end to end; production code depends on neither.
+[dev-dependencies]
+atkbd-scancode-core = { path = "../atkbd-scancode-core" }
+hid-input-keyboard-core = { path = "../hid-input-keyboard-core" }
+
+[workspace]
