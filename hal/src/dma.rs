@@ -1,0 +1,84 @@
+// Copied verbatim from CoralOS userland/coral-hal/src/dma.rs (2026-10-11).
+//! The [`Dma`] seam — coherent DMA memory a driver hands to its device (the first consumer: the Intel 9260 iwlwifi
+//! port's TX/RX rings, ICT table, keep-warm page and firmware sections).
+//!
+//! ONE CALL, NO FREE. A host OS backs [`Dma::alloc_coherent`] with fresh, zeroed, physically-contiguous pages; a host
+//! test backs it with the scripted fake (`fake::FakeDma`). There is deliberately no `free`: CoralOS has no call that
+//! returns a DMA grant before the task ends (the grant lives in the task's DMA window and goes back with the task), so
+//! a `free` here would be a nominal call that frees nothing. A driver allocates its rings once at bring-up and reuses
+//! them, as Linux's iwlwifi does across firmware restarts. Add `free` when a host can honour it.
+//!
+//! THE CACHE RULE is [`Coherence`]: the driver says whether its DEVICE snoops CPU caches, and the host picks the CPU
+//! memory type from that — never the other way round.
+
+/// Whether the device's DMA snoops the CPU caches — the one fact that decides how the CPU must map the region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Coherence {
+    /// The device SNOOPS CPU caches: PCIe bus-master DMA through the root complex (iwlwifi, xHCI, NVMe, r8169). The
+    /// region is mapped WRITE-BACK and needs no cache maintenance; the driver orders its writes before the doorbell with
+    /// a store fence. (Linux `dma_alloc_coherent` on x86.)
+    Snooped,
+    /// The device does NOT snoop: e.g. a GPU engine with no last-level cache shared with the CPU (Cherry Trail). The
+    /// region is mapped WRITE-COMBINING, so a CPU write never sits in a cache line the device cannot see; a store fence
+    /// publishes the writes before the doorbell. A host that cannot map WC refuses ([`DmaRefusal::CacheTypeUnavailable`])
+    /// rather than answer with a write-back page. (Linux `intel_gt_coherent_map_type`: WB with an LLC, WC without.)
+    NonSnooped,
+}
+
+/// The largest alignment a request may name: one 4 KiB page. A host's grants are page-aligned, so any power of two up to
+/// a page is met by construction; iwlwifi's strictest (the 4 KiB ICT table) is exactly a page.
+pub const DMA_MAX_ALIGN: usize = 4096;
+
+/// A granted region: the CPU's address of it, the address the DEVICE is programmed with, and the length asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaRegion {
+    pub virt: u64,
+    pub phys: u64,
+    pub len: usize,
+}
+
+/// Why nothing was granted. Every variant names what refused and the value it refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmaRefusal {
+    /// A zero-byte region was asked for.
+    ZeroLength,
+    /// `align` is not a power of two, or is above [`DMA_MAX_ALIGN`].
+    BadAlign { align: usize },
+    /// The host granted a run whose physical address breaks the asked alignment (a host defect, named, never used).
+    Misplaced { phys: u64, align: usize },
+    /// More than the task's DMA budget.
+    OverQuota { len: usize },
+    /// No physically-contiguous run of that length.
+    OutOfMemory { len: usize },
+    /// [`Coherence::NonSnooped`] on a CPU the host cannot map write-combining.
+    CacheTypeUnavailable,
+    /// Any other refusal word the host returned, as itself.
+    Host(u64),
+}
+
+/// Coherent DMA memory for one driver.
+pub trait Dma {
+    /// `len` bytes (the host rounds up to whole pages), zeroed and physically contiguous, its physical address a
+    /// multiple of `align`, mapped for the CPU as `coherence` requires. Nothing is held on a refusal.
+    fn alloc_coherent(&mut self, len: usize, align: usize, coherence: Coherence) -> Result<DmaRegion, DmaRefusal>;
+}
+
+/// The request checks every host makes before it asks for memory: a non-zero length and a power-of-two alignment no
+/// larger than a page.
+pub fn check_request(len: usize, align: usize) -> Result<(), DmaRefusal> {
+    if len == 0 {
+        return Err(DmaRefusal::ZeroLength);
+    }
+    if !align.is_power_of_two() || align > DMA_MAX_ALIGN {
+        return Err(DmaRefusal::BadAlign { align });
+    }
+    Ok(())
+}
+
+/// The check every host makes on what it was granted: the physical address meets the alignment.
+pub fn check_grant(phys: u64, align: usize) -> Result<(), DmaRefusal> {
+    if phys % align as u64 != 0 {
+        return Err(DmaRefusal::Misplaced { phys, align });
+    }
+    Ok(())
+}

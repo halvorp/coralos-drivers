@@ -6,6 +6,10 @@ edition = "2021"
 # and a host test satisfies with a scripted register fake. Copied verbatim from the CoralOS tree's
 # coral-hal so the ported drivers compile standalone.
 license = "MIT OR Apache-2.0"
-description = "Minimal MMIO + cooperative-wait trait surface the coralos-drivers ports are written against"
+description = "Minimal MMIO + cooperative-wait, coherent-DMA and interrupt-line trait surface the coralos-drivers ports are written against"
+
+[features]
+# The scripted Dma/Irq fakes (src/fake.rs, needs std) for the ports' host tests.
+fake = []
 
 [dependencies]
