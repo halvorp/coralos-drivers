@@ -1,4 +1,4 @@
-// Copied verbatim from CoralOS userland/coral-hal/src/dma.rs (2026-10-11).
+// Provenance: first mirrored from CoralOS userland/coral-hal/src/dma.rs (2026-10-11, DECISIONS.md D3); this file is now its own source of truth - `Dma::alloc` (commit 77c0858) is an addition made here.
 //! The [`Dma`] seam — coherent DMA memory a driver hands to its device (the first consumer: the Intel 9260 iwlwifi
 //! port's TX/RX rings, ICT table, keep-warm page and firmware sections).
 //!
