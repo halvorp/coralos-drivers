@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/display/{intel_dmc.c, intel_dmc_regs.h, intel_display_regs.h}.
+# Original copyright: Intel Corporation and the i915 authors.
+
+[package]
+name = "i915-firmware-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 DMC (CSR) firmware package parsing + validation for Kaby Lake; yields a write plan, performs no MMIO"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
