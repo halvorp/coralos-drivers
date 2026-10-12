@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/{i915_pci.c, gt/intel_sseu.c, gt/intel_gt_clock_utils.c, display/intel_display_device.c,
+# gt/intel_engine_types.h, intel_device_info.h}, include/drm/intel/pciids.h (v7.0-rc6). Original copyright: Intel Corporation.
+[package]
+name = "i915-devinfo-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 PCI id -> PlatformDescriptor (Gen9 SKL/KBL rows + the CHV negative control), GT topology and timestamp-clock decode"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+i915-gt-regs-core = { path = "../i915-gt-regs-core" }
+
+[workspace]

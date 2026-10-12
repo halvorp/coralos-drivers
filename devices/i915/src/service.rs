@@ -1,11 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The device's entry: the real windows, the task log, and the parked request loop.
 use crate::log::{emit, Log};
-use crate::regio::{BAR0_SLOT, CFG_HEADER_BYTES, CFG_SLOT, READOUT_WINDOW_BYTES};
-use crate::startup::startup;
+use crate::regio::{BarMmio, Clock, BAR0_NEED_BYTES, BAR0_SLOT, BAR0_WRITE_RANGES, CFG_HEADER_BYTES, CFG_SLOT};
+use crate::startup::bringup;
 use crate::wire::{exit_code, handle, PACE_MS, REPLY_EP, REQUEST_BUF, SERVICE_EP};
-use coralos_rt::mmio::{Kernel, ReadWindow};
+use coralos_rt::mmio::{Kernel, ReadWindow, WriteWindow};
 use coralos_rt::{exit, recv, send, write};
+
+/// The kernel's `TICKS` (system call 24), read as milliseconds (kernel/src/arch/x86_64/apic.rs documents `TIMER_TICKS` as ms).
+struct Ticks;
+impl Clock for Ticks {
+    fn now_ms(&mut self) -> u64 {
+        coralos_rt::ticks()
+    }
+}
 
 struct TaskLog;
 impl Log for TaskLog {
@@ -23,7 +31,8 @@ pub fn on_panic() -> ! {
 /// The device. Exit codes are in [`exit_code`]; the log line before an exit names the step.
 pub fn service() -> ! {
     let mut lg = TaskLog;
-    emit(&mut lg, format_args!("[I915-KBL-DEV LAUNCH] bar0=mmio-slot-{} config=mmio-slot-{} (read-only)", BAR0_SLOT, CFG_SLOT));
+    emit(&mut lg, format_args!("[I915-KBL-DEV LAUNCH] bar0=mmio-slot-{} (writes: forcewake set x{} only) config=mmio-slot-{} (read-only)", BAR0_SLOT, BAR0_WRITE_RANGES.len(), CFG_SLOT));
+    emit(&mut lg, format_args!("[I915-CONTRACT abi={} wire={}.{} write_allow={}]", i915_common_core::CONTRACT_ABI, i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, BAR0_WRITE_RANGES.len()));
     let mut cfg = match ReadWindow::open(&mut Kernel, CFG_SLOT, CFG_HEADER_BYTES) {
         Ok(w) => w,
         Err(e) => {
@@ -31,15 +40,18 @@ pub fn service() -> ! {
             exit(exit_code::NO_WINDOW)
         }
     };
-    let mut bar = match ReadWindow::open(&mut Kernel, BAR0_SLOT, READOUT_WINDOW_BYTES) {
-        Ok(w) => w,
+    let mut bar = match WriteWindow::open(&mut Kernel, BAR0_SLOT, BAR0_NEED_BYTES, &BAR0_WRITE_RANGES) {
+        Ok(w) => BarMmio::new(w, Ticks),
         Err(e) => {
             emit(&mut lg, format_args!("[I915-KBL-DEV FAIL step=BAR0-WINDOW why={}]", e.name()));
             exit(exit_code::NO_WINDOW)
         }
     };
-    if startup(&mut bar, &mut cfg, &mut lg).is_err() {
-        exit(exit_code::STARTUP_FAILED) // startup already printed the named line
+    match bringup(&mut bar, &mut cfg, &mut lg) {
+        Ok(_) => {}
+        // the failing stage already printed its named line
+        Err(crate::startup::BringupError::Proof(_)) | Err(crate::startup::BringupError::Window(_)) => exit(exit_code::PROOF_FAILED),
+        Err(_) => exit(exit_code::STARTUP_FAILED),
     }
     emit(&mut lg, format_args!("[I915-KBL-DEV PARKED] every request is answered UNSUPPORTED (HELLO excepted); request ep {} reply ep {}", SERVICE_EP, REPLY_EP));
     let mut buf = [0u8; REQUEST_BUF];
