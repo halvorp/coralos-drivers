@@ -122,8 +122,8 @@ impl Gem {
         let slot = self.session_slot(session)?;
         let id = self.lookup(slot, handle)?; // __assign_mmap_offset_handle, gem/i915_gem_mman.c:806-826
         // mmap_offset_attach (gem/i915_gem_mman.c:719-770): reuse the existing node for (object, type), else add one (drm_vma_offset_add).
-        if let Some(o) = self.mmap.offsets.iter().flatten().find(|o| o.obj == id && o.kind == kind) {
-            return Ok(MmapGrant { offset: o.offset, kind, cache: kind.cpu_cache() }); // lookup_mmo + drm_vma_node_allow_once, gem/i915_gem_mman.c:727-729, gem/i915_gem_mman.c:762-763
+        if let Some(o) = self.mmap.offsets.iter().flatten().find(|o| o.obj == id && o.kind == kind && o.session as usize == slot) {
+            return Ok(MmapGrant { offset: o.offset, kind, cache: kind.cpu_cache() }); // lookup_mmo + drm_vma_node_allow_once, gem/i915_gem_mman.c:727-729, gem/i915_gem_mman.c:762-763; the node is per (object, type, SESSION): a PRIME importer is allowed on its own
         }
         let size = self.obj(id).map_or(0, |o| o.size);
         let at = match self.mmap.offsets.iter().position(|o| o.is_none()) {

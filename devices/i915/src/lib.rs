@@ -36,6 +36,7 @@ pub mod report;
 #[cfg(target_arch = "x86_64")]
 pub mod service;
 pub mod startup;
+pub mod uapi;
 pub mod wire;
 
 pub use startup::{bringup, startup, BringupError, Ready, StartError};

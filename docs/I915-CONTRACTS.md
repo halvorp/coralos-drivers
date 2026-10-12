@@ -218,3 +218,14 @@ RUNTIME-TABLES-HAVE-NO-CAP, DECISIONS.md D10), so a `Gem` is a handful of empty 
   `i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST` (exactly `PLANE_SURF` of PLANE_1 on pipe A) as its `WriteGuard` list; the
   device's own allow-list is NOT widened by this change. The pipe-enable transaction (`enable::build_enable`) needs a separate,
   owner-attended allow-list decision before anything executes it.
+
+## 8. The uAPI service (feature `p3-exec`, `devices/i915/src/uapi`)
+
+ABI 1.1 of `i915-wire` adds one opcode per i915 call (`wire/i915-wire/src/msg/`): sessions, GETPARAM / QUERY / REG-READ, the GEM object
+calls, contexts / VMs / reset stats, EXECBUFFER2 (flattened: objects + relocations + fences + timeline extension in one payload),
+syncobj / timeline / sync_file, PRIME and the dma-buf sync bridge. A reply payload is `status: u32`, `errno: i32` (`0` or `-errno`), then
+a fixed body. Wire bounds are VALIDATION limits; no table is sized by them. The default build answers every one of these `Unsupported`
+with the reason `INCREMENT-NOT-ENABLED` (`uapi::frame`); with `p3-exec` the `UapiService` serves them over gem-core, uapi-core,
+syncobj-core and the executor. Blocking calls (GEM-WAIT, SYNCOBJ-WAIT, SYNC-FILE-WAIT) are PARKED and answered by `poll()` with the
+same request id. Not wired yet: the live endpoint loop (`service.rs` still answers 1.1 frames Unsupported); the next increment owns
+receive-buffer sizing and the peer-death notification that calls `session_dead`.

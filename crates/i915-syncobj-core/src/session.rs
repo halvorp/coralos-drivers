@@ -477,6 +477,11 @@ impl Sync {
         let o = self.objs.obj(id)?;
         Some((o.has_fence(), !o.chain.is_empty()))
     }
+    /// The status of the fence that signals `(handle, point)` right now, without allocating: `None` when there is no such fence (yet).
+    pub fn wait_status(&self, session: u64, handle: u32, point: u64) -> Option<FenceStatus> {
+        let id = self.lookup(session, handle).ok()?;
+        self.objs.point_status(id, point).ok().flatten()
+    }
     /// Chain nodes the syncobj holds (the garbage-collection observable); 0 for a binary one.
     pub fn timeline_points(&self, session: u64, handle: u32) -> usize {
         self.lookup(session, handle).ok().and_then(|id| self.objs.obj(id)).map_or(0, |o| o.chain.len())

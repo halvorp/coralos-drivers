@@ -91,6 +91,9 @@ pub struct EngineRig {
     /// Resets executed (engine or full).
     pub epoch: u32,
     pub proof: ExecProof,
+    /// While set, [`EngineRig::kick`] dequeues nothing: requests stay queued in their rings. The uAPI service sets it while a queued
+    /// request still waits on a fence (the in-order engine cannot overtake it), and clears it when the fence signals.
+    pub hold: bool,
 }
 
 /// The status page as a [`HwspSink`].
@@ -119,7 +122,7 @@ impl EngineRig {
         if cfg.status_page_ggtt != hwsp_ggtt || hwsp.len < 4096 {
             return Err(ExecError::Layout { what: "status page object vs EngineConfig::status_page_ggtt" });
         }
-        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), epoch: 0, proof: ExecProof::default() })
+        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), epoch: 0, proof: ExecProof::default(), hold: false })
     }
 
     fn hwsp_sink<'a, D: Dma, M: CpuMem>(&self, gm: &'a mut GpuMem<D, M>) -> Hwsp<'a, D, M> {
@@ -197,6 +200,13 @@ impl EngineRig {
     /// Build one request on `ctx` (the batch at `batch.offset`) in its ring and, if the engine can, submit it. Returns the request
     /// and whether the ELSP was written.
     pub fn submit_batch<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, ex: &mut Executor<B>, gm: &mut GpuMem<D, M>, log: &mut L, ctx: u32, batch: &BatchSpec, now: u64) -> Result<(RequestRef, bool), ExecError> {
+        let rq = self.build_request(gm, ctx, batch)?;
+        let sent = self.kick(ex, gm, log, now)?;
+        Ok((rq, sent))
+    }
+
+    /// Build one request on `ctx`'s ring (load the ring, `Engine::build_request`, store the changed dwords, flush) WITHOUT dequeuing.
+    pub fn build_request<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, ctx: u32, batch: &BatchSpec) -> Result<RequestRef, ExecError> {
         let o = self.objs(ctx)?;
         let mut mem = [0u32; RING_DWORDS];
         for (i, d) in mem.iter_mut().enumerate() {
@@ -210,12 +220,27 @@ impl EngineRig {
             }
         }
         gm.flush(o.ring.device_addr, RING_BYTES)?;
-        let sent = self.kick(ex, gm, log, now)?;
-        Ok((rq, sent))
+        Ok(rq)
+    }
+
+    /// Forget a context the engine can drop (`Engine::destroy_context`: refused while it has requests in flight) and hand back its objects.
+    pub fn remove_context(&mut self, ctx: u32) -> Result<CtxObjects, ExecError> {
+        let o = self.objs(ctx)?;
+        self.engine.destroy_context(ctx)?;
+        self.objs[ctx as usize] = None;
+        Ok(o)
+    }
+
+    /// The engine context's objects (the image and ring grants), if the context exists.
+    pub fn context_objects(&self, ctx: u32) -> Option<CtxObjects> {
+        self.objs.get(ctx as usize).copied().flatten()
     }
 
     /// `execlists_dequeue`, and if it yields a submission, execute it. Returns whether the ELSP was written.
     pub fn kick<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, ex: &mut Executor<B>, gm: &mut GpuMem<D, M>, log: &mut L, now: u64) -> Result<bool, ExecError> {
+        if self.hold {
+            return Ok(false);
+        }
         match self.engine.dequeue(now)? {
             None => Ok(false),
             Some(plan) => {
