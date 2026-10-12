@@ -38,7 +38,7 @@ pub struct TilingReply {
     pub swizzle_mode: u32,
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// `i915_gem_create_ioctl` (gem/i915_gem_create.c:224-244): a SYSTEM object.
     pub fn create(&mut self, session: SessionId, size: u64) -> Result<Created, GemError> {
         self.create_object(session, size)

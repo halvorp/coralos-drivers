@@ -300,7 +300,7 @@ impl GemError {
 fn mem_errno(e: &MemError) -> i32 {
     match e {
         MemError::NoSpace { .. } | MemError::RangeOccupied { .. } => ENOSPC,
-        MemError::VmaTableFull { .. } | MemError::TableTableFull { .. } | MemError::TablePageRefused { .. } | MemError::PlanTooLarge { .. } => ENOMEM,
+        MemError::OutOfMemory { .. } | MemError::TablePageRefused { .. } => ENOMEM,
         _ => EINVAL,
     }
 }

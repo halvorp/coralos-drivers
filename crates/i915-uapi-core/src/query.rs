@@ -16,6 +16,8 @@ use crate::types::{
     engine_class, memory_class, EngineInfo, MemoryRegionInfo, QueryItem, TopologyInfoHeader, QUERY_LIST_HEADER_BYTES,
 };
 
+/// KEPT AS VALIDATION (D10 / RUNTIME-TABLES-HAVE-NO-CAP): this refuses a malformed single request; it is not a storage table (the reply is written into the caller's own buffer). It is a
+/// port bound, not a Linux rule.
 /// This port's bound on items per call (Linux iterates `num_items` without a bound; there are 7 query ids).
 pub const MAX_QUERY_ITEMS: u32 = 16;
 pub const QUERY_REQUEST_HEADER_BYTES: usize = 8;

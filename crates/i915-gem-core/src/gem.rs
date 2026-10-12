@@ -6,7 +6,6 @@ use crate::active::Active;
 use crate::context::Context;
 use crate::error::GemError;
 use crate::ids::{handle_of, ObjId, SessionId, HANDLE_IDX_MASK, HANDLE_MAX_GEN};
-use crate::limits::{DEFAULT_TABLES, DEFAULT_VMAS};
 use crate::table::{self, Quota, Slab};
 use alloc::vec::Vec;
 use crate::mman::MmapTables;
@@ -49,7 +48,7 @@ pub(crate) struct Session {
 
 /// The GEM state of one device. `V`/`T` are the VMA and page-table capacities `i915-memory-core` gives each address space; every table
 /// of THIS crate is a growable collection (see `table.rs`), so a `Gem` is a handful of empty vectors until it is used.
-pub struct Gem<const V: usize = DEFAULT_VMAS, const T: usize = DEFAULT_TABLES> {
+pub struct Gem {
     pub(crate) dev: UapiDevice,
     pub(crate) cfg: GemConfig,
     pub(crate) quota: Quota,
@@ -57,7 +56,7 @@ pub struct Gem<const V: usize = DEFAULT_VMAS, const T: usize = DEFAULT_TABLES> {
     pub(crate) sessions: Vec<Option<Session>>,
     pub(crate) objects: Slab<Object>,
     pub(crate) contexts: Vec<Option<Context>>,
-    pub(crate) vms: Vec<Option<Vm<V, T>>>,
+    pub(crate) vms: Vec<Option<Vm>>,
     pub(crate) active: Active,
     pub(crate) mmap: MmapTables,
     /// `i915_reset_count(&i915->gpu_error)`.
@@ -73,7 +72,7 @@ pub(crate) fn place<T>(v: &mut Vec<Option<T>>, x: T, q: &mut Quota, table: &'sta
     table::push(v, Some(x), q, table)
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     pub fn new(dev: UapiDevice, cfg: GemConfig) -> Self {
         Gem {
             dev,

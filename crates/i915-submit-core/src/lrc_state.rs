@@ -14,6 +14,7 @@ use i915_common_core::reg::{masked_bit_disable, masked_bit_enable};
 use i915_gt_regs_core as r;
 
 /// Dwords in the state page.
+// KEPT FIXED (D10): the context register-state image is one 4 KiB page - hardware layout.
 pub const PAGE_DWORDS: usize = 1024;
 
 /// `ce->lrc_reg_state`: the second page of the context image as dwords.

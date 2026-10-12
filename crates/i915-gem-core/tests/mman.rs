@@ -5,7 +5,7 @@ use common::*;
 use i915_gem_core::*;
 use i915_uapi_core::consts::misc as m;
 
-type R = Rig<16, 16>;
+type R = Rig;
 
 const GTT: u64 = m::I915_MMAP_OFFSET_GTT as u64;
 const WC: u64 = m::I915_MMAP_OFFSET_WC as u64;
@@ -16,7 +16,7 @@ const FIXED: u64 = m::I915_MMAP_OFFSET_FIXED as u64;
 fn rig_with(pat: bool, aperture: bool) -> R {
     let mut d = dev();
     d.ggtt_has_aperture = aperture;
-    let mut gem: Gem<16, 16> = Gem::new(d, GemConfig { pat_enabled: pat });
+    let mut gem: Gem = Gem::new(d, GemConfig { pat_enabled: pat });
     let mut sink = Sink::default();
     let mut pool = Pool::new();
     let init = pool.init();

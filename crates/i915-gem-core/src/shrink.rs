@@ -23,7 +23,7 @@ pub struct ShrinkReport {
     pub skipped_framebuffer: u32,
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// `i915_gem_shrink` over the purge list: release purgeable objects until `target_pages` are free or none are left.
     pub fn shrink(&mut self, target_pages: u64, sink: &mut dyn EffectSink) -> ShrinkReport {
         let mut rep = ShrinkReport::default();

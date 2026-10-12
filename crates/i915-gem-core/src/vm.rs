@@ -3,6 +3,7 @@
 //! objects to its VMAs. `GEM_VM_CREATE`/`GEM_VM_DESTROY`, per-context default VMs, and the bind/unbind helpers the execbuffer,
 //! shrinker and close paths share. Ported from gem/i915_gem_context.c (gem/i915_gem_context.c:1806-1868, gem/i915_gem_context.c:1603-1640), i915_vma.c (`i915_vma_instance`,
 //! `i915_vma_unbind`) and gt/gen8_ppgtt.c via `i915-memory-core` (v7.0-rc6).
+use alloc::vec::Vec;
 use crate::error::GemError;
 use crate::gem::Gem;
 use crate::ids::{ObjId, SessionId, VmId};
@@ -19,15 +20,15 @@ pub(crate) struct Vma {
     pub size: u64,
 }
 
-pub(crate) struct Vm<const V: usize, const T: usize> {
-    pub gtt: Gtt<V, T>,
+pub(crate) struct Vm {
+    pub gtt: Gtt,
     pub init: PpgttInit,
     /// Holders: user-visible VM ids plus contexts (`kref`, `i915_vm_get`).
     pub refs: u16,
-    pub vmas: [Option<Vma>; V],
+    pub vmas: Vec<Option<Vma>>,
 }
 
-impl<const V: usize, const T: usize> Vm<V, T> {
+impl Vm {
     pub(crate) fn vma_of(&self, obj: ObjId) -> Option<(usize, VmaId)> {
         self.vmas.iter().enumerate().find_map(|(i, v)| match v {
             Some(v) if v.obj == obj => Some((i, v.id)),
@@ -35,9 +36,19 @@ impl<const V: usize, const T: usize> Vm<V, T> {
         })
     }
     pub(crate) fn record(&mut self, obj: ObjId, id: VmaId, size: u64) -> Result<(), GemError> {
-        // plan_bind already enforced V; the record table has the same capacity, so a free slot always exists.
-        let slot = self.vmas.iter().position(|v| v.is_none()).ok_or(GemError::Memory(i915_memory_core::MemError::VmaTableFull { cap: V }))?;
+        // `ensure_record_slot` ran before the plan was made, so a free slot exists and this cannot allocate.
+        let slot = self.vmas.iter().position(|v| v.is_none()).ok_or(GemError::Memory(i915_memory_core::MemError::OutOfMemory { what: "vma record" }))?;
         self.vmas[slot] = Some(Vma { obj, id, size });
+        Ok(())
+    }
+    /// Make sure a free record slot exists (growing the record list fallibly), BEFORE a bind is planned, so a refusal leaves no
+    /// orphan node in the address space. The list has no compile-time cap (RUNTIME-TABLES-HAVE-NO-CAP, D10).
+    pub(crate) fn ensure_record_slot(&mut self) -> Result<(), i915_memory_core::MemError> {
+        if self.vmas.iter().any(|v| v.is_none()) {
+            return Ok(());
+        }
+        self.vmas.try_reserve(1).map_err(|_| i915_memory_core::MemError::OutOfMemory { what: "vma record" })?;
+        self.vmas.push(None);
         Ok(())
     }
     pub(crate) fn forget_vma(&mut self, id: VmaId) {
@@ -49,13 +60,13 @@ impl<const V: usize, const T: usize> Vm<V, T> {
     }
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// `i915_ppgtt_create` (gt/intel_ppgtt.c via `gen8_ppgtt_create`): a new address space on the executor's pages. The initial
     /// clear of the new space is emitted as an unbind plan.
     pub(crate) fn create_vm_slot(&mut self, init: PpgttInit, sink: &mut dyn EffectSink) -> Result<u32, GemError> {
-        let (gtt, plan) = Gtt::<V, T>::new_ppgtt(&self.dev.desc, &init)?;
+        let (gtt, plan) = Gtt::new_ppgtt(&self.dev.desc, &init)?;
         // Grow the table BEFORE the plan is emitted: a refusal leaves no VM and no effect.
-        let i = place(&mut self.vms, Vm { gtt, init, refs: 0, vmas: [None; V] }, &mut self.quota, "vms")?;
+        let i = place(&mut self.vms, Vm { gtt, init, refs: 0, vmas: Vec::new() }, &mut self.quota, "vms")?;
         sink.unbind(VmId(i as u32), &plan);
         Ok(i as u32)
     }

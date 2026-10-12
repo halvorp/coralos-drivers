@@ -7,7 +7,7 @@ use i915_gem_core::*;
 use i915_uapi_core::consts::ctx_param as cp;
 use i915_uapi_core::consts::exec_object as eo;
 
-type R = Rig<16, 16>;
+type R = Rig;
 
 /// Submit `(write, batch)` on context 0 and return what the engine built.
 fn submit(r: &mut R, write: u32, batch: u32, now: u64) -> ExecDone {

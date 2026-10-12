@@ -33,6 +33,8 @@ impl Wa {
     }
 }
 
+/// KEPT FIXED (D10): `N` is the size of one platform's static workaround table (Linux `wal` for an engine/GT), known per platform - a
+/// hardware sequence, not a client population.
 /// A sorted, merged workaround list of at most `N` registers. `name`/`engine` are Linux's `wal->name` / `wal->engine_name`.
 #[derive(Clone, Copy, Debug)]
 pub struct WaList<const N: usize> {

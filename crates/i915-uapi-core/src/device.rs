@@ -23,6 +23,7 @@ pub struct UabiEngines {
     len: usize,
 }
 
+/// KEPT AS VALIDATION (D10 / RUNTIME-TABLES-HAVE-NO-CAP): the engine set is fused into the part - hardware, not a client population.
 /// RCS0 + BCS0 + VCS0..1 + VECS0 are all the engines a carried Gen9 row can have.
 pub const MAX_UABI_ENGINES: usize = 5;
 

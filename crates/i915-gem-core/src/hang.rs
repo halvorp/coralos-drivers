@@ -29,7 +29,7 @@ pub struct ResetStats {
     pub batch_pending: u32,
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// `__i915_request_reset(rq, guilty)` (gt/intel_reset.c:125-): the engine reset found `(engine, engine_ctx, seqno)` guilty or
     /// innocent. `now_ms` is the caller's monotonic clock in milliseconds.
     pub fn request_reset(&mut self, engine: usize, engine_ctx: u32, seqno: u32, guilty: bool, now_ms: u64) -> Result<ResetVerdict, GemError> {

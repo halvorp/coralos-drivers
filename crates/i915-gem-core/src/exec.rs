@@ -103,7 +103,7 @@ fn retryable(e: &MemError) -> bool {
     matches!(e, MemError::NoSpace { .. } | MemError::RangeOccupied { .. }) // -ENOSPC drives the next pass, gem/i915_gem_execbuffer.c:816-817
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// A uAPI "no such object" for a handle that belongs to another session keeps its name (`CROSS-SESSION-HANDLE`).
     fn reclassify(&self, slot: usize, e: UapiError) -> GemError {
         if let UapiError::ExecObjectMissing { handle } = e {
@@ -148,7 +148,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     fn evict_vm(&mut self, vi: usize, sink: &mut dyn EffectSink) -> u32 {
         let mut n = 0;
         let Some(vm) = self.vms[vi].as_mut() else { return 0 };
-        for i in 0..V {
+        for i in 0..vm.vmas.len() {
             let Some(v) = vm.vmas[i] else { continue };
             if let Ok(plan) = vm.gtt.plan_unbind(v.id) {
                 vm.vmas[i] = None;
@@ -190,12 +190,13 @@ impl<const V: usize, const T: usize> Gem<V, T> {
         let pg = pages.pages(eb.obj).ok_or(MemError::NotBound { id: eb.obj.index() })?;
         let req = BindRequest { pages: pg, size, alignment: e.alignment, guard: 0, cache, flags: 0, place };
         let vm = self.vms[vi].as_mut().ok_or(MemError::NotBound { id: vi as u32 })?;
+        vm.ensure_record_slot()?;
         let plan = vm.gtt.plan_bind(tables, &req)?;
         for v in plan.evicted() {
             vm.forget_vma(*v); // victims are unbound by this plan
             *evicted += 1;
         }
-        vm.record(eb.obj, plan.vma(), size).map_err(|_| MemError::VmaTableFull { cap: V })?;
+        vm.record(eb.obj, plan.vma(), size).map_err(|_| MemError::OutOfMemory { what: "vma record" })?;
         let _ = vm.gtt.set_pinned(plan.vma(), true);
         eb.vma = Some(plan.vma());
         eb.offset = plan.offset();

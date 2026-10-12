@@ -9,7 +9,7 @@ use i915_uapi_core::consts::ctx_param as cp;
 use i915_uapi_core::consts::exec as ef;
 use i915_uapi_core::consts::misc as m;
 
-type R = Rig<16, 16>;
+type R = Rig;
 
 fn p(param: u64, value: u64) -> ContextParam<'static> {
     ContextParam::new(param, value)

@@ -11,6 +11,7 @@ use crate::error::{Bound, ClockError, Handshake};
 use crate::pcode::PcodeOp;
 use i915_common_core::Reg;
 
+/// KEPT FIXED (D10): a plan is a HARDWARE SEQUENCE whose longest form is known (15 steps); it holds no client-driven population.
 /// Capacity of one plan. The longest planned sequence (a CDCLK change that also moves the VCO) is 15 steps; 32 leaves room
 /// and a longer plan is refused with [`ClockError::PlanFull`], never truncated.
 pub const PLAN_CAP: usize = 32;
