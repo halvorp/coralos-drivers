@@ -16,6 +16,8 @@
 //!   port I/O (2026-10-11, Astra's ruling; portio.rs) PORT_IO ops IN8/OUT8/IN16/OUT16/IN32/OUT32 = 0..5 and QUERY = 6;
 //!            refusal u64::MAX; QUERY(slot) = `base | len << 16 | rights << 32`; rights IN 1 · OUT 2 · W8 4 · W16 8 · W32 16;
 //!            4 slots. A driver holds an opaque `PortRange`, never a raw port.
+//!   read-only MMIO (2026-10-12; mmio.rs) `ReadWindow`: the loader's window in a slot, MMIO_MAP / MMIO_LEN above; read8/16/32 at an
+//!            OFFSET checked against the granted length and the width; no write is exposed. No new system call or number.
 //!   key wire (2026-10-11; keywire.rs) the physical key event frame `[0x90, HID usage, state]` on endpoint 12 (KEY_EP);
 //!            state RELEASE 0 · PRESS 1 · REPEAT 2 · ALL_UP 3
 //!   entry    `_start(role: u64)` in RDI, no return (EXIT); the image is a static ELF linked at 0x40_0000 with no page
@@ -31,6 +33,7 @@ use coralos_hal::dma::{check_grant, check_request};
 use coralos_hal::{Coherence, Dma, DmaRefusal, DmaRegion, Irq, IrqRefusal, IrqWait};
 
 pub mod keywire;
+pub mod mmio;
 pub mod portio;
 
 /// The syscall numbers.
@@ -225,6 +228,8 @@ impl Irq for RtIrq {
     }
 }
 
+#[cfg(test)]
+mod mmio_tests;
 #[cfg(test)]
 mod portio_tests;
 

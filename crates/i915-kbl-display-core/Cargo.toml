@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/display/{intel_display.c, intel_ddi.c, intel_dpll_mgr.c, intel_cdclk.c,
+# skl_universal_plane.c, skl_scaler.c, intel_display_power_well.c, intel_display_device.c, intel_display_regs.h,
+# skl_universal_plane_regs.h}, drivers/gpu/drm/i915/i915_pci.c and include/drm/intel/pciids.h (the READ side only).
+# Original copyright: Intel Corporation and the i915 authors.
+
+[package]
+name = "i915-kbl-display-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "Kaby Lake (Gen9.5, display ver 9) display state readout: the registers Linux reads at takeover, decoded"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

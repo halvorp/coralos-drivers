@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# i915.device — the Intel integrated GPU as a ring-3 CoralOS `.device` (public, GPL). STEP 2 of Astra's Kaby Lake GPU
+# ruling: a skeleton that proves the public device boundary and READS the display state the firmware left, writing
+# nothing. It links ONLY the display readout core (i915-kbl-display-core) plus coralos-rt (the runtime, MIT OR Apache-2.0)
+# and coralos-hal; no CoralOS-proprietary crate (in particular none of coral-i915-gem or coral-drm-driver).
+# The port is Kaby Lake's; Gen8 (Cherry Trail) rows migrate into this one device later, by runtime dispatch.
+[package]
+name = "i915-device"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915.device: PCI identity, grant-bounded read-only MMIO, Kaby Lake display readout, explicit unsupported replies"
+
+[lib]
+name = "i915_device"
+path = "src/lib.rs"
+
+[features]
+# Builds the standalone ELF (src/main.rs); off for the library and its host tests.
+entry = []
+
+[[bin]]
+name = "i915-device"
+path = "src/main.rs"
+test = false
+required-features = ["entry"]
+
+[dependencies]
+coralos-rt = { path = "../../rt" }
+i915-kbl-display-core = { path = "../../crates/i915-kbl-display-core" }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[workspace]
