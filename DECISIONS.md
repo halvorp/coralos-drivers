@@ -90,3 +90,13 @@ region and a request larger than a chunk; null on a refused first or later reser
 `Vec` under it as the global allocator. The CoralOS-side wrapper of `i915.device` must declare the same `#[global_allocator]` (as
 `devices/i915/src/main.rs` does). The mechanism is the ABI's `MMAP` only (no new call); the policy was written from the design
 idea, not copied from the proprietary tree.
+||||||| merged common ancestors
+
+**D10 — Core crates may use `alloc` for runtime-growing tables; fallible growth only; named refusal.** Owner ruling 2026-10-12: "if we are
+a real OS, there cannot be a hard cap" (doctrine RUNTIME-TABLES-HAVE-NO-CAP). A table that tracks a runtime-growing population
+(sessions, handles, objects, contexts, address-space entries, requests, leases) is an `alloc` collection that grows with memory; its
+size is never a compile-time constant. Growth is fallible (`try_reserve` / a charged `try_insert`; no `Vec::push` on an unreserved vector,
+no `collect`, no `vec!` on a request path); exhaustion is a NAMED refusal (`GEM-NOMEM`, naming the table) raised before the thing
+exists, with nothing half-created. This is the justification PORT_CONVENTIONS section 7 asks for ("No `alloc` unless unavoidable and
+justified in a comment"); the comment sits at the top of the crate's `lib.rs`. What stays fixed is fixed by HARDWARE (engines on the part,
+context tags, fence registers) or by an ABI width, and says so where it is declared.
