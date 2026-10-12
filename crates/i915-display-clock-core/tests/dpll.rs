@@ -10,7 +10,7 @@ use i915_display_clock_core::plan::{OnTimeout, PollPlan, Step};
 use i915_display_clock_core::regs::*;
 use i915_display_clock_core::wrpll::{hdmi_hw_state, SklDpllHwState};
 use i915_display_clock_core::ClockError;
-use i915_kbl_display_core::dpll::{decode_ctrl2, lcpll_link_clock_khz, DdiClock};
+use i915_kbl_display_core::dpll::{decode_ctrl2, dpll_cfgcr1, dpll_cfgcr2, lcpll_link_clock_khz, DdiClock};
 use i915_kbl_display_core::types::Ddi;
 
 fn rd(o: u32) -> Reg {
@@ -201,6 +201,10 @@ fn disable_is_rmw_and_posting_read_and_rolls_back_to_enabled() {
     assert_eq!(t.forward.get(1), Some(&Step::PostingRead { reg: rd(0x46040) })); // :1435
     // it was enabled, so the rollback is the enable sequence
     assert_eq!(t.rollback.len(), 8);
+    // the enable plan's own rollback reads back every restore write (sentinel 2026-10-12)
+    let en = plan_enable(2, &hw, &snap).unwrap();
+    let posted: Vec<_> = en.rollback.iter().filter(|s| matches!(s, Step::PostingRead { .. })).collect();
+    assert!(posted.contains(&&Step::PostingRead { reg: rd(dpll_cfgcr1(2)) }) && posted.contains(&&Step::PostingRead { reg: rd(dpll_cfgcr2(2)) }));
     // it was NOT enabled: nothing to restore
     let off = DpllSnapshot { ctl: 0, ..snap };
     assert!(plan_disable(2, &hw, &off).unwrap().rollback.is_empty());
@@ -233,8 +237,10 @@ fn ddi_clock_routing_every_port_every_pll() {
         for pll in 0..4u8 {
             // skl_ddi_enable_clock (intel_ddi.c:1964-1968): clear CLK_OFF | SEL_MASK, set SEL(pll) | OVERRIDE
             let t = plan_ddi_clock_enable(port, pll, off).unwrap();
-            assert_eq!(t.forward.len(), 1);
+            assert_eq!(t.forward.len(), 2);
             assert_eq!(t.forward.get(0), Some(&Step::Rmw { reg: rd(DPLL_CTRL2), clear: off | sel_mask, set: ((pll as u32) << shift) | ovr }), "{port:?} -> {pll}");
+            assert_eq!(t.forward.get(1), Some(&Step::PostingRead { reg: rd(DPLL_CTRL2) }), "sentinel 2026-10-12: CTRL2 write is read back");
+            assert_eq!(t.rollback.get(1), Some(&Step::PostingRead { reg: rd(DPLL_CTRL2) }));
             // run it on a register that had the clock gated and another PLL selected
             let mut s = Sim::new();
             s.set(DPLL_CTRL2, off | sel_mask | 0x4000_0000);
@@ -245,6 +251,8 @@ fn ddi_clock_routing_every_port_every_pll() {
         // skl_ddi_disable_clock (intel_ddi.c:1980-1981): set CLK_OFF
         let t = plan_ddi_clock_disable(port, 0).unwrap();
         assert_eq!(t.forward.get(0), Some(&Step::Rmw { reg: rd(DPLL_CTRL2), clear: 0, set: off }));
+        assert_eq!(t.forward.get(1), Some(&Step::PostingRead { reg: rd(DPLL_CTRL2) }));
+        assert_eq!(t.rollback.get(1), Some(&Step::PostingRead { reg: rd(DPLL_CTRL2) }));
     }
 }
 

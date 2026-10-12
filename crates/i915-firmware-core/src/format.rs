@@ -182,14 +182,16 @@ fn parse_header(
     max_fw_size: u32,
 ) -> Result<DmcImage, DmcError> {
     let trunc = |what, need, have| DmcError::Truncated { what, need, have };
+    // A field read the length checks above should make unreachable-to-fail; if one ever fails it is Truncated, never a silent 0.
+    let field = |off: usize| rd32(data, off).ok_or_else(|| trunc("dmc header field", off.saturating_add(4), data.len()));
     if data.len() < DMC_HEADER_BASE_SIZE {
         return Err(trunc("dmc header base", DMC_HEADER_BASE_SIZE, data.len()));
     }
     // base: signature u32 @0, header_len u8 @4, header_ver u8 @5, dmcc_ver u16 @6, project @8, fw_size @12, fw_version @16
     let header_len = data[4];
     let header_ver = data[5];
-    let fw_size = rd32(data, 12).unwrap_or(0);
-    let fw_version = rd32(data, 16).unwrap_or(0);
+    let fw_size = field(12)?;
+    let fw_version = field(16)?;
 
     let (count_off, addr_off, data_off, count_max, header_len_bytes, start, hdr_size): (usize, usize, usize, u32, u32, u32, usize);
     if header_ver == 3 {
@@ -202,7 +204,7 @@ fn parse_header(
         data_off = 176;
         count_max = DMC_V3_MAX_MMIO_COUNT;
         header_len_bytes = u32::from(header_len) * 4; // "header_len is in dwords" (intel_dmc.c:1085)
-        start = rd32(data, 20).unwrap_or(0);
+        start = field(20)?;
         hdr_size = DMC_HEADER_V3_SIZE;
     } else if header_ver == 1 {
         if data.len() < DMC_HEADER_V1_SIZE {
@@ -222,15 +224,15 @@ fn parse_header(
     if header_len_bytes as usize != hdr_size {
         return Err(DmcError::WrongDmcHeaderLen { bytes: header_len_bytes, expected: hdr_size as u32 });
     }
-    let count = rd32(data, count_off).unwrap_or(0);
+    let count = field(count_off)?;
     if count > count_max {
         return Err(DmcError::WrongMmioCount { count, max: count_max });
     }
     let mut addrs = Vec::new();
     let mut mmio = Vec::new();
     for i in 0..count as usize {
-        let a = rd32(data, addr_off + 4 * i).unwrap_or(0);
-        let v = rd32(data, data_off + 4 * i).unwrap_or(0);
+        let a = field(addr_off + 4 * i)?;
+        let v = field(data_off + 4 * i)?;
         addrs.push(a);
         mmio.push((a, v));
     }
@@ -259,11 +261,11 @@ pub fn parse_package(fw: &[u8], si: Stepping, max_fw_size: u32) -> Result<DmcPac
     if fw.len() < CSS_HEADER_SIZE {
         return Err(DmcError::Truncated { what: "css header", need: CSS_HEADER_SIZE, have: fw.len() });
     }
-    let css_len = rd32(fw, CSS_HEADER_LEN_OFF).unwrap_or(0).wrapping_mul(4);
+    let css_len = rd32(fw, CSS_HEADER_LEN_OFF).ok_or(DmcError::Truncated { what: "css header", need: CSS_HEADER_SIZE, have: fw.len() })?.wrapping_mul(4);
     if css_len as usize != CSS_HEADER_SIZE {
         return Err(DmcError::WrongCssHeaderLen { bytes: css_len });
     }
-    let version = rd32(fw, CSS_VERSION_OFF).unwrap_or(0);
+    let version = rd32(fw, CSS_VERSION_OFF).ok_or(DmcError::Truncated { what: "css header", need: CSS_HEADER_SIZE, have: fw.len() })?;
     let mut read = CSS_HEADER_SIZE;
 
     // --- parse_dmc_fw_package (intel_dmc.c:1193-1246)
@@ -272,7 +274,7 @@ pub fn parse_package(fw: &[u8], si: Stepping, max_fw_size: u32) -> Result<DmcPac
         return Err(DmcError::Truncated { what: "package header", need: PACKAGE_HEADER_SIZE, have: pk.len() });
     }
     let (header_len, header_ver) = (pk[0], pk[1]);
-    let num_entries = rd32(pk, 12).unwrap_or(0);
+    let num_entries = rd32(pk, 12).ok_or(DmcError::Truncated { what: "package header", need: PACKAGE_HEADER_SIZE, have: pk.len() })?;
     let max_entries = match header_ver {
         1 => PACKAGE_MAX_FW_INFO_ENTRIES,
         2 => PACKAGE_V2_MAX_FW_INFO_ENTRIES,

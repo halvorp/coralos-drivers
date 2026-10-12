@@ -35,4 +35,5 @@ dependencies = [
  "coralos-hal",
  "i915-common-core",
  "i915-devinfo-core",
+ "i915-gt-regs-core",
 ]

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 i915-common-core = { path = "../i915-common-core" }
+i915-gt-regs-core = { path = "../i915-gt-regs-core" }
 i915-kbl-display-core = { path = "../i915-kbl-display-core" }
 
 [workspace]

@@ -13,11 +13,15 @@
 
 pub mod engine_regs;
 pub mod gt_wa;
+pub mod guc_reg;
 pub mod i915_reg;
+pub mod pci_config;
 
 pub use engine_regs::*;
 pub use gt_wa::*;
+pub use guc_reg::*;
 pub use i915_reg::*;
+pub use pci_config::*;
 
 use i915_common_core::reg::{bit, genmask};
 use i915_common_core::Reg;
@@ -95,9 +99,18 @@ pub const RP0_CAP_MASK: u32 = genmask(7, 0); // intel_mchbar_regs.h:226
 pub const RP1_CAP_MASK: u32 = genmask(15, 8); // intel_mchbar_regs.h:227
 pub const RPN_CAP_MASK: u32 = genmask(23, 16); // intel_mchbar_regs.h:228
 
+// ---- GGTT flush and the private PAT (moved from i915-memory-core, sentinel audit 2026-10-12) ---------------------------
+
+/// GGTT invalidate: writing `GFX_FLSH_CNTL_EN` flushes the write-combining buffer of GGTT PTE stores and the GT TLB.
+pub const GFX_FLSH_CNTL_GEN6: Reg = Reg::new(0x101008); // intel_gt_regs.h:1474
+pub const GFX_FLSH_CNTL_EN: u32 = bit(0); // intel_gt_regs.h:1475
+/// The private PAT (8 entries x 8 bits): low and high dword.
+pub const GEN8_PRIVATE_PAT_LO: Reg = Reg::new(0x40e0); // intel_gt_regs.h:336
+pub const GEN8_PRIVATE_PAT_HI: Reg = Reg::new(0x40e0 + 4); // intel_gt_regs.h:337
+
 /// Every register defined above (not the aliases), by Linux's name - the catalog `tests/catalog.rs` checks for aligned,
 /// unique, in-range offsets.
-pub const CATALOG: [(&str, Reg); 18] = [
+pub const CATALOG: [(&str, Reg); 23] = [
     ("FORCEWAKE_GT_GEN9", FORCEWAKE_GT_GEN9),
     ("FORCEWAKE_MEDIA_GEN9", FORCEWAKE_MEDIA_GEN9),
     ("FORCEWAKE_RENDER_GEN9", FORCEWAKE_RENDER_GEN9),
@@ -116,4 +129,9 @@ pub const CATALOG: [(&str, Reg); 18] = [
     ("CTC_MODE", CTC_MODE),
     ("GEN9_TIMESTAMP_OVERRIDE", GEN9_TIMESTAMP_OVERRIDE),
     ("GEN6_RP_STATE_CAP", GEN6_RP_STATE_CAP),
+    ("GFX_FLSH_CNTL_GEN6", GFX_FLSH_CNTL_GEN6),
+    ("GEN8_PRIVATE_PAT_LO", GEN8_PRIVATE_PAT_LO),
+    ("GEN8_PRIVATE_PAT_HI", GEN8_PRIVATE_PAT_HI),
+    ("GEN6_STOLEN_RESERVED", GEN6_STOLEN_RESERVED),
+    ("GEN8_GTCR", GEN8_GTCR),
 ];

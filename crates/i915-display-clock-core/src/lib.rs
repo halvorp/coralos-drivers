@@ -13,7 +13,7 @@
 //!
 //! Modules: [`power_map`] (domain -> well table), [`power`] (refcounted domains + well handshakes), [`cdclk`] (min-cdclk solver,
 //! `skl_set_cdclk`), [`wrpll`] (HDMI divider solver), [`dpll`] (DP rates, DPLL enable/disable, DDI clock routing, allocator),
-//! [`pcode`] (PCU mailbox retry machine), [`plan`] (the plan vocabulary), [`error`] (named refusals), [`regs`] (new registers).
+//! [`pcode`] (PCU mailbox retry machine), [`plan`] (the plan vocabulary), [`error`] (named refusals), [`regs`] (re-exports; registers live in kbl-display-core and gt-regs-core).
 //!
 //! The READ side - `decode_cdclk`, `wrpll_freq_khz`, `PowerState`, the register constants - stays in `i915-kbl-display-core`
 //! and is imported, never copied.

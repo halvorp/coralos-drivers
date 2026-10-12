@@ -83,5 +83,5 @@ fn aliases_are_the_only_duplicate_offsets() {
             assert_ne!(a, b, "{na} and {nb} share an offset without being a listed alias");
         }
     }
-    assert_eq!(CATALOG.len(), 18);
+    assert_eq!(CATALOG.len(), 23);
 }
