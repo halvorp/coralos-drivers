@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/gt/{intel_workarounds.c, intel_mocs.c, intel_sseu.c, intel_engine_cs.c, gen8_engine_cs.c,
+# intel_gt_irq.c, intel_reset.c} and intel_clock_gating.c (v7.0-rc6), restricted to Gen9 / Kaby Lake. Original copyright: Intel Corporation.
+[package]
+name = "i915-gt-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 GT core for Kaby Lake: workaround/MOCS/whitelist tables, engine table, command emitters, GT IRQ decode, reset state machine - pure planners, no MMIO"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+i915-gt-regs-core = { path = "../i915-gt-regs-core" }
+i915-devinfo-core = { path = "../i915-devinfo-core" }
+i915-uncore-core = { path = "../i915-uncore-core" }
+i915-gpu-commands-core = { path = "../i915-gpu-commands-core" }
+
+[workspace]

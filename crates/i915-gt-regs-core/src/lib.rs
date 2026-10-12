@@ -11,6 +11,14 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod engine_regs;
+pub mod gt_wa;
+pub mod i915_reg;
+
+pub use engine_regs::*;
+pub use gt_wa::*;
+pub use i915_reg::*;
+
 use i915_common_core::reg::{bit, genmask};
 use i915_common_core::Reg;
 
