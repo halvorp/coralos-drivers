@@ -84,7 +84,7 @@ fn every_opcode_number_is_pinned_and_introduced_by_the_right_minor() {
 
 #[test]
 fn a_frame_may_not_use_an_opcode_newer_than_its_minor() {
-    let mut buf = [0u8; HEADER_BYTES];
+    let mut buf = [0u8; i915_wire::HEADER_BYTES];
     let mut h = Header::request(Opcode::GemCreate, 1, 1, 0);
     h.minor = 0;
     h.encode(&mut buf).unwrap();
@@ -257,7 +257,7 @@ fn execbuffer2_requests_round_trip_with_their_tables() {
     let objs = [ExecObject { handle: 1, offset: 0x1000, flags: 0x10, ..Default::default() }, ExecObject { handle: 2, relocation_count: 1, ..Default::default() }];
     let relocs = [Reloc { target_handle: 1, delta: 4, offset: 8, ..Default::default() }];
     let fences = [exec::Fence { handle: 5, flags: 2 }];
-    let hdr = exec::ExecHeader { flags: flags::FENCE_ARRAY | flags::NO_RELOC, rsvd1: 3, ..Default::default() };
+    let hdr = exec::ExecHeader { flags: exec::flags::FENCE_ARRAY | exec::flags::NO_RELOC, rsvd1: 3, ..Default::default() };
     let mut out = vec![0u8; 1024];
     let n = exec::encode_request(&mut out, hdr, &objs, &relocs, &fences, &[]).unwrap();
     assert_eq!(n, 64 + 2 * 48 + 32 + 8);
@@ -336,7 +336,7 @@ fn query_requests_and_replies_walk_their_items() {
     rp.extend_from_slice(b"abc\0\0\0\0\0");
     rp.extend_from_slice(&(-19i32).to_le_bytes());
     rp.extend_from_slice(&0u32.to_le_bytes());
-    let (errno, got) = decode_query_reply(&rp).unwrap();
+    let (errno, got) = i915_wire::msg::device::decode_query_reply(&rp).unwrap();
     assert_eq!(errno, 0);
     assert_eq!(got[0], Some(QueryReplyItem { length: 3, data: b"abc" }));
     assert_eq!(got[1], Some(QueryReplyItem { length: -19, data: b"" }));
