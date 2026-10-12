@@ -1,26 +1,29 @@
-//! A demand-zero heap for a `.device` (HEAP-IS-DEMAND-ZERO): the heap is ONE anonymous reservation made with `MMAP` on the first
-//! allocation, never a zeroed `.bss` arena. `MMAP` reserves address space only; the kernel commits a zeroed frame per page on first
-//! touch, so an idle device pays for what it has touched and nothing more, on every exec path.
+//! A demand-zero heap for a `.device` (HEAP-IS-DEMAND-ZERO) that GROWS with memory (RUNTIME-TABLES-HAVE-NO-CAP) and REUSES what is
+//! freed.
 //!
-//! POLICY (spec-written here; the mechanism is the ABI's `MMAP`, nothing else): a bump allocator over the reservation that grows
-//! its working set from the bottom. A free of the LAST block rolls the bump pointer back; a `realloc` of the last block grows or
-//! shrinks it in place (the common case of one growing `Vec`); a free of any other block is a no-op (the space is not reused).
-//! That is deliberate and bounded - the reservation is the cap, and exhausting it is a NAMED refusal: `alloc` returns null, which
-//! `Vec::try_reserve` reports as an error before the thing exists. Doctrine RUNTIME-TABLES-HAVE-NO-CAP: tables grow with memory;
-//! only the reservation bounds them.
+//! MECHANISM. The heap is a chain of REGIONS. Each region is one anonymous `MMAP` reservation: address space only, the kernel commits
+//! a zeroed frame per page on first touch, so an idle device pays for what it touched, never a zeroed `.bss` arena. The first region
+//! is reserved on the first allocation. When no region can satisfy a request, ANOTHER region is reserved (at least one chunk, more for
+//! a large request) and linked in. There is no compile-time total: the heap is out of memory only when the kernel REFUSES a
+//! reservation, and then `alloc` returns null - which `Vec::try_reserve` and friends report as a named refusal before the thing exists.
 //!
-//! TODO(heap-reuse) delete-when: a silicon run of the device's steady state (free of a non-last block, then a new block) leaves
-//! `LazyHeap::left()` under 25% of `DEFAULT_RESERVE` after 10 minutes, or the first `ENDOWMENT`-style refusal that names the heap - replace the bump with a first-fit free list then. The interface does not change.
+//! POLICY. Inside a region, blocks come from `linked_list_allocator::Heap` (first-fit free list with coalescing; MIT OR Apache-2.0,
+//! GPL-compatible, already the CoralOS tree's allocator - D9). A freed block is reused; the region's header lives at its start, so the
+//! chain costs no storage elsewhere. Regions are never returned to the kernel (there is no unmap call in the ABI).
+//!
+//! CONCURRENCY. A `.device` is ONE task with ONE thread of control: the ABI has no thread or clone call, so nothing can re-enter the
+//! allocator except an interrupt handler, and the ABI delivers interrupts only as `IRQ_WAIT` returns on the same thread. There is
+//! therefore NO LOCK on target, and `Sync` is asserted on exactly that ground. A host test harness that runs threads must serialise
+//! access itself (the tests wrap the heap in a mutex).
 use core::alloc::{GlobalAlloc, Layout};
-#[cfg(test)]
-extern crate std;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::ptr::NonNull;
+use linked_list_allocator::Heap;
 
-/// The default reservation: 64 MiB of address space, committed lazily.
-pub const DEFAULT_RESERVE: usize = 64 << 20;
+/// The default region size: 16 MiB of address space per reservation, committed lazily.
+pub const DEFAULT_CHUNK: usize = 16 << 20;
 
-/// Reserve `len` bytes of zeroed address space: its base, or 0.
+/// Reserve `len` bytes of zeroed address space: its base, or 0 when the kernel refuses.
 pub type Reserve = fn(len: usize) -> usize;
 
 /// The on-target reservation: anonymous read+write `MMAP`.
@@ -33,60 +36,90 @@ pub fn mmap_reserve(len: usize) -> usize {
     }
 }
 
-struct State {
+/// Lives at the start of each region.
+struct Region {
+    heap: Heap,
+    next: *mut Region,
     base: usize,
-    top: usize,
-    next: usize,
-    /// Start of the most recent block (for rollback / in-place realloc).
-    last: usize,
-    tried: bool,
+    len: usize,
+}
+
+const HEADER: usize = (core::mem::size_of::<Region>() + 15) & !15;
+
+struct State {
+    head: *mut Region,
+    regions: usize,
+    reserved: usize,
 }
 
 /// The global allocator: `#[global_allocator] static HEAP: coralos_rt::heap::LazyHeap = coralos_rt::heap::LazyHeap::new();`
 pub struct LazyHeap {
     st: UnsafeCell<State>,
-    lock: AtomicBool,
-    len: usize,
+    chunk: usize,
     reserve: Reserve,
 }
 
-// SAFETY: every access to `st` is under the `lock` spin flag.
+// SAFETY: a `.device` has a single thread of control (see the module note); the host tests serialise with their own mutex.
 unsafe impl Sync for LazyHeap {}
 
 impl LazyHeap {
-    /// The on-target heap: `DEFAULT_RESERVE` bytes through `MMAP`.
+    /// The on-target heap: regions of `DEFAULT_CHUNK` through `MMAP`.
     pub const fn new() -> Self {
-        Self::with_reserve(DEFAULT_RESERVE, mmap_reserve)
+        Self::with_reserve(DEFAULT_CHUNK, mmap_reserve)
     }
-    /// A heap over an injected reservation (the host tests).
-    pub const fn with_reserve(len: usize, reserve: Reserve) -> Self {
-        LazyHeap { st: UnsafeCell::new(State { base: 0, top: 0, next: 0, last: 0, tried: false }), lock: AtomicBool::new(false), len, reserve }
+    /// A heap over an injected reservation and region size (the host tests).
+    pub const fn with_reserve(chunk: usize, reserve: Reserve) -> Self {
+        LazyHeap { st: UnsafeCell::new(State { head: core::ptr::null_mut(), regions: 0, reserved: 0 }), chunk, reserve }
     }
-    /// Run `f` under the lock. A `.device` is one task with one thread of control, so the lock is never contended on target; if it
-    /// somehow is, the caller is REFUSED (`None` -> a null allocation, a named refusal) rather than spun on - a heap never spins
-    /// (NO-POLL-BLOCK-ON-WAKE). The host test harness runs threads, so under `cfg(test)` only, contention waits for the holder.
-    fn with<R>(&self, f: impl FnOnce(&mut State, usize, Reserve) -> R) -> Option<R> {
-        loop {
-            if self.lock.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-                break;
-            }
-            #[cfg(not(test))]
-            return None;
-            #[cfg(test)]
-            std::thread::yield_now();
-        }
-        // SAFETY: the flag is held.
-        let r = f(unsafe { &mut *self.st.get() }, self.len, self.reserve);
-        self.lock.store(false, Ordering::Release);
-        Some(r)
+    /// Regions reserved so far.
+    pub fn regions(&self) -> usize {
+        // SAFETY: single thread of control / caller-serialised.
+        unsafe { (*self.st.get()).regions }
     }
-    /// Bytes handed out and not rolled back (a measure, for the device's log).
+    /// Address space reserved so far, in bytes.
+    pub fn reserved(&self) -> usize {
+        // SAFETY: as above.
+        unsafe { (*self.st.get()).reserved }
+    }
+    /// Bytes handed out and not freed.
     pub fn used(&self) -> usize {
-        self.with(|s, _, _| s.next - s.base).unwrap_or(0)
+        let mut n = 0;
+        // SAFETY: the chain holds only regions this heap initialised.
+        unsafe {
+            let mut r = (*self.st.get()).head;
+            while !r.is_null() {
+                n += (*r).heap.used();
+                r = (*r).next;
+            }
+        }
+        n
     }
-    /// Bytes still reserved.
-    pub fn left(&self) -> usize {
-        self.with(|s, _, _| s.top - s.next).unwrap_or(0)
+
+    /// Reserve a region able to hold `need` bytes at `align` and link it in front. False if the kernel refuses.
+    unsafe fn grow(&self, need: usize, align: usize) -> bool {
+        let want = match need.checked_add(HEADER).and_then(|v| v.checked_add(align)).and_then(|v| v.checked_add(4096)) {
+            Some(v) => v,
+            None => return false,
+        };
+        let len = match want.max(self.chunk).checked_add(4095) {
+            Some(v) => v & !4095,
+            None => return false,
+        };
+        let base = (self.reserve)(len);
+        if base == 0 || base % 16 != 0 {
+            return false;
+        }
+        let r = base as *mut Region;
+        // SAFETY: `base..base+len` is a fresh zeroed reservation owned by this heap; the header fits (`len >= HEADER`).
+        unsafe {
+            let st = &mut *self.st.get();
+            r.write(Region { heap: Heap::empty(), next: st.head, base, len });
+            (*r).heap.init((base + HEADER) as *mut u8, len - HEADER);
+            st.head = r;
+            st.regions += 1;
+            st.reserved += len;
+        }
+        true
     }
 }
 
@@ -96,72 +129,42 @@ impl Default for LazyHeap {
     }
 }
 
-fn ensure(s: &mut State, len: usize, reserve: Reserve) -> bool {
-    if !s.tried {
-        s.tried = true;
-        let base = reserve(len);
-        if base != 0 {
-            s.base = base;
-            s.next = base;
-            s.last = base;
-            s.top = base.saturating_add(len);
-        }
-    }
-    s.top != 0
-}
-
 unsafe impl GlobalAlloc for LazyHeap {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
-        self.with(|s, len, reserve| {
-            if !ensure(s, len, reserve) {
+        for attempt in 0..2 {
+            // SAFETY: the chain holds only regions this heap initialised.
+            unsafe {
+                let mut r = (*self.st.get()).head;
+                while !r.is_null() {
+                    if let Ok(p) = (*r).heap.allocate_first_fit(l) {
+                        return p.as_ptr();
+                    }
+                    r = (*r).next;
+                }
+            }
+            // no region could serve it: reserve another (once); a kernel refusal is the only out-of-memory
+            if attempt == 1 || !unsafe { self.grow(l.size(), l.align()) } {
                 return core::ptr::null_mut();
             }
-            let at = match s.next.checked_add(l.align() - 1) {
-                Some(v) => v & !(l.align() - 1),
-                None => return core::ptr::null_mut(),
-            };
-            match at.checked_add(l.size()) {
-                Some(end) if end <= s.top => {
-                    s.last = at;
-                    s.next = end;
-                    at as *mut u8
-                }
-                _ => core::ptr::null_mut(),
-            }
-        })
-        .unwrap_or(core::ptr::null_mut())
+        }
+        core::ptr::null_mut()
     }
+
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
-        self.with(|s, _, _| {
-            if p as usize == s.last && p as usize + l.size() == s.next {
-                s.next = s.last;
-            }
-        });
-    }
-    unsafe fn realloc(&self, p: *mut u8, l: Layout, new: usize) -> *mut u8 {
-        let in_place = self.with(|s, _, _| {
-            if p as usize == s.last && p as usize + l.size() == s.next {
-                match (p as usize).checked_add(new) {
-                    Some(end) if end <= s.top => {
-                        s.next = end;
-                        true
+        let a = p as usize;
+        // SAFETY: as in `alloc`; `p` came from `alloc` with `l`, so exactly one region owns it.
+        unsafe {
+            let mut r = (*self.st.get()).head;
+            while !r.is_null() {
+                if a >= (*r).base + HEADER && a < (*r).base + (*r).len {
+                    if let Some(nn) = NonNull::new(p) {
+                        (*r).heap.deallocate(nn, l);
                     }
-                    _ => false,
+                    return;
                 }
-            } else {
-                false
+                r = (*r).next;
             }
-        })
-        .unwrap_or(false);
-        if in_place {
-            return p;
         }
-        // SAFETY: `new` and `l.align()` form a valid layout whenever the caller's contract holds.
-        let q = unsafe { self.alloc(Layout::from_size_align_unchecked(new, l.align())) };
-        if !q.is_null() {
-            // SAFETY: both blocks are live, distinct and at least min(l.size(), new) long.
-            unsafe { core::ptr::copy_nonoverlapping(p, q, l.size().min(new)) };
-        }
-        q
+        // a pointer no region owns is never freed into one: leaked, as the GlobalAlloc contract makes it the caller's bug
     }
 }
