@@ -2,6 +2,11 @@
 //! The code-loader DMA transfer of `cldma.c` as a coroutine: `hda_cldma_transfer` (fill the first chunk), `cldma_memcpy_work`
 //! (start the engine, then wait for each completion and refill) and `hda_cldma_fill` (the SPIB ring write).
 //!
+//! REGISTER FRAME: every offset here is relative to BAR4 of the cAVS controller (`adev->dsp_ba`, core.c:468) - the DSP window,
+//! [`crate::effect::Space::Dsp`]. The code loader's stream descriptor sits at `regs::AZX_CL_SD_BASE` (0x80) inside it, so `SPIB` is
+//! BAR4 + 0xA8 and `SD_CTL` BAR4 + 0x80; they are NOT offsets into the HDA controller's BAR0 (`Space::Hda`). `tests/cldma.rs`
+//! and `tests/programs.rs` pin the absolute offsets as literals.
+//!
 //! Linux runs the loop in a delayed worker, concurrently with whoever scheduled it; a planner is sequential, so the
 //! concurrent waiter's work (polling the ROM status, sending LOAD_LIBRARY) is expressed as the optional `hook` step after the
 //! first fill (see [`Transfer::new`]) and as the steps that follow the transfer in the composing program.

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The vocabulary the planners speak. Nothing here touches a register: a planner answers with an [`Op`] and the caller (the
+//! The vocabulary the planners speak. REGISTER FRAME: an [`Op`] names its register by [`Space`] and an offset in THAT space - BAR4
+//! (`Dsp`), BAR0 (`Hda`) or PCI configuration (`PciConfig`) - and never by an absolute address. Nothing here touches a register: a planner answers with an [`Op`] and the caller (the
 //! `.device`) performs it against a real BAR, PCI function or memory, then reports back with an [`Input`].
 
 /// Which window an offset lives in.
