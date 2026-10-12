@@ -10,7 +10,7 @@ use i915_uapi_core::{ContextInfo, ExecEnv, ObjectInfo, SyncobjInfo};
 pub struct ExecView<'a, const V: usize, const T: usize> {
     pub(crate) gem: &'a Gem<V, T>,
     pub(crate) slot: usize,
-    pub(crate) vm: Option<u8>,
+    pub(crate) vm: Option<u32>,
     pub(crate) ring_slot: u32,
     pub(crate) sync: &'a dyn SyncTables,
 }

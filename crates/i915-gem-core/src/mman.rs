@@ -8,7 +8,8 @@
 use crate::error::GemError;
 use crate::gem::Gem;
 use crate::ids::{ObjId, SessionId};
-use crate::limits::*;
+use crate::table;
+use alloc::vec::Vec;
 use crate::object::{MmapKind, Madv};
 use crate::seam::{EffectSink, PageSource};
 use i915_uapi_core::consts::misc as m;
@@ -48,7 +49,7 @@ pub(crate) struct MmapOffset {
     pub obj: ObjId,
     pub kind: MmapKind,
     pub offset: u64,
-    pub session: u8,
+    pub session: u32,
 }
 
 /// A live CPU-mapping lease.
@@ -59,15 +60,15 @@ pub(crate) struct Lease {
 }
 
 pub(crate) struct MmapTables {
-    pub offsets: [Option<MmapOffset>; MAX_MMAP_OFFSETS],
-    pub leases: [Option<Lease>; MAX_LEASES],
+    pub offsets: Vec<Option<MmapOffset>>,
+    pub leases: Vec<Option<Lease>>,
     pub next_page: u64,
     pub next_lease: u32,
 }
 
 impl MmapTables {
-    pub(crate) fn new() -> MmapTables {
-        MmapTables { offsets: [None; MAX_MMAP_OFFSETS], leases: [None; MAX_LEASES], next_page: FAKE_OFFSET_START >> 12, next_lease: 1 }
+    pub(crate) const fn new() -> MmapTables {
+        MmapTables { offsets: Vec::new(), leases: Vec::new(), next_page: FAKE_OFFSET_START >> 12, next_lease: 1 }
     }
 }
 
@@ -125,10 +126,13 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             return Ok(MmapGrant { offset: o.offset, kind, cache: kind.cpu_cache() }); // lookup_mmo + drm_vma_node_allow_once, gem/i915_gem_mman.c:727-729, gem/i915_gem_mman.c:762-763
         }
         let size = self.obj(id).map_or(0, |o| o.size);
-        let at = self.mmap.offsets.iter().position(|o| o.is_none()).ok_or(GemError::MmapTableFull { cap: MAX_MMAP_OFFSETS })?;
+        let at = match self.mmap.offsets.iter().position(|o| o.is_none()) {
+            Some(i) => i,
+            None => table::push(&mut self.mmap.offsets, None, &mut self.quota, "mmap-offsets")?,
+        };
         let offset = self.mmap.next_page << 12;
         self.mmap.next_page += size >> 12;
-        self.mmap.offsets[at] = Some(MmapOffset { obj: id, kind, offset, session: slot as u8 });
+        self.mmap.offsets[at] = Some(MmapOffset { obj: id, kind, offset, session: slot as u32 });
         if let Some(o) = self.obj_mut(id) {
             o.mmap_kinds |= 1 << kind as u8;
         }
@@ -136,7 +140,10 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     }
 
     fn open_lease<P: PageSource>(&mut self, id: ObjId, handle: u32, kind: MmapKind, start: u64, len: u64, src: &mut P) -> Result<MappingLease, GemError> {
-        let at = self.mmap.leases.iter().position(|l| l.is_none()).ok_or(GemError::LeaseTableFull { cap: MAX_LEASES })?;
+        let at = match self.mmap.leases.iter().position(|l| l.is_none()) {
+            Some(i) => i,
+            None => table::push(&mut self.mmap.leases, None, &mut self.quota, "mmap-leases")?,
+        };
         // The fault path pins the pages first (vm_fault_cpu -> i915_gem_object_pin_pages, gem/i915_gem_mman.c:269): a purged object cannot be mapped.
         self.ensure_pages(id, handle, src)?;
         let lease = self.mmap.next_lease;
@@ -164,7 +171,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
         if len == 0 || len > size {
             return Err(GemError::MmapRange { offset: 0, size: len, object: size });
         }
-        self.open_lease(o.obj, o.obj.0, o.kind, 0, len, src)
+        self.open_lease(o.obj, o.obj.index(), o.kind, 0, len, src)
     }
 
     /// `i915_gem_mmap_ioctl` (gem/i915_gem_mman.c:60-125): the legacy CPU map. `-ENODEV` for WC without PAT (gem/i915_gem_mman.c:78-79), `-EINVAL`
@@ -211,7 +218,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     }
 
     /// Live leases on an object.
-    pub fn lease_count(&self, obj: ObjId) -> u16 {
+    pub fn lease_count(&self, obj: ObjId) -> u32 {
         self.obj(obj).map_or(0, |o| o.leases)
     }
 

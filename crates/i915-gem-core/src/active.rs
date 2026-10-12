@@ -7,11 +7,12 @@
 use crate::error::GemError;
 use crate::gem::Gem;
 use crate::ids::{ObjId, RequestId, SessionId};
-use crate::limits::*;
+use crate::table::{self, Quota};
+use alloc::vec::Vec;
 use crate::seam::EffectSink;
 use i915_submit_core::request::seqno_passed;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ActiveReq {
     pub id: RequestId,
     /// Index in the device's user-visible engine order.
@@ -20,56 +21,63 @@ pub(crate) struct ActiveReq {
     pub ectx: u32,
     pub seqno: u32,
     /// The GEM context slot that made it.
-    pub ctx: u8,
-    pub objs: [(ObjId, bool); MAX_EXEC_OBJECTS],
-    pub n: u8,
+    pub ctx: u32,
+    /// The objects the request touches and whether it writes each; sized to the submission (a per-request list, not a table cap).
+    pub objs: Vec<(ObjId, bool)>,
     /// `i915_request_set_error_once`: `-EIO` for a guilty request, `-EAGAIN` for an innocent one (gt/intel_reset.c:134-138).
     pub error: Option<i32>,
 }
 
 impl ActiveReq {
     pub(crate) fn touches(&self, obj: ObjId) -> Option<bool> {
-        self.objs[..self.n as usize].iter().find(|(o, _)| *o == obj).map(|(_, w)| *w)
+        self.objs.iter().find(|(o, _)| *o == obj).map(|(_, w)| *w)
     }
 }
 
 pub(crate) struct Active {
-    pub reqs: [Option<ActiveReq>; MAX_ACTIVE],
+    pub reqs: Vec<Option<ActiveReq>>,
     /// Last HWSP seqno observed per `(engine, engine context)`.
-    hw: [Option<(u8, u32, u32)>; MAX_HW_SEQNOS],
+    pub(crate) hw: Vec<(u8, u32, u32)>,
     pub next_id: u64,
 }
 
 impl Active {
-    pub(crate) fn new() -> Active {
-        Active { reqs: [None; MAX_ACTIVE], hw: [None; MAX_HW_SEQNOS], next_id: 1 }
+    pub(crate) const fn new() -> Active {
+        Active { reqs: Vec::new(), hw: Vec::new(), next_id: 1 }
     }
     pub(crate) fn hw_seqno(&self, engine: u8, ectx: u32) -> u32 {
-        self.hw.iter().flatten().find(|(e, c, _)| *e == engine && *c == ectx).map_or(0, |(_, _, v)| *v)
+        self.hw.iter().find(|(e, c, _)| *e == engine && *c == ectx).map_or(0, |(_, _, v)| *v)
     }
-    pub(crate) fn observe(&mut self, engine: u8, ectx: u32, value: u32) -> Result<(), GemError> {
-        if let Some(h) = self.hw.iter_mut().flatten().find(|(e, c, _)| *e == engine && *c == ectx) {
+    pub(crate) fn observe(&mut self, engine: u8, ectx: u32, value: u32, q: &mut Quota) -> Result<(), GemError> {
+        if let Some(h) = self.hw.iter_mut().find(|(e, c, _)| *e == engine && *c == ectx) {
             h.2 = value;
             return Ok(());
         }
-        let slot = self.hw.iter().position(|h| h.is_none()).ok_or(GemError::SeqnoTableFull { cap: MAX_HW_SEQNOS })?;
-        self.hw[slot] = Some((engine, ectx, value));
+        table::push(&mut self.hw, (engine, ectx, value), q, "hw-seqnos")?;
         Ok(())
     }
     pub(crate) fn completed(&self, r: &ActiveReq) -> bool {
         seqno_passed(self.hw_seqno(r.engine, r.ectx), r.seqno)
     }
-    pub(crate) fn free_slot(&self) -> Option<usize> {
-        self.reqs.iter().position(|r| r.is_none())
+    /// A free slot for a request: reuse one or grow the table (charged, fallible). The slot stays empty until the request exists.
+    pub(crate) fn reserve_slot(&mut self, q: &mut Quota) -> Result<usize, GemError> {
+        match self.reqs.iter().position(|r| r.is_none()) {
+            Some(i) => Ok(i),
+            None => table::push(&mut self.reqs, None, q, "requests"),
+        }
     }
     pub(crate) fn refs_object(&self, obj: ObjId) -> bool {
         self.reqs.iter().flatten().any(|r| r.touches(obj).is_some())
     }
-    pub(crate) fn refs_context(&self, ctx: u8) -> bool {
+    pub(crate) fn refs_context(&self, ctx: u32) -> bool {
         self.reqs.iter().flatten().any(|r| r.ctx == ctx)
     }
     pub(crate) fn find(&self, engine: u8, ectx: u32, seqno: u32) -> Option<usize> {
         self.reqs.iter().position(|r| matches!(r, Some(r) if r.engine == engine && r.ectx == ectx && r.seqno == seqno))
+    }
+    /// Drop the observation of a hardware context that no longer exists.
+    pub(crate) fn forget(&mut self, engine: u8, ectx: u32) {
+        self.hw.retain(|(e, c, _)| !(*e == engine && *c == ectx));
     }
     pub(crate) fn len(&self) -> usize {
         self.reqs.iter().flatten().count()
@@ -121,7 +129,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
         if engine >= self.dev.engines().len() {
             return Err(GemError::EngineIndex { index: engine });
         }
-        self.active.observe(engine as u8, engine_ctx, value)
+        self.active.observe(engine as u8, engine_ctx, value, &mut self.quota)
     }
 
     /// `i915_gem_busy_ioctl` (gem/i915_gem_busy.c:112-165): bit `16 + class` per engine class reading the object, and in the low
@@ -196,18 +204,22 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     /// (`__i915_gem_free_object`), closed contexts, unreferenced address spaces. Returns how many requests retired.
     pub fn retire(&mut self, sink: &mut dyn EffectSink) -> usize {
         let mut n = 0;
-        for i in 0..MAX_ACTIVE {
-            if let Some(r) = self.active.reqs[i] {
-                if self.active.completed(&r) {
-                    self.active.reqs[i] = None;
-                    n += 1;
-                }
+        for i in 0..self.active.reqs.len() {
+            let done = matches!(&self.active.reqs[i], Some(r) if self.active.completed(r));
+            if done {
+                self.active.reqs[i] = None;
+                n += 1;
             }
         }
         if n != 0 {
             self.sweep(sink);
         }
         n
+    }
+
+    /// Hardware contexts whose HWSP seqno is being tracked.
+    pub fn observed_seqnos(&self) -> usize {
+        self.active.hw.len()
     }
 
     /// Requests not yet retired.

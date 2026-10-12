@@ -159,7 +159,8 @@ from a `check_access` probe after an unbind, `msi` from the IRQ qualification (n
 ## 8. Sessions, objects, contexts, execbuffer (`i915-gem-core`)
 
 `Gem<V, T>` is the whole GEM state of one device as a planner. `V`/`T` are the VMA and page-table capacities of each address space
-(`Gtt<V, T>`). It is a few hundred KiB: the executor keeps it in a static, not on a stack.
+(`Gtt<V, T>`; those capacities are `i915-memory-core`'s). Every table of this crate is an `alloc` collection (doctrine
+RUNTIME-TABLES-HAVE-NO-CAP, DECISIONS.md D9), so a `Gem` is a handful of empty vectors until used.
 
 * **Session** (`drm_file`): `open_session(caps, PpgttInit, sink) -> SessionId`. A `SessionId` is an incarnation (u64 counter, never
   reused); a closed session's id is `SESSION-GONE` forever. Opening makes context 0 on a new address space from the executor's pages.
@@ -193,9 +194,12 @@ from a `check_access` probe after an unbind, `msi` from the IRQ qualification (n
   answers `retained = false` and `OBJECT-PURGED` (`-EFAULT`) on use.
 * **Refused by name**: `GEM_USERPTR` (`USERPTR-REFUSED`: EINVAL for the zero-size probe, ENODEV otherwise), local memory / non-SYSTEM
   placements, protected content, SET_PAT, SSEU reconfiguration, parallel/bonded submission, the command parser.
-* Bounds (`limits.rs`, each pinned by `tests/bounds.rs` and a behavioural test): `MAX_SESSIONS` 8, `MAX_HANDLES` 256 per session,
-  `MAX_OBJECTS` 512, `MAX_CTX_PER_SESSION` 16, `MAX_CONTEXTS` 32, `MAX_VMS` 8, `MAX_USER_ENGINES` 64, `MAX_ACTIVE` 64,
-  `MAX_EXEC_OBJECTS` 128, `MAX_MMAP_OFFSETS` 64, `MAX_LEASES` 64, `MAX_HW_SEQNOS` 160, object size <= system RAM.
+* **No caps on runtime populations**: sessions, handles, objects, contexts, address spaces, requests, mmap offsets, leases and seqno
+  observations grow with memory. Growth is fallible; exhaustion (a failed `try_reserve`, or the `set_table_budget` quota) is
+  `GEM-NOMEM` (ENOMEM) naming the table, raised BEFORE the thing exists: a refused create leaves no object, handle, context or VM.
+  Reusing a freed slot never charges. Fixed by hardware/ABI (`limits.rs`): `MAX_ENGINES` 5, `MAX_USER_ENGINES` 64, the handle index
+  width (`HANDLE_IDX_BITS` 20 -> `HANDLE-SPACE-EXHAUSTED` at 2^20 - 1 live handles in one session), `HANG_HISTORY` 2. Policy
+  threshold (not a table): `MAX_GUILTY_BEFORE_BAN` 16. Object size <= system RAM.
 
 ### Markers (P5)
 

@@ -8,31 +8,43 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SessionId(pub u64);
 
-/// An object in the global arena: `generation << 16 | slot`. The generation changes whenever the slot is reused.
+/// An object in the global slab: `generation << 32 | index`. The generation changes whenever the slot is reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ObjId(pub u32);
+pub struct ObjId(pub u64);
 
 impl ObjId {
-    pub(crate) const fn new(gen: u16, slot: u16) -> ObjId {
-        ObjId((gen as u32) << 16 | slot as u32)
+    pub(crate) const fn new(gen: u32, idx: u32) -> ObjId {
+        ObjId((gen as u64) << 32 | idx as u64)
     }
-    pub(crate) const fn slot(self) -> usize {
-        (self.0 & 0xffff) as usize
+    pub(crate) const fn slot(self) -> u32 {
+        self.0 as u32
     }
-    pub const fn generation(self) -> u16 {
-        (self.0 >> 16) as u16
+    pub const fn generation(self) -> u32 {
+        (self.0 >> 32) as u32
+    }
+    /// The slot index, for diagnostics that carry a `u32`.
+    pub const fn index(self) -> u32 {
+        self.0 as u32
     }
 }
 
-/// A VM in the global VM arena (not the user-visible VM id, which is per session).
+/// A VM in the global VM table (not the user-visible VM id, which is per session).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct VmId(pub u8);
+pub struct VmId(pub u32);
 
 /// A request, from creation to retirement. Never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RequestId(pub u64);
 
-/// A user-visible object handle is `generation << 16 | (slot + 1)`: never zero, and a slot's next occupant gets a new generation.
-pub(crate) const fn handle_of(gen: u16, slot: usize) -> u32 {
-    (gen as u32) << 16 | (slot as u32 + 1)
+/// Bits of a user handle that index its session's table. A handle is a `u32` on the wire (`drm_i915_gem_exec_object2::handle`,
+/// `GEM_CLOSE`...), so its encoding - not a table size - bounds one session at `2^20 - 1` live handles; the other 12 bits are the
+/// slot's generation (a slot is retired after 4095 reuses). Exhausting the index space is `HANDLE-SPACE-EXHAUSTED`.
+pub const HANDLE_IDX_BITS: u32 = 20;
+pub(crate) const HANDLE_IDX_MASK: u32 = (1 << HANDLE_IDX_BITS) - 1;
+/// The highest generation a handle slot may carry (`2^12 - 1`).
+pub(crate) const HANDLE_MAX_GEN: u32 = (1 << (32 - HANDLE_IDX_BITS)) - 1;
+
+/// A user-visible object handle is `generation << 20 | (index + 1)`: never zero, and a slot's next occupant gets a new generation.
+pub(crate) const fn handle_of(gen: u32, idx: u32) -> u32 {
+    gen << HANDLE_IDX_BITS | (idx + 1)
 }

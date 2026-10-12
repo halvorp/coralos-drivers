@@ -74,7 +74,7 @@ pub enum Effect {
     /// Revoke every CPU mapping of `obj` (`i915_gem_object_release_mmap_*`).
     RevokeMmap { obj: ObjId },
     /// A context left the table (`context_close` finished); the executor may drop its engine contexts.
-    ContextFreed { ctx_slot: u8 },
+    ContextFreed { ctx_slot: u32 },
     /// A VM left the table; the executor may free its page-table pages.
     VmFreed { vm: VmId },
 }

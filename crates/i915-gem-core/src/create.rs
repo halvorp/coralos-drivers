@@ -5,14 +5,11 @@
 use crate::error::GemError;
 use crate::gem::Gem;
 use crate::ids::{ObjId, SessionId};
-use crate::limits::*;
 use crate::object::{Madv, MmapKind, Object, ObjectState, DOMAIN_GTT, DOMAIN_WC};
 use crate::seam::{Effect, EffectSink, PageRequest, PageSource};
-use i915_memory_core::CacheLevel;
+use i915_memory_core::{CacheLevel, GTT_PAGE};
 use i915_uapi_core::consts::{domain as d, misc as m};
 
-/// `PAGE_SIZE` (x86-64) - the unit of `round_up(size, object_max_page_size(...))` for the system region.
-pub const PAGE_SIZE: u64 = 4096;
 /// `GEN7_FENCE_MAX_PITCH_VAL` (i915_reg.h:219).
 pub const GEN7_FENCE_MAX_PITCH_VAL: u32 = 0x0800; // i915_reg.h:219
 
@@ -42,10 +39,6 @@ pub struct TilingReply {
 }
 
 impl<const V: usize, const T: usize> Gem<V, T> {
-    fn free_object_slot(&self) -> Option<usize> {
-        self.objects.iter().position(|s| s.obj.is_none() && !s.dead)
-    }
-
     /// `i915_gem_create_ioctl` (gem/i915_gem_create.c:224-244): a SYSTEM object.
     pub fn create(&mut self, session: SessionId, size: u64) -> Result<Created, GemError> {
         self.create_object(session, size)
@@ -78,7 +71,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     /// `__i915_gem_object_create_user_ext` + `i915_gem_publish` (gem/i915_gem_create.c:90-155, gem/i915_gem_create.c:71-88).
     fn create_object(&mut self, session: SessionId, size: u64) -> Result<Created, GemError> {
         let slot = self.session_slot(session)?;
-        let size = size.checked_add(PAGE_SIZE - 1).ok_or(GemError::CreateTooBig { size, max: self.max_object_bytes() })? & !(PAGE_SIZE - 1); // gem/i915_gem_create.c:102
+        let size = size.checked_add(GTT_PAGE - 1).ok_or(GemError::CreateTooBig { size, max: self.max_object_bytes() })? & !(GTT_PAGE - 1); // gem/i915_gem_create.c:102
         if size == 0 {
             return Err(GemError::CreateZeroSize); // gem/i915_gem_create.c:103-104
         }
@@ -86,14 +79,13 @@ impl<const V: usize, const T: usize> Gem<V, T> {
         if size > max {
             return Err(GemError::CreateTooBig { size, max }); // gem/i915_gem_create.c:109-110, bounded by system RAM (port bound, see max_object_bytes)
         }
-        let oslot = self.free_object_slot().ok_or(GemError::ObjectTableFull { cap: MAX_OBJECTS })?;
-        let id = ObjId::new(self.objects[oslot].gen, oslot as u16);
-        let obj = Object::new(slot as u8, size, self.dev.desc.info.has_llc);
-        self.objects[oslot].obj = Some(obj);
+        let obj = Object::new(slot as u32, size, self.dev.desc.info.has_llc);
+        let (idx, gen) = self.objects.insert(obj, &mut self.quota, "objects", u32::MAX as usize)?;
+        let id = ObjId::new(gen, idx);
         match self.install_handle(slot, id) {
             Ok(handle) => Ok(Created { handle, size }),
             Err(e) => {
-                self.objects[oslot].obj = None;
+                self.objects.remove(idx); // nothing half-created: the object goes again
                 Err(e)
             }
         }
@@ -109,7 +101,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     pub fn close(&mut self, session: SessionId, handle: u32, sink: &mut dyn EffectSink) -> Result<(), GemError> {
         let slot = self.session_slot(session)?;
         let obj = self.lookup(slot, handle).map_err(|e| GemError::CloseHandle { handle, cross: matches!(e, GemError::CrossSessionHandle { .. }) })?;
-        let i = ((handle & 0xffff) - 1) as usize;
+        let i = (handle & crate::ids::HANDLE_IDX_MASK) - 1;
         self.release_handle(slot, i, obj, sink);
         Ok(())
     }
@@ -158,9 +150,9 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             return Err(GemError::ObjectPurged { handle }); // ____i915_gem_object_get_pages, gem/i915_gem_pages.c:109-112
         }
         src.alloc_pages(PageRequest { obj: id, bytes: o.size, cache: o.cache }).map_err(|_| GemError::PagesRefused { bytes: o.size })?;
-        let have = src.pages(id).ok_or(GemError::PagesMalformed { have: 0, want: o.size / PAGE_SIZE })?;
-        let want = o.size / PAGE_SIZE;
-        if have.len() as u64 != want || have.iter().any(|p| p % PAGE_SIZE != 0) {
+        let have = src.pages(id).ok_or(GemError::PagesMalformed { have: 0, want: o.size / GTT_PAGE })?;
+        let want = o.size / GTT_PAGE;
+        if have.len() as u64 != want || have.iter().any(|p| p % GTT_PAGE != 0) {
             return Err(GemError::PagesMalformed { have: have.len() as u64, want });
         }
         if let Some(o) = self.obj_mut(id) {
@@ -336,7 +328,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
 
     /// The display owner marks a scanout object (`i915_gem_object_is_framebuffer`), after which its tiling is immutable.
     pub fn set_framebuffer(&mut self, id: ObjId, on: bool) -> Result<(), GemError> {
-        let o = self.obj_mut(id).ok_or(GemError::HandleNotInSession { handle: id.0 })?;
+        let o = self.obj_mut(id).ok_or(GemError::HandleNotInSession { handle: id.index() })?;
         o.framebuffer = on;
         Ok(())
     }

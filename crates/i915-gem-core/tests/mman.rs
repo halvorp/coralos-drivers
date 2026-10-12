@@ -2,7 +2,6 @@
 //! CPU-mapping policy: which mmap type each object may use on this device, offsets and who may use them, and leases.
 mod common;
 use common::*;
-use i915_gem_core::limits::*;
 use i915_gem_core::*;
 use i915_uapi_core::consts::misc as m;
 
@@ -140,29 +139,40 @@ fn legacy_gem_mmap_checks_flags_range_and_pat() {
 }
 
 #[test]
-fn mapping_requests_the_pages_and_the_tables_are_bounded() {
+fn offsets_and_leases_grow_with_use_and_refuse_by_name_out_of_budget() {
     let mut r = R::new();
-    let hs: Vec<u32> = (0..MAX_MMAP_OFFSETS + 1).map(|_| r.create(4096)).collect();
-    for h in &hs[..MAX_MMAP_OFFSETS] {
-        r.gem.mmap_offset(r.s, *h, WB).unwrap();
-    }
-    let err = r.gem.mmap_offset(r.s, hs[MAX_MMAP_OFFSETS], WB).unwrap_err();
-    assert_eq!(err, GemError::MmapTableFull { cap: MAX_MMAP_OFFSETS });
-    // an offset already granted can still be asked for again
-    assert!(r.gem.mmap_offset(r.s, hs[0], WB).is_ok());
-    // closing an object frees its offsets
+    let hs: Vec<u32> = (0..500).map(|_| r.create(4096)).collect();
+    let offs: Vec<u64> = hs.iter().map(|h| r.gem.mmap_offset(r.s, *h, WB).unwrap().offset).collect();
+    let mut sorted = offs.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted.len(), 500, "500 live offsets, all distinct");
+    // an offset already granted can still be asked for again at no cost
+    r.gem.set_table_budget(Some(0));
+    assert_eq!(r.gem.mmap_offset(r.s, hs[0], WB).unwrap().offset, offs[0]);
+    let extra = {
+        r.gem.set_table_budget(None);
+        let h = r.create(4096);
+        r.gem.set_table_budget(Some(0));
+        h
+    };
+    assert_eq!(r.gem.mmap_offset(r.s, extra, WB), Err(GemError::NoMem { table: "mmap-offsets" }));
+    // closing an object frees its offset slot for reuse
     r.gem.close(r.s, hs[1], &mut r.sink).unwrap();
-    assert!(r.gem.mmap_offset(r.s, hs[MAX_MMAP_OFFSETS], WB).is_ok());
+    assert!(r.gem.mmap_offset(r.s, extra, WB).is_ok());
 
-    // leases: one object, MAX_LEASES mappings
+    // leases: one object, 300 mappings
     let mut r = R::new();
     let h = r.create(4096);
     let g = r.gem.mmap_offset(r.s, h, WB).unwrap();
     let mut leases = vec![];
-    for _ in 0..MAX_LEASES {
+    for _ in 0..300 {
         leases.push(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages).unwrap().lease);
     }
-    assert_eq!(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages), Err(GemError::LeaseTableFull { cap: MAX_LEASES }));
+    r.gem.set_table_budget(Some(0));
+    let id = r.gem.lookup_object(r.s, h).unwrap();
+    assert_eq!(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages), Err(GemError::NoMem { table: "mmap-leases" }));
+    assert_eq!(r.gem.lease_count(id), 300, "the refused lease was not counted");
     r.gem.mmap_close(leases.pop().unwrap(), &mut r.sink).unwrap();
-    assert!(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages).is_ok());
+    assert!(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages).is_ok(), "a freed slot is reused with no budget");
 }

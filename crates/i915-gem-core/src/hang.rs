@@ -34,7 +34,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     /// innocent. `now_ms` is the caller's monotonic clock in milliseconds.
     pub fn request_reset(&mut self, engine: usize, engine_ctx: u32, seqno: u32, guilty: bool, now_ms: u64) -> Result<ResetVerdict, GemError> {
         let ri = self.active.find(engine as u8, engine_ctx, seqno).ok_or(GemError::RequestUnknown { engine, engine_ctx, seqno })?;
-        let cslot = self.active.reqs[ri].expect("found").ctx as usize;
+        let cslot = self.active.reqs[ri].as_ref().expect("found").ctx as usize;
         if !guilty {
             // mark_innocent (gt/intel_reset.c:114-123) and -EAGAIN (gt/intel_reset.c:138)
             if let Some(r) = self.active.reqs[ri].as_mut() {

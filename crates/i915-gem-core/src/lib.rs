@@ -26,12 +26,22 @@
 //! (refused), local memory and placements other than SYSTEM, protected content (PXP), GuC, GVT, flink/PRIME (the device's session
 //! tables), perf/OA, the Gen6/7 GGTT-global execbuffer paths, the command parser, parallel submission, error capture.
 //!
-//! BOUNDS (each enforced and tested, see `limits.rs`): sessions, handles per session, objects, contexts, VMs, engine-map slots,
-//! active requests, objects per execbuffer, mmap offsets, leases, hardware-seqno observations, the two-slot hang history and the
-//! client ban score.
+//! TABLES: every table of a runtime-growing population (sessions, handles, objects, contexts, address spaces, requests, mmap offsets,
+//! leases, hardware-seqno observations) is a growable collection with fallible growth and the named refusal `GEM-NOMEM`
+//! (`table.rs`); `Gem::set_table_budget` is the per-device quota and the failure injector. What is fixed is hardware- or ABI-defined
+//! (`limits.rs`): engines on the part, the 64-slot engine map, the 20-bit handle index, the two-slot hang history. The per-address-space
+//! VMA and page-table capacities (`Gtt<V, T>`) are `i915-memory-core`'s.
 
 #![no_std]
 #![forbid(unsafe_code)]
+
+// `alloc` is UNAVOIDABLE here and justified (PORT_CONVENTIONS.md section 7, DECISIONS.md D9): owner ruling 2026-10-12, "if we are a real
+// OS, there cannot be a hard cap" - doctrine RUNTIME-TABLES-HAVE-NO-CAP. Sessions, handles, objects, contexts, address spaces, requests,
+// mmap offsets and leases are runtime-growing populations; their tables are `alloc` collections (`table.rs`) that grow with memory with
+// FALLIBLE growth only (`try_reserve`), and exhaustion is the named refusal `GEM-NOMEM` raised before the thing exists. What stays fixed
+// is fixed by hardware or ABI and says so where it is declared (`limits.rs`). `alloc` is never used for a hot-path temporary that could
+// be a slice, and no code path here calls an infallible-growth API (`push` on a Vec without a prior `try_reserve`, `collect`, `vec!`).
+extern crate alloc;
 
 pub mod active;
 pub mod context;
@@ -46,6 +56,7 @@ pub mod limits;
 pub mod mman;
 pub mod object;
 pub mod seam;
+pub mod table;
 pub mod shrink;
 pub mod vm;
 
@@ -62,3 +73,4 @@ pub use mman::{CpuCache, MappingLease, MmapGrant};
 pub use object::{Madv, MmapKind, ObjectState};
 pub use seam::{Effect, EffectSink, EngineSet, PageRequest, PageSource, PagesRefused, SyncTables};
 pub use shrink::ShrinkReport;
+pub use table::Quota;

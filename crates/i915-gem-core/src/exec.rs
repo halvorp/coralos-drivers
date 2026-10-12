@@ -26,7 +26,8 @@ use crate::error::GemError;
 use crate::exec_env::ExecView;
 use crate::gem::Gem;
 use crate::ids::{ObjId, RequestId, SessionId, VmId};
-use crate::limits::*;
+use crate::table;
+use alloc::vec::Vec;
 use crate::seam::{Effect, EffectSink, EngineSet, PageSource, SyncTables};
 use i915_memory_core::{BindRequest, MemError, Mode, Placement, TablePageSource, VmaId};
 use i915_submit_core::BatchSpec;
@@ -40,7 +41,7 @@ pub const BATCH_OFFSET_BIAS: u64 = 256 * 1024; // i915_gem_execbuffer.c:71
 const PAGE: u64 = 4096;
 
 /// What a successful `EXECBUFFER2` produced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExecDone {
     pub request: RequestId,
     /// Index in the device's engine order, and the request's identity on that engine.
@@ -49,7 +50,7 @@ pub struct ExecDone {
     pub seqno: u32,
     /// Objects in the submission and their final GPU addresses, canonical form (what `execbuffer2` writes back, gem/i915_gem_execbuffer.c:3630).
     pub n_objects: usize,
-    pub offsets: [u64; MAX_EXEC_OBJECTS],
+    pub offsets: Vec<u64>,
     /// Objects whose address differs from the `offset` the user passed (`UPDATE`, gem/i915_gem_execbuffer.c:1019): the user must re-read offsets.
     pub moved: u32,
     pub relocs_patched: u32,
@@ -76,15 +77,6 @@ struct Eb {
     needs_bias: bool,
 }
 
-const EB_EMPTY: Eb = Eb {
-    exec: ExecObject2 { handle: 0, relocation_count: 0, alignment: 0, offset: 0, flags: 0, pad_to_size: 0, rsvd2: 0 },
-    obj: ObjId(0),
-    vma: None,
-    offset: 0,
-    write: false,
-    asynchronous: false,
-    needs_bias: false,
-};
 
 /// `eb_vma_misplaced` (gem/i915_gem_execbuffer.c:379-409) for a bound VMA at `start` covering `size` bytes.
 fn misplaced(eb: &Eb, start: u64, size: u64) -> bool {
@@ -160,7 +152,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             let Some(v) = vm.vmas[i] else { continue };
             if let Ok(plan) = vm.gtt.plan_unbind(v.id) {
                 vm.vmas[i] = None;
-                sink.unbind(VmId(vi as u8), &plan);
+                sink.unbind(VmId(vi as u32), &plan);
                 n += 1;
             } // Pinned (in use by this submission): left alone
         }
@@ -182,7 +174,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     ) -> Result<(), MemError> {
         let (osize, cache) = match self.obj(eb.obj) {
             Some(o) => (o.size, o.cache),
-            None => return Err(MemError::NotBound { id: eb.obj.0 }),
+            None => return Err(MemError::NotBound { id: eb.obj.index() }),
         };
         let e = eb.exec;
         let pad = if e.flags & eo::EXEC_OBJECT_PAD_TO_SIZE != 0 { e.pad_to_size } else { 0 };
@@ -195,7 +187,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             zone_4g: e.flags & eo::EXEC_OBJECT_SUPPORTS_48B_ADDRESS == 0, // Wa32bitGeneralStateOffset, gem/i915_gem_execbuffer.c:419-424
             evict,
         };
-        let pg = pages.pages(eb.obj).ok_or(MemError::NotBound { id: eb.obj.0 })?;
+        let pg = pages.pages(eb.obj).ok_or(MemError::NotBound { id: eb.obj.index() })?;
         let req = BindRequest { pages: pg, size, alignment: e.alignment, guard: 0, cache, flags: 0, place };
         let vm = self.vms[vi].as_mut().ok_or(MemError::NotBound { id: vi as u32 })?;
         let plan = vm.gtt.plan_bind(tables, &req)?;
@@ -207,7 +199,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
         let _ = vm.gtt.set_pinned(plan.vma(), true);
         eb.vma = Some(plan.vma());
         eb.offset = plan.offset();
-        sink.bind(VmId(vi as u8), eb.obj, &plan);
+        sink.bind(VmId(vi as u32), eb.obj, &plan);
         Ok(())
     }
 
@@ -244,15 +236,14 @@ impl<const V: usize, const T: usize> Gem<V, T> {
         }
         let (eidx, class, instance) = self.resolve_engine(slot, cslot, plan.engine)?;
         let ectx = ctx.engine_ctx[eidx].ok_or(GemError::ExecEngineContextMissing { ctx: ctx_id, class, instance })?; // gem/i915_gem_execbuffer.c:2566
-        let aslot = self.active.free_slot().ok_or(GemError::ActiveTableFull { cap: MAX_ACTIVE })?;
+        // A request slot first: if the table cannot grow nothing has been asked of the engine yet (RUNTIME-TABLES-HAVE-NO-CAP).
+        let aslot = self.active.reserve_slot(&mut self.quota)?;
         let vi = ctx.vm as usize;
 
         // eb_lookup_vmas (gem/i915_gem_execbuffer.c:941-978): the session's own table, then page residency.
         let n = req.objects.len();
-        if n > MAX_EXEC_OBJECTS {
-            return Err(GemError::ExecTooManyObjects { count: n, max: MAX_EXEC_OBJECTS });
-        }
-        let mut eb = [EB_EMPTY; MAX_EXEC_OBJECTS];
+        // The list is sized by the submission (the wire decode already bounds `n` by `ExecLimits`), and built fallibly.
+        let mut eb: Vec<Eb> = table::with_capacity(n, "exec-objects")?;
         for i in 0..n {
             let exec = req.objects.get(i).ok_or(GemError::EngineIndex { index: i })?;
             let obj = self.lookup(slot, exec.handle)?;
@@ -261,7 +252,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             }
             self.ensure_pages(obj, exec.handle, pages)?; // a purged object is -EFAULT here, gem/i915_gem_pages.c:109-112
             let is_batch = i == plan.batch_index;
-            eb[i] = Eb {
+            eb.push(Eb {
                 exec,
                 obj,
                 vma: None,
@@ -270,17 +261,17 @@ impl<const V: usize, const T: usize> Gem<V, T> {
                 asynchronous: exec.flags & eo::EXEC_OBJECT_ASYNC != 0,
                 // eb_add_vma gem/i915_gem_execbuffer.c:593-596: a batch with relocations that is not softpinned is kept above BATCH_OFFSET_BIAS.
                 needs_bias: is_batch && exec.relocation_count != 0 && exec.flags & eo::EXEC_OBJECT_PINNED == 0,
-            };
+            });
         }
 
         let mut evicted = 0u32;
         let mut passes = 0u8;
         let result = self.exec_placed(
-            slot, cslot, vi, ectx, eidx, class, instance, &plan, req, sync, &mut eb[..n], aslot, pages, tables, engines, sink, now, &mut evicted, &mut passes,
+            slot, cslot, vi, ectx, eidx, class, instance, &plan, req, sync, &mut eb[..], aslot, pages, tables, engines, sink, now, &mut evicted, &mut passes,
         );
         // Whatever happened, the VMAs are no longer in use by this submission (i915_vma_unpin, eb_release_vmas gem/i915_gem_execbuffer.c:1068-1088).
         if let Some(vm) = self.vms[vi].as_mut() {
-            for e in eb[..n].iter().filter_map(|e| e.vma) {
+            for e in eb.iter().filter_map(|e| e.vma) {
                 let _ = vm.gtt.set_pinned(e, false);
             }
         }
@@ -312,7 +303,8 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     ) -> Result<ExecDone, GemError> {
         let n = eb.len();
         let pages: &P = pages; // allocation is over; from here the pages are only read
-        let mut unbound = [false; MAX_EXEC_OBJECTS];
+        let mut unbound: Vec<bool> = table::with_capacity(n, "exec-objects")?;
+        unbound.resize(n, false);
 
         // eb_validate_vmas -> eb_pin_vma (gem/i915_gem_execbuffer.c:997-1045, gem/i915_gem_execbuffer.c:438-489): reuse the current location when it still satisfies the entry.
         for i in 0..n {
@@ -325,7 +317,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
                         // "Failing that pick any _free_ space": unbind and put it on the unbound list (gem/i915_gem_execbuffer.c:1022-1030).
                         let p = vm.gtt.plan_unbind(vid).map_err(|why| GemError::ExecReserve { handle: eb[i].exec.handle, why })?;
                         vm.vmas[ri] = None;
-                        sink.unbind(VmId(vi as u8), &p);
+                        sink.unbind(VmId(vi as u32), &p);
                         unbound[i] = true;
                     } else {
                         let _ = vm.gtt.set_pinned(vid, true);
@@ -390,10 +382,10 @@ impl<const V: usize, const T: usize> Gem<V, T> {
                 return Err(GemError::ExecPinnedMisplaced { handle: e.exec.handle, want: noncanonical_addr(e.exec.offset), have: e.offset });
             }
         }
-        let mut offsets = [0u64; MAX_EXEC_OBJECTS];
+        let mut offsets: Vec<u64> = table::with_capacity(n, "exec-objects")?;
         let mut moved = 0u32;
-        for (i, e) in eb.iter().enumerate() {
-            offsets[i] = canonical_addr(e.offset);
+        for e in eb.iter() {
+            offsets.push(canonical_addr(e.offset));
             if canonical_addr(e.offset) != canonical_addr(noncanonical_addr(e.exec.offset)) {
                 moved += 1; // entry->offset = i915_vma_offset(vma) | UPDATE, gem/i915_gem_execbuffer.c:1019
             }
@@ -420,27 +412,30 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             flags: 0,                                                    // I915_DISPATCH_*: SECURE and PINNED are refused earlier
             nopreempt: false,                                            // intel_context_nopreempt: never set on this port
         };
+        // Everything this submission will need to remember is allocated BEFORE the engine is asked for a request.
+        let mut objs: Vec<(ObjId, bool)> = table::with_capacity(n, "request-objects")?;
+        let mut seen: Vec<bool> = table::with_capacity(self.active.reqs.len(), "request-deps")?;
+        seen.resize(self.active.reqs.len(), false);
         let rq = engines.build_request(class, instance, ectx, &spec)?;
         let id = RequestId(self.active.next_id);
         self.active.next_id += 1;
 
         // _i915_vma_move_to_active (i915_vma.c:1970-2040): the activity and the CPU-domain bookkeeping.
-        let mut act = ActiveReq { id, engine: eidx as u8, ectx, seqno: rq.seqno, ctx: cslot as u8, objs: [(ObjId(0), false); MAX_EXEC_OBJECTS], n: n as u8, error: None };
-        for (i, e) in eb.iter().enumerate() {
-            act.objs[i] = (e.obj, e.write);
+        for e in eb.iter() {
+            objs.push((e.obj, e.write));
         }
+        let act = ActiveReq { id, engine: eidx as u8, ectx, seqno: rq.seqno, ctx: cslot as u32, objs, error: None };
         // i915_request_await_object (i915_request.c:1583-): wait for earlier writers (and, for a write, readers) on OTHER engines;
         // the same engine runs requests in submission order. EXEC_OBJECT_ASYNC opts out (gem/i915_gem_execbuffer.c:2123).
-        let mut seen = 0u64;
         for e in eb.iter().filter(|e| !e.asynchronous) {
             for (si, prev) in self.active.reqs.iter().enumerate() {
                 let Some(prev) = prev else { continue };
-                if prev.engine as usize == eidx || self.active.completed(prev) || seen & (1 << si) != 0 {
+                if prev.engine as usize == eidx || self.active.completed(prev) || seen[si] {
                     continue;
                 }
                 if let Some(prev_writes) = prev.touches(e.obj) {
                     if e.write || prev_writes {
-                        seen |= 1 << si;
+                        seen[si] = true;
                         sink.effect(Effect::AwaitRequest { rq: id, on: prev.id });
                     }
                 }

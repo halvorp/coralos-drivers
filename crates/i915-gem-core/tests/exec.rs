@@ -130,11 +130,7 @@ fn eight_pages_of_big(r: &mut Big, mib: u64) -> u32 {
 
 #[test]
 fn a_full_address_space_evicts_the_least_recently_used_and_waits_for_it_to_retire() {
-    // A `Gem` with page-table room for a 4 GiB zone is hundreds of KiB: the executor keeps it in a static, a test gives it a stack.
-    std::thread::Builder::new().stack_size(256 << 20).spawn(full_zone_eviction).unwrap().join().unwrap();
-}
-
-fn full_zone_eviction() {
+    // No big stack needed: a `Gem` is a handful of vectors; the page-table room of the 4 GiB zone is memory-core's, on the heap.
     // Objects without SUPPORTS_48B_ADDRESS live below 4 GiB (PIN_ZONE_4G, gem/i915_gem_execbuffer.c:419-424). Fill that zone with 256 MiB objects.
     let mut r = Big::new();
     let batch = r.create(4096);
@@ -207,12 +203,7 @@ fn when_no_pass_can_make_room_the_submission_fails_with_enospc_and_leaves_no_pin
     assert_eq!(r.gem.active_requests(), 1, "no request was built for the failed submission");
     // nothing stayed pinned: a following submission can evict anything it needs and succeeds
     let again = r.exec(&Exec::new(0, vec![pinned(ok, 0x10_0000), pinned(batch, 0x20_0000)]), 2).unwrap();
-    assert_eq!(again.offsets, {
-        let mut o = [0u64; 128];
-        o[0] = 0x10_0000;
-        o[1] = 0x20_0000;
-        o
-    });
+    assert_eq!(again.offsets, vec![0x10_0000, 0x20_0000]);
 }
 
 #[test]
@@ -468,23 +459,17 @@ fn a_context_without_an_engine_context_for_the_engine_is_refused_by_name() {
 }
 
 #[test]
-fn the_same_object_twice_and_too_many_objects_are_refused() {
-    let mut r = Rig::<160, 16>::new();
+fn the_same_object_twice_is_refused_and_a_huge_submission_is_not() {
+    let mut r = Rig::<600, 64>::new();
     let a = r.create(4096);
     let err = r.exec(&Exec::new(0, vec![pinned(a, 0x10_0000), pinned(a, 0x10_0000)]), 0).unwrap_err();
     assert_eq!(err, GemError::ExecObjectDuplicate { handle: a });
-    let mut objs = vec![];
-    for i in 0..(i915_gem_core::limits::MAX_EXEC_OBJECTS + 1) {
-        let h = r.create(4096);
-        objs.push(pinned(h, 0x10_0000 + i as u64 * 0x1000));
-    }
-    let max = i915_gem_core::limits::MAX_EXEC_OBJECTS;
-    let err = r.exec(&Exec::new(0, objs.clone()), 0).unwrap_err();
-    assert_eq!(err, GemError::ExecTooManyObjects { count: max + 1, max });
-    // exactly the bound is accepted
-    objs.pop();
-    let ok = r.exec(&Exec::new(0, objs), 0);
-    assert!(ok.is_ok(), "{ok:?}");
+    // RUNTIME-TABLES-HAVE-NO-CAP: the per-submission lists are sized by the submission (the wire decode bounds the count), not by a constant
+    let objs: Vec<_> = (0..500).map(|i| pinned(r.create(4096), 0x10_0000 + i as u64 * 0x1000)).collect();
+    let done = r.exec(&Exec::new(0, objs), 0).unwrap();
+    assert_eq!(done.n_objects, 500);
+    assert_eq!(done.offsets.len(), 500);
+    assert_eq!(done.offsets[499], 0x10_0000 + 499 * 0x1000);
 }
 
 #[test]
@@ -524,10 +509,7 @@ fn a_banned_context_cannot_submit() {
 
 #[test]
 fn an_object_of_the_submission_is_never_a_victim_of_the_same_submission() {
-    std::thread::Builder::new().stack_size(256 << 20).spawn(own_members_are_pinned).unwrap().join().unwrap();
-}
 
-fn own_members_are_pinned() {
     // 16 x 256 MiB cannot all live below 4 GiB. Without the pin the 16th would silently evict the 1st (the oldest) and the
     // submission would run with an unbound object; with it, the reserve passes run out and the submission fails.
     let mut r = Big::new();

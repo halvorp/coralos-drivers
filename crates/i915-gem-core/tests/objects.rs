@@ -119,7 +119,7 @@ fn a_purged_object_cannot_be_mapped_or_submitted_but_can_still_be_closed() {
     r.gem.madvise(r.s, h, DONTNEED).unwrap();
     r.gem.shrink(u64::MAX, &mut r.sink);
     let g = r.gem.mmap_offset(r.s, h, 2).unwrap(); // an offset can still be assigned (__assign_mmap_offset does not look at pages)
-    assert_eq!(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages), Err(GemError::ObjectPurged { handle: id.0 }), "the fault path pins the pages");
+    assert_eq!(r.gem.mmap_open(r.s, g.offset, 4096, &mut r.pages), Err(GemError::ObjectPurged { handle: id.index() }), "the fault path pins the pages");
     r.sink.clear();
     r.gem.close(r.s, h, &mut r.sink).unwrap();
     assert!(r.sink.effects().contains(&Effect::ObjectFreed { obj: id }));

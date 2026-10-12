@@ -8,7 +8,9 @@
 use crate::error::GemError;
 use crate::gem::{Gem, SessionCaps};
 use crate::ids::{SessionId, VmId};
+use crate::gem::place;
 use crate::limits::*;
+use crate::table;
 use crate::seam::{Effect, EffectSink};
 use i915_memory_core::PpgttInit;
 use i915_uapi_core::consts::{ctx_param as cp, misc as m};
@@ -75,8 +77,8 @@ impl Default for ProtoContext {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Context {
-    pub session: u8,
-    pub vm: u8,
+    pub session: u32,
+    pub vm: u32,
     pub closed: bool,
     pub banned: bool,
     pub bannable: bool,
@@ -219,16 +221,20 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     pub(crate) fn create_context_internal(
         &mut self,
         slot: usize,
-        id: Option<u8>,
+        id: Option<u32>,
         pc: ProtoContext,
         init: Option<PpgttInit>,
         sink: &mut dyn EffectSink,
     ) -> Result<u32, GemError> {
+        // The user-visible id: forced (the default context is 0) or the lowest free one from 1. The session's id table grows with use.
         let uid = match id {
             Some(i) => i as usize,
-            None => (1..MAX_CTX_PER_SESSION).find(|&i| self.session(slot).ctx[i].is_none()).ok_or(GemError::ContextTableFull { cap: MAX_CTX_PER_SESSION })?,
+            None => self.session(slot).ctx.iter().enumerate().skip(1).find(|(_, c)| c.is_none()).map_or(self.session(slot).ctx.len().max(1), |(i, _)| i),
         };
-        let cslot = self.contexts.iter().position(|c| c.is_none()).ok_or(GemError::ContextTableFull { cap: MAX_CONTEXTS })?;
+        while self.session(slot).ctx.len() <= uid {
+            let s = self.sessions[slot].as_mut().expect("session slot validated");
+            table::push(&mut s.ctx, None, &mut self.quota, "context-ids")?;
+        }
         // The address space: the one named by PARAM_VM, else a new one (`i915_ppgtt_create`, gem/i915_gem_context.c:1628-1640).
         let vm = match pc.vm_id {
             Some(v) => self.vm_lookup(slot, v)?,
@@ -237,9 +243,8 @@ impl<const V: usize, const T: usize> Gem<V, T> {
                 self.create_vm_slot(init, sink)?
             }
         };
-        self.vm_ref(vm as usize);
-        self.contexts[cslot] = Some(Context {
-            session: slot as u8,
+        let ctx = Context {
+            session: slot as u32,
             vm,
             closed: false,
             banned: false,
@@ -253,8 +258,17 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             active: 0,
             hang_ts: [None; HANG_HISTORY],
             engine_ctx: [None; MAX_ENGINES],
-        });
-        self.session_mut(slot).ctx[uid] = Some(cslot as u8);
+        };
+        // Nothing but the (possibly new) address space exists yet: if the table cannot grow, release the space again.
+        let cslot = match place(&mut self.contexts, ctx, &mut self.quota, "contexts") {
+            Ok(c) => c,
+            Err(e) => {
+                self.sweep_vms(sink);
+                return Err(e);
+            }
+        };
+        self.vm_ref(vm as usize);
+        self.session_mut(slot).ctx[uid] = Some(cslot as u32);
         Ok(uid as u32)
     }
 
@@ -306,12 +320,17 @@ impl<const V: usize, const T: usize> Gem<V, T> {
 
     /// Release closed contexts with no request in flight (`i915_gem_context_release_work`, gem/i915_gem_context.c:1280).
     pub(crate) fn sweep_contexts(&mut self, sink: &mut dyn EffectSink) {
-        for c in 0..MAX_CONTEXTS {
+        for c in 0..self.contexts.len() {
             let Some(ctx) = self.contexts[c] else { continue };
-            if ctx.closed && !self.active.refs_context(c as u8) {
+            if ctx.closed && !self.active.refs_context(c as u32) {
                 self.contexts[c] = None;
                 self.vm_unref(ctx.vm as usize);
-                sink.effect(Effect::ContextFreed { ctx_slot: c as u8 });
+                for (e, ectx) in ctx.engine_ctx.iter().enumerate() {
+                    if let Some(ectx) = ectx {
+                        self.active.forget(e as u8, *ectx); // the hardware context is gone: so is its seqno observation
+                    }
+                }
+                sink.effect(Effect::ContextFreed { ctx_slot: c as u32 });
             }
         }
         self.sweep_vms(sink);
@@ -345,7 +364,13 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             cp::I915_CONTEXT_PARAM_SSEU => Err(GemError::ParamUnsupported { param }),
             cp::I915_CONTEXT_PARAM_VM => {
                 // get_ppgtt (gem/i915_gem_context.c:1870-1903): publish the context's VM under a new user-visible id.
-                let id = self.session(slot).vm_ids.iter().position(|v| v.is_none()).ok_or(GemError::VmTableFull { cap: MAX_VM_IDS_PER_SESSION })?;
+                let id = match self.session(slot).vm_ids.iter().position(|v| v.is_none()) {
+                    Some(i) => i,
+                    None => {
+                        let s = self.sessions[slot].as_mut().expect("session slot validated");
+                        table::push(&mut s.vm_ids, None, &mut self.quota, "vm-ids")?
+                    }
+                };
                 self.vm_ref(ctx.vm as usize);
                 self.session_mut(slot).vm_ids[id] = Some(ctx.vm);
                 v(id as u64 + 1)

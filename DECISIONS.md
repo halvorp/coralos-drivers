@@ -73,3 +73,12 @@ recovery image, coreboot, the Linux source, a measurement on the machine — nev
 On 2026-10-11 a web summary of the Pixelbook Go (ATLAS) listed an Intel AC 7265, NVMe storage and a Synaptics
 touchpad; all three were wrong against the board's own recovery image. A port's choice of which Linux driver to
 port is grounded the same way.
+
+**D9 — Core crates may use `alloc` for runtime-growing tables; fallible growth only; named refusal.** Owner ruling 2026-10-12: "if we are
+a real OS, there cannot be a hard cap" (doctrine RUNTIME-TABLES-HAVE-NO-CAP). A table that tracks a runtime-growing population
+(sessions, handles, objects, contexts, address-space entries, requests, leases) is an `alloc` collection that grows with memory; its
+size is never a compile-time constant. Growth is fallible (`try_reserve` / a charged `try_insert`; no `Vec::push` on an unreserved vector,
+no `collect`, no `vec!` on a request path); exhaustion is a NAMED refusal (`GEM-NOMEM`, naming the table) raised before the thing
+exists, with nothing half-created. This is the justification PORT_CONVENTIONS section 7 asks for ("No `alloc` unless unavoidable and
+justified in a comment"); the comment sits at the top of the crate's `lib.rs`. What stays fixed is fixed by HARDWARE (engines on the part,
+context tags, fence registers) or by an ABI width, and says so where it is declared.

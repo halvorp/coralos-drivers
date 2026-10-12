@@ -3,8 +3,11 @@
 //! "cross-session handle theft" RED), handle-table bounds, and when a closed object may finally be freed.
 mod common;
 use common::*;
-use i915_gem_core::limits::*;
+use i915_gem_core::ids::HANDLE_IDX_BITS;
 use i915_gem_core::*;
+
+const MASK: u32 = (1 << HANDLE_IDX_BITS) - 1;
+const MAX_GEN: u32 = (1 << (32 - HANDLE_IDX_BITS)) - 1;
 
 type R = Rig<8, 8>;
 
@@ -18,7 +21,7 @@ fn create_rounds_up_to_pages_and_hands_out_nonzero_generation_tagged_handles() {
     assert_eq!(d.size, 8192);
     assert_ne!(c.handle, 0);
     assert_ne!(c.handle, d.handle);
-    assert_eq!(c.handle >> 16, 1, "first occupant of a slot has generation 1");
+    assert_eq!(c.handle >> HANDLE_IDX_BITS, 1, "first occupant of a slot has generation 1");
     assert_eq!(r.gem.object_size(r.s, c.handle).unwrap(), 4096);
 }
 
@@ -114,8 +117,8 @@ fn a_closed_handle_is_stale_and_its_slot_gets_a_new_generation() {
     r.gem.close(r.s, h, &mut r.sink).unwrap();
     assert_eq!(r.gem.object_size(r.s, h), Err(GemError::StaleHandle { handle: h }));
     let again = r.create(4096);
-    assert_eq!(again & 0xffff, h & 0xffff, "the slot is reused");
-    assert_eq!(again >> 16, (h >> 16) + 1, "with the next generation");
+    assert_eq!(again & MASK, h & MASK, "the slot is reused");
+    assert_eq!(again >> HANDLE_IDX_BITS, (h >> HANDLE_IDX_BITS) + 1, "with the next generation");
     // the old handle value must NOT reach the new occupant
     assert_eq!(r.gem.object_size(r.s, h), Err(GemError::StaleHandle { handle: h }));
     assert_eq!(r.gem.object_size(r.s, again), Ok(4096));
@@ -126,54 +129,114 @@ fn a_closed_handle_is_stale_and_its_slot_gets_a_new_generation() {
 
 #[test]
 fn a_slot_whose_generation_wraps_is_retired_so_a_stale_handle_stays_stale() {
-    // Generation is u16; after 65535 reuses a slot would alias an ancient handle. It is retired instead.
+    // The generation is the top 12 bits of the handle; after MAX_GEN reuses a slot would alias an ancient handle. It is retired instead.
     let mut r = R::new();
     let mut last = 0;
-    for _ in 0..65_535 {
+    for _ in 0..MAX_GEN {
         let h = r.create(4096);
         r.gem.close(r.s, h, &mut r.sink).unwrap();
         last = h;
     }
-    assert_eq!(last >> 16, 0xffff);
+    assert_eq!(last >> HANDLE_IDX_BITS, MAX_GEN);
     let next = r.create(4096);
-    assert_ne!(next & 0xffff, last & 0xffff, "slot 0 is retired for good; the next object lives in another slot");
+    assert_ne!(next & MASK, last & MASK, "slot 0 is retired for good; the next object lives in another slot");
     assert_eq!(r.gem.object_size(r.s, last), Err(GemError::StaleHandle { handle: last }));
 }
 
 #[test]
-fn the_handle_table_and_the_object_table_are_bounded() {
+fn ten_thousand_handles_in_one_session_work_and_each_names_its_own_object() {
+    // RUNTIME-TABLES-HAVE-NO-CAP: the handle table grows with use.
     let mut r = R::new();
-    let mut hs = vec![];
-    for _ in 0..MAX_HANDLES {
-        hs.push(r.create(4096));
+    let hs: Vec<u32> = (0..10_000).map(|i| r.gem.create(r.s, 4096 * (1 + (i % 3) as u64)).unwrap().handle).collect();
+    assert_eq!(r.gem.object_count(), 10_000);
+    let mut seen = std::collections::HashSet::new();
+    assert!(hs.iter().all(|h| seen.insert(*h)), "all handles distinct");
+    for (i, h) in hs.iter().enumerate() {
+        assert_eq!(r.gem.object_size(r.s, *h), Ok(4096 * (1 + (i % 3) as u64)));
     }
-    assert_eq!(r.gem.create(r.s, 4096), Err(GemError::HandleTableFull { cap: MAX_HANDLES }));
-    assert_eq!(r.gem.create(r.s, 4096).unwrap_err().errno(), 12);
-    // a refused create leaks no object slot: freeing one handle makes room again
-    r.gem.close(r.s, hs.pop().unwrap(), &mut r.sink).unwrap();
+    for h in &hs[..5000] {
+        r.gem.close(r.s, *h, &mut r.sink).unwrap();
+    }
+    assert_eq!(r.gem.object_count(), 5_000, "closed idle objects are freed");
+    assert!(hs[..5000].iter().all(|h| r.gem.object_size(r.s, *h).is_err()));
+    // freed slots are reused: the tables do not grow again for the next 5000
+    r.gem.set_table_budget(Some(0));
+    for _ in 0..5000 {
+        r.gem.create(r.s, 4096).unwrap();
+    }
+    assert_eq!(r.gem.create(r.s, 4096), Err(GemError::NoMem { table: "objects" }), "reuse is free, growth is not");
+}
+
+#[test]
+fn the_handle_encoding_not_a_table_size_bounds_a_session() {
+    // 20 index bits: 2^20 - 1 live handles, then HANDLE-SPACE-EXHAUSTED by name (the handle is a u32 on the wire).
+    let mut r = R::new();
+    let max = (1usize << HANDLE_IDX_BITS) - 1;
+    for _ in 0..max {
+        r.gem.create(r.s, 4096).unwrap();
+    }
+    let err = r.gem.create(r.s, 4096).unwrap_err();
+    assert_eq!(err, GemError::HandleSpaceExhausted { table: "handles" });
+    assert_eq!((err.name(), err.errno()), ("HANDLE-SPACE-EXHAUSTED", 12));
+    assert_eq!(r.gem.object_count(), max, "the refused create left no object behind");
+}
+
+#[test]
+fn allocation_failure_is_a_named_refusal_with_nothing_half_created() {
+    let mut r = R::new();
+    let before = r.gem.object_count();
+    // the object's slot is charged first (1 entry), then its handle (1 entry)
+    r.gem.set_table_budget(Some(1));
+    let err = r.gem.create(r.s, 4096).unwrap_err();
+    assert_eq!(err, GemError::NoMem { table: "handles" });
+    assert_eq!((err.name(), err.errno()), ("GEM-NOMEM", 12));
+    assert_eq!(r.gem.object_count(), before, "the half-made object was taken back");
+    assert_eq!(r.gem.table_budget(), Some(0), "the object slot stays as a free slot (growth is not undone), the handle was never charged");
+    // a retry with no budget: the free object slot is reused for nothing, the handle still cannot grow
+    assert_eq!(r.gem.create(r.s, 4096), Err(GemError::NoMem { table: "handles" }));
+    assert_eq!(r.gem.object_count(), before);
+    // one more entry: the handle fits, the object reuses the free slot
+    r.gem.set_table_budget(Some(1));
+    let h = r.gem.create(r.s, 4096).unwrap().handle;
+    assert_eq!(r.gem.object_size(r.s, h), Ok(4096));
+    // and now the next object needs a new slot and there is no budget
+    assert_eq!(r.gem.create(r.s, 4096), Err(GemError::NoMem { table: "objects" }));
+    assert_eq!(r.gem.object_count(), before + 1);
+    // removing the budget restores service
+    r.gem.set_table_budget(None);
     assert!(r.gem.create(r.s, 4096).is_ok());
-    // the object arena is shared by sessions: fill it from several sessions
+}
+
+#[test]
+fn sessions_grow_and_a_refused_session_leaves_no_trace() {
     let mut r = R::new();
     let mut sink = Sink::default();
-    let mut sessions = vec![r.s];
-    for _ in 1..MAX_SESSIONS {
-        sessions.push(r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink).unwrap());
+    for _ in 0..200 {
+        r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink).unwrap();
     }
-    assert_eq!(r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink), Err(GemError::SessionTableFull { cap: MAX_SESSIONS }));
-    let mut made = 0;
-    'outer: for s in &sessions {
-        for _ in 0..MAX_HANDLES {
-            match r.gem.create(*s, 4096) {
-                Ok(_) => made += 1,
-                Err(GemError::ObjectTableFull { cap }) => {
-                    assert_eq!(cap, MAX_OBJECTS);
-                    break 'outer;
-                }
-                Err(e) => panic!("unexpected {e:?}"),
+    assert_eq!(r.gem.session_count(), 201);
+    let vms = r.gem.vm_count();
+    // every table a new session needs is charged before it exists: sessions, context ids, contexts, VMs. Growth already done stays
+    // as free slots (so a retry needs less), but a refusal never leaves a session or an address space behind.
+    let mut refused = 0;
+    for budget in 0..8 {
+        r.gem.set_table_budget(Some(budget));
+        match r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink) {
+            Err(e) => {
+                assert!(matches!(e, GemError::NoMem { .. }), "budget {budget}: {e:?}");
+                assert_eq!(r.gem.session_count(), 201, "no session at budget {budget}");
+                assert_eq!(r.gem.vm_count(), vms, "no address space leaked at budget {budget}");
+                refused += 1;
+            }
+            Ok(_) => {
+                assert_eq!(r.gem.session_count(), 202);
+                break;
             }
         }
     }
-    assert_eq!(made, MAX_OBJECTS);
+    assert!(refused >= 1, "a zero budget refuses");
+    r.gem.set_table_budget(None);
+    assert!(r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink).is_ok());
 }
 
 #[test]

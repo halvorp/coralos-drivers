@@ -31,10 +31,10 @@ pub enum MmapKind {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Object {
     /// The owning session's slot. Objects are not shared between sessions in this crate (PRIME/flink are `devices/i915`'s).
-    pub owner: u8,
+    pub owner: u32,
     pub size: u64,
     /// Handles naming this object (`kref` held by the handle idr). Zero means closed.
-    pub handles: u16,
+    pub handles: u32,
     pub madv: Madv,
     /// Backing pages resident (`i915_gem_object_has_pages`).
     pub pages: bool,
@@ -52,11 +52,11 @@ pub(crate) struct Object {
     /// Bit `1 << MmapKind` per mmap offset assigned (`obj->mmo.offsets`).
     pub mmap_kinds: u8,
     /// Live CPU-mapping leases (each holds the object, `vm_open`, gem/i915_gem_mman.c:921-926).
-    pub leases: u16,
+    pub leases: u32,
 }
 
 impl Object {
-    pub(crate) fn new(owner: u8, size: u64, has_llc: bool) -> Object {
+    pub(crate) fn new(owner: u32, size: u64, has_llc: bool) -> Object {
         // shmem_object_init (gem/i915_gem_shmem.c:585-606): CPU domain, LLC where the part has one.
         let mut o = Object {
             owner,
@@ -186,5 +186,5 @@ pub struct ObjectState {
     pub stride: u32,
     pub read_domains: u32,
     pub write_domain: u32,
-    pub leases: u16,
+    pub leases: u32,
 }

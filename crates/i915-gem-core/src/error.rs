@@ -29,9 +29,13 @@ use errno::*;
 /// Why a GEM operation refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GemError {
+    /// A table that tracks a runtime population could not grow (allocation failure or the device quota): the thing was NOT created
+    /// and nothing was half-made. Doctrine RUNTIME-TABLES-HAVE-NO-CAP; the table is named. `-ENOMEM`.
+    NoMem { table: &'static str },
+    /// A user handle's index space is used up (`2^20 - 1` live handles in one session: the encoding of a `u32` handle, `ids.rs`).
+    HandleSpaceExhausted { table: &'static str },
+
     // ---- sessions and handles ----------------------------------------------------------------------------------------------
-    /// All `MAX_SESSIONS` slots are in use.
-    SessionTableFull { cap: usize },
     /// A `SessionId` that names no live session: closed, or never opened. Incarnations are never reused.
     SessionGone { session: u64 },
     /// The handle names nothing in the calling session's table (`drm_gem_object_lookup` found no object: `-ENOENT`).
@@ -44,10 +48,6 @@ pub enum GemError {
     CrossSessionHandle { handle: u32 },
     /// The handle's slot exists but the handle is from an earlier occupant of it (the generation differs): a stale handle.
     StaleHandle { handle: u32 },
-    /// No free handle slot (`drm_gem_handle_create`'s `idr_alloc` failure).
-    HandleTableFull { cap: usize },
-    /// No free object slot.
-    ObjectTableFull { cap: usize },
 
     // ---- create / lifetime / madvise ----------------------------------------------------------------------------------------
     /// `round_up(size, ...) == 0` (gem/i915_gem_create.c:103-104).
@@ -99,10 +99,6 @@ pub enum GemError {
     MmapRange { offset: u64, size: u64, object: u64 },
     /// The offset is not one this session was allowed to map (`drm_vma_node_is_allowed`, `-EACCES`).
     MmapOffsetDenied { offset: u64 },
-    /// The lease table is full.
-    LeaseTableFull { cap: usize },
-    /// The mmap-offset table is full.
-    MmapTableFull { cap: usize },
     /// No such live lease.
     LeaseUnknown { lease: u32 },
 
@@ -114,7 +110,6 @@ pub enum GemError {
     // ---- contexts and VMs ---------------------------------------------------------------------------------------------------
     /// The context id names no live context of the session (`i915_gem_context_lookup`, gem/i915_gem_context.c:2340-2355).
     ContextMissing { id: u32 },
-    ContextTableFull { cap: usize },
     /// The client's ban score reached `I915_CLIENT_SCORE_BANNED` (gem/i915_gem_context.c:2289-2292, :2384-2389: `-EIO`).
     ClientBanned { score: u32 },
     /// The context is banned (gem/i915_gem_execbuffer.c:2558-2559: `-EIO`).
@@ -123,7 +118,6 @@ pub enum GemError {
     ContextCreateFlags { flags: u32 },
     /// The VM id names no live VM of the session (`-ENOENT`, gem/i915_gem_context.c:382-385).
     VmMissing { id: u32 },
-    VmTableFull { cap: usize },
     /// A new address space is needed (no `PARAM_VM` named one) but the executor supplied no `PpgttInit` pages.
     VmPagesMissing,
     /// Context param with a non-zero `size` where none is allowed (gem/i915_gem_context.c:2197-2198 and siblings).
@@ -154,16 +148,10 @@ pub enum GemError {
     WaitRestart,
     /// A reset named a request the table does not hold (never made, or already retired).
     RequestUnknown { engine: usize, engine_ctx: u32, seqno: u32 },
-    /// The active-request table is full; retire completed requests first.
-    ActiveTableFull { cap: usize },
-    /// The hardware-seqno table is full.
-    SeqnoTableFull { cap: usize },
 
     // ---- execbuffer ---------------------------------------------------------------------------------------------------------
     /// The shared uAPI validation refused (every `Exec*` refusal of `i915-uapi-core`).
     Uapi(UapiError),
-    /// More objects than this planner holds (`MAX_EXEC_OBJECTS`).
-    ExecTooManyObjects { count: usize, max: usize },
     /// The same object twice in one submission. PORT RULE (Linux tolerates it by hashing handles into one `eb_vma`).
     ExecObjectDuplicate { handle: u32 },
     /// The context has no pinned engine context for the selected engine; the executor must create and attach one
@@ -206,15 +194,14 @@ impl GemError {
     pub fn errno(&self) -> i32 {
         use GemError::*;
         match self {
-            VmPagesMissing | SessionTableFull { .. } | HandleTableFull { .. } | ObjectTableFull { .. } | ContextTableFull { .. } | VmTableFull { .. }
-            | MmapTableFull { .. } | LeaseTableFull { .. } | PagesRefused { .. } | ActiveTableFull { .. } | SeqnoTableFull { .. } => ENOMEM,
+            NoMem { .. } | HandleSpaceExhausted { .. } | VmPagesMissing | PagesRefused { .. } => ENOMEM,
             SessionGone { .. } => ENODEV,
             RequestUnknown { .. } | HandleNotInSession { .. } | CrossSessionHandle { .. } | StaleHandle { .. } | ContextMissing { .. } | VmMissing { .. }
             | EngineMissing { .. } | LeaseUnknown { .. } => ENOENT,
             CloseHandle { .. } | CreateZeroSize | CreateFlags { .. } | CreateRegionUnsupported { .. } | CreateNeedsCpuAccess | MadviseInvalid { .. }
             | CachingInvalid { .. } | SetDomainGpuDomain { .. } | SetDomainWriteNotRead { .. } | TilingNotOk { .. } | MmapFlags { .. }
             | MmapRange { .. } | ContextCreateFlags { .. } | ParamSize { .. } | ParamUnknown { .. } | PriorityRange { .. }
-            | EnginesTwice | EnginesTooMany { .. } | VmFlags { .. } | WaitFlags { .. } | ExecTooManyObjects { .. }
+            | EnginesTwice | EnginesTooMany { .. } | VmFlags { .. } | WaitFlags { .. }
             | ExecObjectDuplicate { .. } | PagesMalformed { .. } => EINVAL,
             CreateTooBig { .. } => 7, // E2BIG, errno-base.h:11
             CreateProtectedUnsupported | CreateSetPatUnsupported | CachingUnsupported | MmapTypeUnavailable { .. } | ParamUnsupported { .. } => ENODEV,
@@ -244,15 +231,12 @@ impl GemError {
     pub fn name(&self) -> &'static str {
         use GemError::*;
         match self {
-            SessionTableFull { .. } => "SESSION-TABLE-FULL",
             SessionGone { .. } => "SESSION-GONE",
             HandleNotInSession { .. } => "HANDLE-NOT-IN-SESSION",
             CloseHandle { cross: true, .. } => "CROSS-SESSION-HANDLE",
             CloseHandle { cross: false, .. } => "CLOSE-HANDLE-INVALID",
             CrossSessionHandle { .. } => "CROSS-SESSION-HANDLE",
             StaleHandle { .. } => "STALE-HANDLE",
-            HandleTableFull { .. } => "HANDLE-TABLE-FULL",
-            ObjectTableFull { .. } => "OBJECT-TABLE-FULL",
             CreateZeroSize => "CREATE-ZERO-SIZE",
             CreateTooBig { .. } => "CREATE-TOO-BIG",
             CreateFlags { .. } => "CREATE-FLAGS",
@@ -275,17 +259,15 @@ impl GemError {
             MmapTypeUnavailable { .. } => "MMAP-TYPE-UNAVAILABLE",
             MmapRange { .. } => "MMAP-RANGE",
             MmapOffsetDenied { .. } => "MMAP-OFFSET-DENIED",
-            LeaseTableFull { .. } => "LEASE-TABLE-FULL",
-            MmapTableFull { .. } => "MMAP-TABLE-FULL",
             LeaseUnknown { .. } => "LEASE-UNKNOWN",
             UserptrRefused { .. } => "USERPTR-REFUSED",
             ContextMissing { .. } => "CONTEXT-MISSING",
-            ContextTableFull { .. } => "CONTEXT-TABLE-FULL",
             ClientBanned { .. } => "CLIENT-BANNED",
             ContextBanned { .. } => "CONTEXT-BANNED",
             ContextCreateFlags { .. } => "CONTEXT-CREATE-FLAGS",
             VmMissing { .. } => "VM-MISSING",
-            VmTableFull { .. } => "VM-TABLE-FULL",
+            NoMem { .. } => "GEM-NOMEM",
+            HandleSpaceExhausted { .. } => "HANDLE-SPACE-EXHAUSTED",
             VmPagesMissing => "VM-PAGES-MISSING",
             ParamSize { .. } => "PARAM-SIZE",
             ParamUnknown { .. } => "PARAM-UNKNOWN",
@@ -300,10 +282,7 @@ impl GemError {
             WaitTimeout => "WAIT-TIMEOUT",
             WaitRestart => "WAIT-RESTART",
             RequestUnknown { .. } => "REQUEST-UNKNOWN",
-            ActiveTableFull { .. } => "ACTIVE-TABLE-FULL",
-            SeqnoTableFull { .. } => "SEQNO-TABLE-FULL",
             Uapi(e) => e.name(),
-            ExecTooManyObjects { .. } => "EXEC-TOO-MANY-OBJECTS",
             ExecObjectDuplicate { .. } => "EXEC-OBJECT-DUPLICATE",
             ExecEngineContextMissing { .. } => "EXEC-ENGINE-CONTEXT-MISSING",
             ExecRelocOwnerNoPages { .. } => "EXEC-RELOC-OWNER-NO-PAGES",

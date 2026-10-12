@@ -6,8 +6,9 @@
 use crate::error::GemError;
 use crate::gem::Gem;
 use crate::ids::{ObjId, SessionId, VmId};
-use crate::limits::*;
+use crate::gem::place;
 use crate::seam::{Effect, EffectSink};
+use crate::table;
 use i915_memory_core::{Gtt, PpgttInit, VmaId};
 
 #[derive(Clone, Copy, Debug)]
@@ -51,12 +52,12 @@ impl<const V: usize, const T: usize> Vm<V, T> {
 impl<const V: usize, const T: usize> Gem<V, T> {
     /// `i915_ppgtt_create` (gt/intel_ppgtt.c via `gen8_ppgtt_create`): a new address space on the executor's pages. The initial
     /// clear of the new space is emitted as an unbind plan.
-    pub(crate) fn create_vm_slot(&mut self, init: PpgttInit, sink: &mut dyn EffectSink) -> Result<u8, GemError> {
-        let i = self.vms.iter().position(|v| v.is_none()).ok_or(GemError::VmTableFull { cap: MAX_VMS })?;
+    pub(crate) fn create_vm_slot(&mut self, init: PpgttInit, sink: &mut dyn EffectSink) -> Result<u32, GemError> {
         let (gtt, plan) = Gtt::<V, T>::new_ppgtt(&self.dev.desc, &init)?;
-        sink.unbind(VmId(i as u8), &plan);
-        self.vms[i] = Some(Vm { gtt, init, refs: 0, vmas: [None; V] });
-        Ok(i as u8)
+        // Grow the table BEFORE the plan is emitted: a refusal leaves no VM and no effect.
+        let i = place(&mut self.vms, Vm { gtt, init, refs: 0, vmas: [None; V] }, &mut self.quota, "vms")?;
+        sink.unbind(VmId(i as u32), &plan);
+        Ok(i as u32)
     }
 
     pub(crate) fn vm_ref(&mut self, i: usize) {
@@ -73,10 +74,10 @@ impl<const V: usize, const T: usize> Gem<V, T> {
 
     /// Free address spaces nobody holds (`i915_vm_release`).
     pub(crate) fn sweep_vms(&mut self, sink: &mut dyn EffectSink) {
-        for i in 0..MAX_VMS {
+        for i in 0..self.vms.len() {
             if matches!(&self.vms[i], Some(v) if v.refs == 0) {
                 self.vms[i] = None;
-                sink.effect(Effect::VmFreed { vm: VmId(i as u8) });
+                sink.effect(Effect::VmFreed { vm: VmId(i as u32) });
             }
         }
     }
@@ -91,7 +92,14 @@ impl<const V: usize, const T: usize> Gem<V, T> {
             return Err(GemError::VmFlags { flags: 0 }); // i915_user_extensions with no table: every name is unknown, gem/i915_gem_context.c:1826-1832
         }
         let slot = self.session_slot(session)?;
-        let id = self.session(slot).vm_ids.iter().position(|v| v.is_none()).ok_or(GemError::VmTableFull { cap: MAX_VM_IDS_PER_SESSION })?;
+        // Reserve the user-visible id first (cheap to undo), then make the address space.
+        let id = match self.session(slot).vm_ids.iter().position(|v| v.is_none()) {
+            Some(i) => i,
+            None => {
+                let s = self.sessions[slot].as_mut().expect("session slot validated");
+                table::push(&mut s.vm_ids, None, &mut self.quota, "vm-ids")?
+            }
+        };
         let v = self.create_vm_slot(init, sink)?;
         self.vm_ref(v as usize);
         self.session_mut(slot).vm_ids[id] = Some(v);
@@ -116,7 +124,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     }
 
     /// `i915_gem_vm_lookup` (gem/i915_gem_context.c:352-364): the VM slot behind a session's user-visible VM id.
-    pub(crate) fn vm_lookup(&self, slot: usize, vm_id: u32) -> Result<u8, GemError> {
+    pub(crate) fn vm_lookup(&self, slot: usize, vm_id: u32) -> Result<u32, GemError> {
         let idx = (vm_id as usize).wrapping_sub(1);
         self.session(slot).vm_ids.get(idx).copied().flatten().ok_or(GemError::VmMissing { id: vm_id })
     }
@@ -125,12 +133,12 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     /// an `AwaitRetire`, so a busy object can be unbound without waiting here. A pinned VMA (in use by an execbuffer being
     /// planned) is left alone.
     pub(crate) fn unbind_everywhere(&mut self, obj: ObjId, sink: &mut dyn EffectSink) {
-        for i in 0..MAX_VMS {
+        for i in 0..self.vms.len() {
             let Some(vm) = self.vms[i].as_mut() else { continue };
             let Some((_, id)) = vm.vma_of(obj) else { continue };
             if let Ok(plan) = vm.gtt.plan_unbind(id) {
                 vm.forget_vma(id);
-                sink.unbind(VmId(i as u8), &plan);
+                sink.unbind(VmId(i as u32), &plan);
             }
         }
     }

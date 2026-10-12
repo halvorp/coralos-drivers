@@ -9,7 +9,6 @@
 //! `madvise` then answers `retained = false` and any later use answers `-EFAULT`.
 use crate::gem::Gem;
 use crate::ids::ObjId;
-use crate::limits::*;
 use crate::object::Madv;
 use crate::seam::{Effect, EffectSink};
 
@@ -28,16 +27,15 @@ impl<const V: usize, const T: usize> Gem<V, T> {
     /// `i915_gem_shrink` over the purge list: release purgeable objects until `target_pages` are free or none are left.
     pub fn shrink(&mut self, target_pages: u64, sink: &mut dyn EffectSink) -> ShrinkReport {
         let mut rep = ShrinkReport::default();
-        for i in 0..MAX_OBJECTS {
+        for i in 0..self.objects.slot_count() as u32 {
             if rep.pages_freed >= target_pages {
                 break; // `count < target`, gem/i915_gem_shrinker.c:197
             }
-            let slot = self.objects[i];
-            let Some(o) = slot.obj else { continue };
+            let Some((gen, o)) = self.objects.at(i).map(|(g, o)| (g, *o)) else { continue };
             if o.madv != Madv::DontNeed || !o.pages {
                 continue; // can_release_pages: only DONTNEED objects with pages, gem/i915_gem_shrinker.c:27-38
             }
-            let id = ObjId::new(slot.gen, i as u16);
+            let id = ObjId::new(gen, i);
             if o.framebuffer {
                 rep.skipped_framebuffer += 1; // gem/i915_gem_shrinker.c:207-208
                 continue;
@@ -56,7 +54,7 @@ impl<const V: usize, const T: usize> Gem<V, T> {
                 o.madv = Madv::Purged; // shmem_shrink -> shmem_truncate, gem/i915_gem_shmem.c:339-347, gem/i915_gem_shmem.c:301
             }
             rep.purged += 1;
-            rep.pages_freed += o.size / 4096;
+            rep.pages_freed += o.size / i915_memory_core::GTT_PAGE;
         }
         rep
     }

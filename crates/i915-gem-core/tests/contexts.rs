@@ -3,7 +3,7 @@
 //! ENGINES, PERSISTENCE, GTT_SIZE), permissions, the engine map driving engine selection, and VM lifetime.
 mod common;
 use common::*;
-use i915_gem_core::limits::*;
+use i915_gem_core::limits::MAX_USER_ENGINES;
 use i915_gem_core::*;
 use i915_uapi_core::consts::ctx_param as cp;
 use i915_uapi_core::consts::exec as ef;
@@ -246,67 +246,83 @@ fn engine_map_refusals() {
 }
 
 #[test]
-fn context_tables_are_bounded() {
+fn contexts_and_vms_grow_with_use_and_a_refused_create_leaves_nothing() {
+    // RUNTIME-TABLES-HAVE-NO-CAP: 300 contexts in one session, across 40 address spaces, all alive at once.
     let mut r = R::new();
     let ext = m::I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS;
-    let vm = r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink).unwrap() as u64; // contexts share it: the VM table is not what bounds us here
+    let vms: Vec<u64> = (0..40).map(|_| r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink).unwrap() as u64).collect();
     let mut ids = vec![];
-    // per-session: id 0 is the default, so MAX_CTX_PER_SESSION - 1 more fit
-    for _ in 1..MAX_CTX_PER_SESSION {
-        ids.push(r.gem.context_create(r.s, ext, &[p(cp::I915_CONTEXT_PARAM_VM, vm)], None, &mut r.sink).unwrap());
+    for i in 0..300 {
+        ids.push(r.gem.context_create(r.s, ext, &[p(cp::I915_CONTEXT_PARAM_VM, vms[i % 40])], None, &mut r.sink).unwrap());
     }
-    let full = r.gem.context_create(r.s, ext, &[p(cp::I915_CONTEXT_PARAM_VM, vm)], None, &mut r.sink);
-    assert_eq!(full, Err(GemError::ContextTableFull { cap: MAX_CTX_PER_SESSION }));
-    assert_eq!(full.unwrap_err().errno(), 12);
-    r.gem.context_destroy(r.s, ids.pop().unwrap(), 0, &mut r.sink).unwrap();
-    assert!(r.gem.context_create(r.s, ext, &[p(cp::I915_CONTEXT_PARAM_VM, vm)], None, &mut r.sink).is_ok());
-}
-
-#[test]
-fn the_global_context_table_is_bounded_across_sessions() {
-    let mut r = R::new();
-    let ext = m::I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS;
-    let mut sessions = vec![r.s];
-    let mut made = 1; // session 0's default context
-    let mut sink = Sink::default();
-    for _ in 1..4 {
-        sessions.push(r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink).unwrap());
-        made += 1;
-    }
-    let mut vms = vec![];
-    for s in &sessions {
-        vms.push(r.gem.vm_create(*s, 0, 0, r.pool.init(), &mut sink).unwrap() as u64);
-    }
-    'outer: for _ in 0..MAX_CTX_PER_SESSION {
-        for (s, vm) in sessions.iter().zip(&vms) {
-            match r.gem.context_create(*s, ext, &[p(cp::I915_CONTEXT_PARAM_VM, *vm)], None, &mut sink) {
-                Ok(_) => made += 1,
-                Err(GemError::ContextTableFull { cap }) => {
-                    assert_eq!(cap, MAX_CONTEXTS);
-                    break 'outer;
-                }
-                Err(e) => panic!("{e:?}"),
+    assert_eq!(ids, (1..=300).collect::<Vec<u32>>(), "ids are still the lowest free");
+    assert_eq!(r.gem.vm_count(), 41);
+    // out of budget: the context table cannot grow; the id table and the address space made for it are undone or unused
+    let vm_count = r.gem.vm_count();
+    let mut refused = 0;
+    for budget in 0..6 {
+        r.gem.set_table_budget(Some(budget));
+        match r.gem.context_create(r.s, 0, &[], Some(r.pool.init()), &mut r.sink) {
+            Err(err) => {
+                assert!(matches!(err, GemError::NoMem { .. }), "{err:?}");
+                assert_eq!(err.errno(), 12);
+                assert_eq!(r.gem.vm_count(), vm_count, "the private address space of a refused context is released (budget {budget})");
+                refused += 1;
             }
-        }
-    }
-    assert_eq!(made, MAX_CONTEXTS);
-}
-
-#[test]
-fn the_vm_table_and_per_session_vm_ids_are_bounded() {
-    let mut r = R::new();
-    // the default context's VM occupies one of MAX_VMS; user ids are limited per session as well
-    let mut made = 0;
-    loop {
-        match r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink) {
-            Ok(_) => made += 1,
-            Err(GemError::VmTableFull { cap }) => {
-                assert!(cap == MAX_VMS || cap == MAX_VM_IDS_PER_SESSION, "cap {cap}");
+            Ok(_) => {
+                assert_eq!(r.gem.vm_count(), vm_count + 1);
                 break;
             }
-            Err(e) => panic!("{e:?}"),
         }
     }
-    assert_eq!(made, MAX_VMS - 1);
-    assert_eq!(MAX_VM_IDS_PER_SESSION, MAX_VMS);
+    assert!(refused >= 1);
+    // destroying frees slots that the next create reuses without any budget
+    r.gem.set_table_budget(Some(0));
+    r.gem.context_destroy(r.s, 7, 0, &mut r.sink).unwrap();
+    let again = r.gem.context_create(r.s, ext, &[p(cp::I915_CONTEXT_PARAM_VM, vms[0])], None, &mut r.sink).unwrap();
+    assert_eq!(again, 7);
+}
+
+#[test]
+fn the_vm_table_and_per_session_vm_ids_grow_and_refuse_by_name() {
+    let mut r = R::new();
+    for i in 0..100 {
+        assert_eq!(r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink).unwrap(), i + 1);
+    }
+    assert_eq!(r.gem.vm_count(), 101);
+    let before = r.gem.vm_count();
+    r.gem.set_table_budget(Some(0));
+    let err = r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink).unwrap_err();
+    assert_eq!(err, GemError::NoMem { table: "vm-ids" });
+    // one entry buys the id slot; the address space itself is the next table to refuse
+    r.gem.set_table_budget(Some(1));
+    let err = r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink).unwrap_err();
+    assert_eq!(err, GemError::NoMem { table: "vms" });
+    assert_eq!(r.gem.vm_count(), before, "no VM, and no effect was emitted for it");
+    assert_eq!(r.gem.vm_count(), before);
+    r.gem.set_table_budget(None);
+    assert!(r.gem.vm_create(r.s, 0, 0, r.pool.init(), &mut r.sink).is_ok());
+}
+
+#[test]
+fn a_context_refused_after_its_address_space_was_made_releases_the_space() {
+    // Pre-grow every table except the context table, so the refusal comes LAST, after the private VM exists.
+    let mut r = R::new();
+    let mut sink = Sink::default();
+    let s2 = r.gem.open_session(SessionCaps::default(), r.pool.init(), &mut sink).unwrap();
+    let ext = m::I915_CONTEXT_CREATE_FLAGS_USE_EXTENSIONS;
+    let a = r.gem.context_create(r.s, 0, &[], Some(r.pool.init()), &mut r.sink).unwrap(); // grows ids, vms, contexts
+    let b = r.gem.context_create(r.s, 0, &[], Some(r.pool.init()), &mut r.sink).unwrap();
+    r.gem.context_destroy(r.s, a, 0, &mut r.sink).unwrap(); // ... and frees them again, leaving free slots everywhere
+    r.gem.context_destroy(r.s, b, 0, &mut r.sink).unwrap();
+    // session 2 takes the two freed context slots (sharing one VM of its own) and one of the two freed VM slots
+    let vm2 = r.gem.vm_create(s2, 0, 0, r.pool.init(), &mut sink).unwrap() as u64;
+    for _ in 0..2 {
+        r.gem.context_create(s2, ext, &[p(cp::I915_CONTEXT_PARAM_VM, vm2)], None, &mut sink).unwrap();
+    }
+    let vms = r.gem.vm_count();
+    r.gem.set_table_budget(Some(0));
+    let err = r.gem.context_create(r.s, 0, &[], Some(r.pool.init()), &mut r.sink).unwrap_err();
+    assert_eq!(err, GemError::NoMem { table: "contexts" }, "ids and the VM slot were reusable; the context table was not");
+    assert_eq!(r.gem.vm_count(), vms, "the address space made for the refused context was released");
 }
