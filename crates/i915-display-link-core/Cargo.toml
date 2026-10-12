@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/display/{intel_dp_aux.c, intel_dp_aux_regs.h, intel_dp_link_training.c,
+# intel_ddi.c, intel_ddi_buf_trans.c, intel_pps.c, intel_pps_regs.h, intel_backlight.c, intel_backlight_regs.h, intel_dp.c},
+# drivers/gpu/drm/display/drm_dp_helper.c and include/drm/display/{drm_dp.h, drm_dp_helper.h} (v7.0-rc6).
+# Original copyright: Intel Corporation and the Linux DRM authors.
+
+[package]
+name = "i915-display-link-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 Kaby Lake eDP link bring-up (SPT-LP, DDI-A): AUX/DPCD transactions, link training, DDI buffer translation, panel power sequencer and PCH PWM backlight, as planners"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+i915-devinfo-core = { path = "../i915-devinfo-core" }
+i915-vbt-core = { path = "../i915-vbt-core" }
+i915-kbl-display-core = { path = "../i915-kbl-display-core" }
+
+[workspace]
