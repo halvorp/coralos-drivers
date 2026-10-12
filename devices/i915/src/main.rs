@@ -4,6 +4,11 @@
 #![no_std]
 #![no_main]
 
+/// The device's heap: ONE demand-zero reservation (coralos-rt `heap.rs`), nothing in `.bss`. Growable tables use fallible growth, so
+/// exhaustion is a named refusal, not an abort.
+#[global_allocator]
+static HEAP: coralos_rt::heap::LazyHeap = coralos_rt::heap::LazyHeap::new();
+
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     i915_device::on_panic()

@@ -28,8 +28,13 @@ dependencies = [
  "coralos-rt",
  "i915-common-core",
  "i915-devinfo-core",
+ "i915-display-clock-core",
+ "i915-display-link-core",
+ "i915-gt-core",
  "i915-gt-regs-core",
  "i915-kbl-display-core",
+ "i915-memory-core",
+ "i915-submit-core",
  "i915-uncore-core",
  "i915-wire",
 ]
@@ -40,6 +45,40 @@ version = "0.1.0"
 dependencies = [
  "i915-common-core",
  "i915-gt-regs-core",
+]
+
+[[package]]
+name = "i915-display-clock-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
+ "i915-gt-regs-core",
+ "i915-kbl-display-core",
+]
+
+[[package]]
+name = "i915-display-link-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
+ "i915-devinfo-core",
+ "i915-kbl-display-core",
+ "i915-vbt-core",
+]
+
+[[package]]
+name = "i915-gpu-commands-core"
+version = "0.1.0"
+
+[[package]]
+name = "i915-gt-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
+ "i915-devinfo-core",
+ "i915-gpu-commands-core",
+ "i915-gt-regs-core",
+ "i915-uncore-core",
 ]
 
 [[package]]
@@ -54,6 +93,27 @@ name = "i915-kbl-display-core"
 version = "0.1.0"
 
 [[package]]
+name = "i915-memory-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
+ "i915-devinfo-core",
+ "i915-gt-regs-core",
+]
+
+[[package]]
+name = "i915-submit-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
+ "i915-devinfo-core",
+ "i915-gpu-commands-core",
+ "i915-gt-core",
+ "i915-gt-regs-core",
+ "i915-memory-core",
+]
+
+[[package]]
 name = "i915-uncore-core"
 version = "0.1.0"
 dependencies = [
@@ -62,6 +122,10 @@ dependencies = [
  "i915-devinfo-core",
  "i915-gt-regs-core",
 ]
+
+[[package]]
+name = "i915-vbt-core"
+version = "0.1.0"
 
 [[package]]
 name = "i915-wire"

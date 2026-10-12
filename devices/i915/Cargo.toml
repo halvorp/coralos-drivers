@@ -21,6 +21,13 @@ path = "src/lib.rs"
 [features]
 # Builds the standalone ELF (src/main.rs); off for the library and its host tests.
 entry = []
+# INCREMENT GATING (plan KBL-I915-PORT-PLAN section 3 / 5). Both OFF by default: the shipped build writes the three forcewake SET
+# registers and nothing else. Each feature extends the executor's write allow-list (src/exec/allow.rs) and the BAR0 window grant
+# with exactly the registers that increment's planners write, and with nothing else.
+# P2: the GGTT window (BAR0 + 8 MiB) and the GGTT invalidate register.
+p2-memory = []
+# P3: execlists on the render engine, the per-engine RESET_CTL handshakes and GEN6_GDRST. Needs P2 (its objects are GGTT-bound).
+p3-exec = ["p2-memory"]
 
 [[bin]]
 name = "i915-device"
@@ -37,6 +44,14 @@ i915-gt-regs-core = { path = "../../crates/i915-gt-regs-core" }
 i915-devinfo-core = { path = "../../crates/i915-devinfo-core" }
 i915-uncore-core = { path = "../../crates/i915-uncore-core" }
 i915-wire = { path = "../../wire/i915-wire" }
+i915-gt-core = { path = "../../crates/i915-gt-core" }
+i915-memory-core = { path = "../../crates/i915-memory-core" }
+i915-submit-core = { path = "../../crates/i915-submit-core" }
+i915-display-clock-core = { path = "../../crates/i915-display-clock-core" }
+i915-display-link-core = { path = "../../crates/i915-display-link-core" }
+
+[dev-dependencies]
+coralos-hal = { path = "../../hal", features = ["fake"] }
 
 [profile.release]
 opt-level = "z"

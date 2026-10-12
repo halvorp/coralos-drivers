@@ -12,12 +12,15 @@
 #       crates/i915-common-core/src/reg.rs          (RegIo::wr: typed-Reg forwarder; the runtime guard still filters)
 #       devices/i915/src/regio.rs                   (BarMmio forwards to the WriteWindow / latches refusals)
 #       devices/i915/src/gt.rs                      (ByRef forwards to the guard's inner Mmio)
+#       devices/i915/src/exec/core.rs               (THE EXECUTOR: every register write goes through its WriteGuard over exec/allow.rs's
+#                                                    compile-time list; GGTT entry stores are window-checked there. The reviewed writer
+#                                                    for the p2-memory / p3-exec increments; the default build's list is the 3 forcewake regs.)
 #       rt/src/mmio.rs                              (the WriteWindow itself)
 #   * a `WriteWindow::open(` may appear only in devices/i915/src/service.rs, and must be handed `&BAR0_WRITE_RANGES`.
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
-allowed_writers='^(crates/i915-uncore-core/src/forcewake\.rs|crates/i915-common-core/src/guard\.rs|crates/i915-common-core/src/reg\.rs|devices/i915/src/regio\.rs|devices/i915/src/gt\.rs|rt/src/mmio\.rs)$'
+allowed_writers='^(crates/i915-uncore-core/src/forcewake\.rs|crates/i915-common-core/src/guard\.rs|crates/i915-common-core/src/reg\.rs|devices/i915/src/regio\.rs|devices/i915/src/gt\.rs|devices/i915/src/exec/core\.rs|rt/src/mmio\.rs)$'
 cd "$root" || exit 2
 while IFS= read -r f; do
   rel="${f#./}"

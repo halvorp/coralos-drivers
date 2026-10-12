@@ -60,7 +60,7 @@ The runtime is `rt/` (`coralos-rt`, MIT OR Apache-2.0), published with the owner
 publish rt/ to the drivers repo"). Its header lists every CoralOS ABI fact it makes public: the `syscall` calling
 convention, sixteen system-call numbers, the return words, the DMA out-record and cache argument, and the `_start(role)`
 entry. Anything a driver needs beyond that list is added here deliberately, with the same review — never by linking a
-proprietary CoralOS crate. Still to come: logging/formatting and a heap usable by a GPL `.device`, per-device slot
+proprietary CoralOS crate. Still to come: logging/formatting and per-device slot
 numbers, the network and Wi-Fi frame formats, and a kernel call that frees DMA memory.
 
 **D5 — Consumption is pinned.** CoralOS builds consume this repository at a pinned revision, and a check in the
@@ -73,3 +73,13 @@ recovery image, coreboot, the Linux source, a measurement on the machine — nev
 On 2026-10-11 a web summary of the Pixelbook Go (ATLAS) listed an Intel AC 7265, NVMe storage and a Synaptics
 touchpad; all three were wrong against the board's own recovery image. A port's choice of which Linux driver to
 port is grounded the same way.
+
+**D9 — A `.device` heap is one demand-zero reservation (2026-10-12).** `rt/src/heap.rs` (`LazyHeap`, MIT OR Apache-2.0) is the
+`#[global_allocator]` of a `.device`: ONE anonymous `MMAP` reservation made on the first allocation (HEAP-IS-DEMAND-ZERO - address
+space only, the kernel commits a zeroed frame per page on first touch; never a zeroed `.bss` arena), served by a bump allocator
+that rolls back / grows in place for the last block and does not reuse other freed blocks (named TODO `heap-reuse`, delete-when
+silicon churn exceeds the reservation). Exhaustion returns null, so `Vec::try_reserve` refuses BEFORE the thing exists. The mechanism
+is the ABI's `MMAP` only (no new call); the policy is spec-written here, not copied from the proprietary tree. This is what lets
+tables that track a runtime-growing population (grants, mappings, requests) be growable `Vec`s with fallible growth instead of
+fixed arrays (doctrine RUNTIME-TABLES-HAVE-NO-CAP). Tested: `rt/tests/heap_global.rs` runs a growable `Vec` under it as the global
+allocator. The CoralOS-side wrapper of `i915.device` must declare the same `#[global_allocator]` (as `devices/i915/src/main.rs` does).

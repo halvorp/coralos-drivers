@@ -13,6 +13,13 @@ impl Clock for Ticks {
     fn now_ms(&mut self) -> u64 {
         coralos_rt::ticks()
     }
+    /// A timed wait on nothing (the same call the parked loop paces itself with): a poll never spins.
+    fn relax(&mut self) {
+        coralos_rt::wait_any_irq(0, 0, 1, 0);
+    }
+    fn park_ms(&mut self, ms: u64) {
+        coralos_rt::wait_any_irq(0, 0, ms, 0);
+    }
 }
 
 struct TaskLog;

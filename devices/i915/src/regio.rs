@@ -4,10 +4,9 @@
 //! The loader's convention for a PCI function's endowment (the same one every CoralOS PCI `.device` gets): the
 //! function's BAR0 window in MMIO slot 0, and its PCI configuration page, READ-only, in slot 1. The configuration page is a
 //! [`ReadWindow`] and has no write. BAR0 is a [`WriteWindow`] whose write allow-list is [`BAR0_WRITE_RANGES`]: the three forcewake
-//! SET registers and nothing else (increment 1, `crates/i915-uncore-core::WRITE_ALLOWLIST`).
+//! SET registers and nothing else in the default build (`exec::allow`: the `p2-memory` / `p3-exec` features extend it).
 use coralos_hal::Mmio;
-use coralos_rt::mmio::{MmioError, ReadWindow, WriteRange, WriteWindow};
-use i915_uncore_core::WRITE_ALLOWLIST;
+use coralos_rt::mmio::{MmioError, ReadWindow, WriteWindow};
 
 /// MMIO slot of BAR0 (the GTTMMADR window: registers, then the GGTT).
 pub const BAR0_SLOT: u32 = 0;
@@ -18,17 +17,7 @@ pub const CFG_HEADER_BYTES: u64 = 0x40;
 /// The part of BAR0 the Kaby Lake display readout reads: every register it touches is below 0x80000
 /// (TRANSCONF(EDP) at 0x7f008 is the highest).
 pub const READOUT_WINDOW_BYTES: u64 = 0x8_0000;
-/// The part of BAR0 the whole device touches: up to and including GEN6_RP_STATE_CAP (0x145998, intel_mchbar_regs.h:225) and the
-/// GT forcewake ack (0x130044). Every register used is below this.
-pub const BAR0_NEED_BYTES: u64 = 0x14_59a0;
-
-/// BAR0's MMIO write allow-list: exactly the three Gen9 forcewake SET registers (0xa188, 0xa270, 0xa278), built from the uncore
-/// crate's own list so the two cannot drift. Each entry is one 32-bit register.
-pub static BAR0_WRITE_RANGES: [WriteRange; 3] = [
-    WriteRange::reg32(WRITE_ALLOWLIST[0].offset()),
-    WriteRange::reg32(WRITE_ALLOWLIST[1].offset()),
-    WriteRange::reg32(WRITE_ALLOWLIST[2].offset()),
-];
+pub use crate::exec::allow::{BAR0_NEED_BYTES, BAR0_WRITE_RANGES};
 
 /// A readable register window.
 pub trait RegRead {
@@ -66,7 +55,23 @@ pub trait Bar: RegRead + Mmio {
 /// documents as milliseconds). A host test supplies its own.
 pub trait Clock {
     fn now_ms(&mut self) -> u64;
+    /// Yield the CPU for a moment (`Mmio::relax`): a poll that is waiting calls this between reads and never spins. The default
+    /// does nothing, which is a spin; the device's real clock overrides it with a timed wait.
+    fn relax(&mut self) {}
+    /// Sleep at least `ms` milliseconds (`Mmio::park_ms`). The default yields with [`Clock::relax`] until the clock has moved on,
+    /// capped so a clock that never advances still returns.
+    fn park_ms(&mut self, ms: u64) {
+        let end = self.now_ms().saturating_add(ms);
+        let mut n = 0u32;
+        while self.now_ms() < end && n < PARK_SPIN_CAP {
+            self.relax();
+            n += 1;
+        }
+    }
 }
+
+/// The most `relax` calls the default [`Clock::park_ms`] makes.
+pub const PARK_SPIN_CAP: u32 = 100_000;
 
 /// BAR0 as a [`Bar`] over a [`WriteWindow`]. `coralos_hal::Mmio` cannot return an error, so a refused access is LATCHED
 /// ([`Bar::take_fault`]) and a refused read returns all-ones - which the uncore treats as a dead BAR, never as data.
@@ -135,6 +140,12 @@ impl<C: Clock> Mmio for BarMmio<C> {
             Some(d) => self.clock.now_ms() >= d,
             None => false,
         }
+    }
+    fn relax(&mut self) {
+        self.clock.relax()
+    }
+    fn park_ms(&mut self, ms: u64) {
+        self.clock.park_ms(ms)
     }
 }
 
