@@ -175,7 +175,7 @@ fn every_fixed_message_is_transactional_and_ignores_no_byte() {
         SyncFileTokenRep, SyncFileWaitReq, SyncFileWaitRep, PrimeHandleToFdReq, PrimeTokenRep, PrimeFdToHandleReq, PrimeHandleRep, DmabufExportSyncFileReq, DmabufSyncFileRep,
         DmabufImportSyncFileReq,
     );
-    assert_eq!(n, 69, "the message count is pinned: a message added or dropped changes this");
+    assert_eq!(n, 72, "the message count is pinned: a message added or dropped changes this");
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn gem_create_ext_carries_a_bounded_region_list() {
     let m = GemCreateExtReq::encode(&mut big, head, &many).unwrap();
     assert_eq!(GemCreateExtReq::decode(&big[..m]).unwrap_err(), WireError::LimitExceeded { what: "GemCreateExt.region_count", got: 65, max: 64 });
     let mut flagged = out;
-    flagged[16 + 8] = 2; // protected = 2 is not a boolean
+    flagged[16] = 2; // protected = 2 is not a boolean
     assert!(matches!(GemCreateExtReq::decode(&flagged[..n]), Err(WireError::BadValue { .. })));
 }
 
