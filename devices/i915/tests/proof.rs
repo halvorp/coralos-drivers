@@ -165,6 +165,9 @@ fn the_only_writes_are_the_forcewake_set_registers_in_get_then_put_order() {
     }
 }
 
+/// The SHIPPED build: no increment feature. (With `p2-memory` / `p3-exec` the grant widens by design - see tests/exec_allow.rs; the
+/// forcewake registers stay on it, which the next test proves.)
+#[cfg(not(feature = "p2-memory"))]
 #[test]
 fn the_write_allow_list_is_the_three_set_registers_in_both_layers() {
     let mut got: Vec<u32> = WRITE_ALLOWLIST.iter().map(|r| r.offset()).collect();
@@ -174,6 +177,18 @@ fn the_write_allow_list_is_the_three_set_registers_in_both_layers() {
     win.sort();
     assert_eq!(win, vec![0xa188, 0xa270, 0xa278]);
     assert!(BAR0_WRITE_RANGES.iter().all(|r| r.len == 4));
+}
+
+#[cfg(feature = "p2-memory")]
+#[test]
+fn an_increment_build_still_grants_the_three_set_registers_first_in_both_layers() {
+    let fw = [0xa188u32, 0xa270, 0xa278];
+    let mut got: Vec<u32> = WRITE_ALLOWLIST.iter().map(|r| r.offset()).collect();
+    got.sort();
+    assert_eq!(got, fw);
+    for r in fw {
+        assert!(BAR0_WRITE_RANGES.iter().any(|w| w.off == r as u64 && w.len == 4), "{r:#x} missing from the window grant");
+    }
 }
 
 #[test]

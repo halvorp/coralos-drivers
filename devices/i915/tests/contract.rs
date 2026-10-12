@@ -97,13 +97,18 @@ fn an_import_of_a_closed_crate_in_a_source_is_caught() {
 }
 
 #[test]
-fn the_device_has_no_dma_or_irq_dependency_yet() {
-    // increment 1 is "no DMA, no IRQ": the device sources use neither grant.
+fn the_dma_and_irq_grants_are_used_only_by_the_executor_layer() {
+    // Increments 2 and 3 are where DMA and IRQ enter the device (plan KBL-I915-PORT-PLAN section 3). They enter in ONE place: the
+    // executor layer (`src/exec/`, which holds the allocator and the MSI probe). Identity, startup, the readout, the proof of life
+    // and the wire code still use neither grant - a DMA or IRQ name anywhere else fails here.
     let mut hits = vec![];
     fn walk(dir: &Path, hits: &mut Vec<String>) {
         for e in fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();
             if p.is_dir() {
+                if p.file_name().map_or(false, |n| n == "exec") {
+                    continue; // the executor layer is where the grants live
+                }
                 walk(&p, hits);
             } else if p.extension().map_or(false, |x| x == "rs") {
                 let t = fs::read_to_string(&p).unwrap();

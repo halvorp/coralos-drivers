@@ -60,7 +60,7 @@ The runtime is `rt/` (`coralos-rt`, MIT OR Apache-2.0), published with the owner
 publish rt/ to the drivers repo"). Its header lists every CoralOS ABI fact it makes public: the `syscall` calling
 convention, sixteen system-call numbers, the return words, the DMA out-record and cache argument, and the `_start(role)`
 entry. Anything a driver needs beyond that list is added here deliberately, with the same review — never by linking a
-proprietary CoralOS crate. Still to come: logging/formatting and a heap usable by a GPL `.device`, per-device slot
+proprietary CoralOS crate. Still to come: logging/formatting and per-device slot
 numbers, the network and Wi-Fi frame formats, and a kernel call that frees DMA memory.
 
 **D5 — Consumption is pinned.** CoralOS builds consume this repository at a pinned revision, and a check in the
@@ -73,3 +73,20 @@ recovery image, coreboot, the Linux source, a measurement on the machine — nev
 On 2026-10-11 a web summary of the Pixelbook Go (ATLAS) listed an Intel AC 7265, NVMe storage and a Synaptics
 touchpad; all three were wrong against the board's own recovery image. A port's choice of which Linux driver to
 port is grounded the same way.
+
+**D9 — A `.device` heap is a chain of demand-zero regions with a reusing free list (2026-10-12).** `rt/src/heap.rs` (`LazyHeap`,
+MIT OR Apache-2.0) is the `#[global_allocator]` of a `.device`. Mechanism: each REGION is one anonymous `MMAP` reservation
+(HEAP-IS-DEMAND-ZERO - address space only, the kernel commits a zeroed frame per page on first touch; never a zeroed `.bss`
+arena), the first made on the first allocation; when no region can serve a request ANOTHER is reserved (one 16 MiB chunk, or more
+for a large request), so there is no compile-time total (RUNTIME-TABLES-HAVE-NO-CAP) - the heap is out of memory only when the
+kernel refuses a reservation, and then `alloc` returns null and `Vec::try_reserve` and friends give their named refusals before
+the thing exists. Policy: `linked_list_allocator` 0.10 (MIT OR Apache-2.0, GPL-compatible; chosen by the YAGNI ladder because it
+is already the CoralOS tree's allocator and in the local registry) - first-fit free list with coalescing inside each region, so
+freed memory IS reused; each region's header lives in the region. Regions are never unmapped (the ABI has no unmap). No lock: a
+`.device` is one task with one thread of control (the ABI has no thread call and delivers IRQs as `IRQ_WAIT` returns), and `Sync`
+is asserted on exactly that; a host harness that runs threads serialises with its own mutex. Tests (`rt/tests/heap_global.rs`):
+1,000,000 mixed-size, mixed-alignment alloc/free ops reserve at most a small multiple of the peak live set; growth past the first
+region and a request larger than a chunk; null on a refused first or later reservation with the heap still working; a growable
+`Vec` under it as the global allocator. The CoralOS-side wrapper of `i915.device` must declare the same `#[global_allocator]` (as
+`devices/i915/src/main.rs` does). The mechanism is the ABI's `MMAP` only (no new call); the policy was written from the design
+idea, not copied from the proprietary tree.

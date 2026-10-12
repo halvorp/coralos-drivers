@@ -23,6 +23,7 @@
 //!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); no 8/16-bit write. No new system call or number.
 //!   key wire (2026-10-11; keywire.rs) the physical key event frame `[0x90, HID usage, state]` on endpoint 12 (KEY_EP);
 //!            state RELEASE 0 · PRESS 1 · REPEAT 2 · ALL_UP 3
+//!   heap     (2026-10-12; heap.rs) `LazyHeap`: a `GlobalAlloc` over a chain of demand-zero `MMAP` reservations, grown on demand; no new call.
 //!   entry    `_start(role: u64)` in RDI, no return (EXIT); the image is a static ELF linked at 0x40_0000 with no page
 //!            holding both code and writable data (the loader refuses W∧X)
 //! WHAT IS NOT: process spawning, the capability DAG, the shared-memory and display ABIs, the Firmament config page —
@@ -35,6 +36,7 @@ extern crate std;
 use coralos_hal::dma::{check_grant, check_request};
 use coralos_hal::{Coherence, Dma, DmaRefusal, DmaRegion, Irq, IrqRefusal, IrqWait};
 
+pub mod heap;
 pub mod keywire;
 pub mod mmio;
 pub mod portio;
