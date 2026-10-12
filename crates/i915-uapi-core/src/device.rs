@@ -72,6 +72,13 @@ pub struct UapiDevice {
     /// `i915.enable_hangcheck` (default true, i915_params.h:63) and `i915.reset` (default 3, i915_params.h:57).
     pub enable_hangcheck: bool,
     pub reset_param: u8,
+    /// POLICY, not hardware: the `enum intel_engine_id` bits this service routes THE ASKING SESSION's batches to
+    /// (GPU-ENGINES-ADVERTISED-ARE-ROUTED). [`UapiDevice::engines`] is `platform_engine_mask & routed_engine_mask`, so
+    /// GETPARAM HAS_BSD/BLT/VEBOX/BSD2, QUERY_ENGINE_INFO and EXECBUFFER2 ring selection all agree and a client is never
+    /// told of (nor allowed to submit to) an engine it cannot reach. [`UapiDevice::new`] starts at the whole row (what
+    /// Linux advertises); the device MUST narrow it per session with [`UapiDevice::route_engines`] until every engine has
+    /// a submit row.
+    pub routed_engine_mask: u32,
 }
 
 impl UapiDevice {
@@ -98,9 +105,16 @@ impl UapiDevice {
             ggtt_has_aperture: true,
             enable_hangcheck: true, // i915_params.h:63
             reset_param: 3,         // i915_params.h:57
+            routed_engine_mask: desc.info.engine_mask,
         };
         d.default_state_classes = d.all_classes_mask();
         Ok(d)
+    }
+
+    /// Narrow the session's routed engines to `mask` (bits of `enum intel_engine_id`). It can only remove: a bit the
+    /// platform row lacks stays absent, so routing never invents an engine.
+    pub fn route_engines(&mut self, mask: u32) {
+        self.routed_engine_mask = mask & self.desc.info.engine_mask;
     }
 
     pub const fn gen(&self) -> u8 {
@@ -118,7 +132,7 @@ impl UapiDevice {
 
     /// The user-visible engines, derived from `PlatformDescriptor::info.engine_mask` (a bit per `enum intel_engine_id`).
     pub fn engines(&self) -> UabiEngines {
-        let mask = self.desc.info.engine_mask;
+        let mask = self.desc.info.engine_mask & self.routed_engine_mask;
         let mut out = UabiEngines { list: [UabiEngine { class: 0, instance: 0 }; MAX_UABI_ENGINES], len: 0 };
         let mut push = |class: u16, instance: u16| {
             if out.len < MAX_UABI_ENGINES {

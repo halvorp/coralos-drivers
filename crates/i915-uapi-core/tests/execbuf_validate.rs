@@ -503,3 +503,14 @@ fn validation_order_follows_linux() {
     let e = Exec::new(0, vec![bad, flags(1 << 50)]);
     assert_eq!(err(check(&gt2(), &Env::basic(), &e)).0, "EXEC-ALIGNMENT-NOT-POW2");
 }
+
+#[test]
+fn a_submit_naming_an_unrouted_engine_is_refused_by_name_never_run_on_render() {
+    // GPU-ENGINES-ADVERTISED-ARE-ROUTED: the row has VCS0 but this session is routed to the render ring only.
+    let mut d = gt2();
+    d.route_engines(1 << i915_devinfo_core::engine::RCS0);
+    for f in [ef::I915_EXEC_BSD, ef::I915_EXEC_BLT, ef::I915_EXEC_VEBOX] {
+        assert_eq!(err(check(&d, &Env::basic(), &Exec::new(f, vec![bo(10)]))), ("EXEC-ENGINE-INVALID", Errno::EINVAL), "ring {f}");
+    }
+    assert!(check(&d, &Env::basic(), &Exec::new(ef::I915_EXEC_RENDER, vec![bo(10)])).is_ok());
+}

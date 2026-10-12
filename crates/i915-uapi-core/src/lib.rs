@@ -14,6 +14,13 @@
 //! - [`query`]: `DRM_IOCTL_I915_QUERY` (topology, engine info, memory regions; the rest answer what a Gen9 execlists device answers);
 //! - [`execbuf_wire`] + [`execbuf`]: the bounded, transactional decode and the validation of `DRM_IOCTL_I915_GEM_EXECBUFFER2`.
 //!
+//! PLACEMENT (KBL-I915-PORT-PLAN section 2): this is the one Linux-faithful home of the Gen9 i915 uAPI values for the public
+//! `i915.device`. It does NOT duplicate the closed `coral-drm-driver` GETPARAM table by choice: that table is the pre-port shim it
+//! replaces. *delete-when:* the P5 cutover routes the Mesa shim to `i915.device`, then `drm_i915.rs`'s GETPARAM/QUERY answers go.
+//!
+//! ROUTING (GPU-ENGINES-ADVERTISED-ARE-ROUTED): [`UapiDevice::routed_engine_mask`] is policy the device sets per session
+//! ([`UapiDevice::route_engines`]); GETPARAM, QUERY_ENGINE_INFO and EXECBUFFER2 all read engines through it.
+//!
 //! WHAT IT IS NOT. No MMIO, no allocation, no execution: relocation patching, pinning, request building and fence plumbing belong
 //! to `i915-gem-core` / `i915-submit-core`, which consume the [`ExecPlan`] this crate returns. GEM object, context and VM
 //! *semantics*, syncobj and PRIME state, userptr (refused until revocable pins exist) and i915 perf are out of scope here.

@@ -241,3 +241,19 @@ fn wire_request_and_reply_bytes() {
     let mut small = [0u8; 8];
     assert!(encode_getparam_reply(&Ok(1), &mut small).is_err());
 }
+
+#[test]
+fn engines_not_routed_to_the_session_are_neither_advertised_nor_selectable() {
+    // GPU-ENGINES-ADVERTISED-ARE-ROUTED: a hardware fact alone is never a claim. Route RCS0 only: the row still has BCS0/VCS0/VECS0.
+    use i915_devinfo_core::engine as e;
+    let mut d = gt2();
+    assert_eq!((ok(&d, I915_PARAM_HAS_BSD), ok(&d, I915_PARAM_HAS_BLT), ok(&d, I915_PARAM_HAS_VEBOX)), (1, 1, 1));
+    d.route_engines(1 << e::RCS0);
+    assert_eq!((ok(&d, I915_PARAM_HAS_BSD), ok(&d, I915_PARAM_HAS_BLT), ok(&d, I915_PARAM_HAS_VEBOX), ok(&d, I915_PARAM_HAS_BSD2)), (0, 0, 0, 0));
+    assert_eq!(d.engines().as_slice().len(), 1);
+    // routing only removes: asking for VCS1 on a one-VDBOX row invents nothing
+    d.route_engines((1 << e::RCS0) | (1 << e::VCS1));
+    assert_eq!(d.engines().as_slice().len(), 1);
+    d.route_engines(1 << e::VCS0);
+    assert_eq!((ok(&d, I915_PARAM_HAS_BSD), ok(&d, I915_PARAM_HAS_BLT)), (1, 0));
+}
