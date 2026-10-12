@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# The single HOME of the GT-side registers of the Kaby Lake i915 port: drivers/gpu/drm/i915/gt/intel_gt_regs.h and the
+# GT-visible part of drivers/gpu/drm/i915/intel_mchbar_regs.h (plus the two i915_reg.h registers the GT clock code reads).
+# Original copyright: Intel Corporation.
+[package]
+name = "i915-gt-regs-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 GT register offsets and fields (intel_gt_regs.h, intel_mchbar_regs.h), one definition each"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+
+[workspace]

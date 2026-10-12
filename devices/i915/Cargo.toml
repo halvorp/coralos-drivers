@@ -4,13 +4,15 @@
 # nothing. It links ONLY the display readout core (i915-kbl-display-core) plus coralos-rt (the runtime, MIT OR Apache-2.0)
 # and coralos-hal; no CoralOS-proprietary crate (in particular none of coral-i915-gem or coral-drm-driver).
 # The port is Kaby Lake's; Gen8 (Cherry Trail) rows migrate into this one device later, by runtime dispatch.
+# INCREMENT 1 (2026-10-12): forcewake proof of life. The dependency list below is a CONTRACT (docs/I915-CONTRACTS.md): only coralos-rt,
+# coralos-hal, i915-* port crates and the permissive i915-wire; tests/contract.rs fails the build on anything else.
 [package]
 name = "i915-device"
 version = "0.1.0"
 edition = "2021"
 publish = false
 license = "GPL-2.0-only"
-description = "i915.device: PCI identity, grant-bounded read-only MMIO, Kaby Lake display readout, explicit unsupported replies"
+description = "i915.device: PCI identity, grant-bounded MMIO (writes: the three forcewake set registers only), Kaby Lake display readout, forcewake proof of life, explicit unsupported replies"
 
 [lib]
 name = "i915_device"
@@ -28,7 +30,13 @@ required-features = ["entry"]
 
 [dependencies]
 coralos-rt = { path = "../../rt" }
+coralos-hal = { path = "../../hal" }
 i915-kbl-display-core = { path = "../../crates/i915-kbl-display-core" }
+i915-common-core = { path = "../../crates/i915-common-core" }
+i915-gt-regs-core = { path = "../../crates/i915-gt-regs-core" }
+i915-devinfo-core = { path = "../../crates/i915-devinfo-core" }
+i915-uncore-core = { path = "../../crates/i915-uncore-core" }
+i915-wire = { path = "../../wire/i915-wire" }
 
 [profile.release]
 opt-level = "z"

@@ -17,7 +17,7 @@ set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 export PATH="$HOME/.cargo/bin:$PATH"
 fail=0 n=0
-for m in "$root"/crates/*/Cargo.toml; do
+for m in "$root"/crates/*/Cargo.toml "$root"/wire/*/Cargo.toml; do
   crate=$(basename "$(dirname "$m")")
   n=$((n + 1))
   out=$(cd /tmp && cargo test --manifest-path "$m" --target x86_64-unknown-linux-gnu 2>&1)

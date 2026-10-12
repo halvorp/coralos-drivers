@@ -75,6 +75,8 @@ pub mod exit_code {
     pub const STARTUP_FAILED: u64 = 2;
     /// A panic.
     pub const PANIC: u64 = 3;
+    /// The forcewake proof of life failed (the `[I915-FORCEWAKE FAIL ...]` line names why); no further register was written.
+    pub const PROOF_FAILED: u64 = 4;
 }
 
 /// Bytes of request the parked loop accepts.

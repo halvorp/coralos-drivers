@@ -1,0 +1,17 @@
+# The i915.device wire header, ABI major 1: the ONE thing the public GPL `i915.device` and the closed CoralOS shim both compile against.
+# Permissive (MIT OR Apache-2.0) like hal/ and rt/, because the closed tree links it (DECISIONS.md D9). It contains no Linux-derived
+# code: the layout is CoralOS's own design (KBL-I915-PORT-PLAN §2), pointer-free and fixed-endian.
+[package]
+name = "i915-wire"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "i915.device wire protocol: the 40-byte fixed-endian request/reply header, opcodes, statuses, bounds-checked decode"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[workspace]

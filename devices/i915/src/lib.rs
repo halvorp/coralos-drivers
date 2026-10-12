@@ -10,7 +10,13 @@
 //! the DDIs and DPLLs that are on, any extra plane or scaler. Then [`service`] parks and answers every wire request
 //! with an explicit UNSUPPORTED ([`wire`]).
 //!
-//! WHAT IT HOLDS: BAR0 and the config page, both read-only (`coralos_rt::mmio::ReadWindow` has no write). Nothing else.
+//! INCREMENT 1 (2026-10-12): after the readout, [`bringup`] runs the forcewake PROOF OF LIFE ([`gt`]): identify through
+//! `i915-devinfo-core`, take the GT / RENDER / MEDIA forcewake domains one at a time, read FUSE2, EU_DISABLE, RPM_CONFIG0, CTC_MODE and
+//! RP_STATE_CAP, release and observe the release. A Cherry Trail (Gen8) id is refused before BAR0 is touched.
+//!
+//! WHAT IT HOLDS: BAR0 as a `coralos_rt::mmio::WriteWindow` whose write allow-list is the three forcewake SET registers
+//! ([`regio::BAR0_WRITE_RANGES`]), and the config page as a read-only `ReadWindow` (no write). Nothing else. The allow-list is
+//! enforced twice: by the window ([`regio`]) and by an `i915_common_core::WriteGuard` inside [`gt::proof_of_life`].
 //!
 //! The readout is validated against Linux by the reconnaissance boot (see i915-kbl-display-core's crate docs).
 //!
@@ -19,6 +25,7 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+pub mod gt;
 pub mod identity;
 pub mod log;
 pub mod regio;
@@ -28,6 +35,6 @@ pub mod service;
 pub mod startup;
 pub mod wire;
 
-pub use startup::{startup, Ready, StartError};
+pub use startup::{bringup, startup, BringupError, Ready, StartError};
 #[cfg(target_arch = "x86_64")]
 pub use service::{on_panic, service};

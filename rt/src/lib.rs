@@ -18,6 +18,9 @@
 //!            4 slots. A driver holds an opaque `PortRange`, never a raw port.
 //!   read-only MMIO (2026-10-12; mmio.rs) `ReadWindow`: the loader's window in a slot, MMIO_MAP / MMIO_LEN above; read8/16/32 at an
 //!            OFFSET checked against the granted length and the width; no write is exposed. No new system call or number.
+//!   write-allow-listed MMIO (2026-10-12; mmio.rs) `WriteWindow`: a window readable everywhere and writable ONLY at the `&'static`
+//!            `WriteRange` list given at open; one 32-bit `write32` at an OFFSET checked against the length, alignment and the list
+//!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); no 8/16-bit write. No new system call or number.
 //!   key wire (2026-10-11; keywire.rs) the physical key event frame `[0x90, HID usage, state]` on endpoint 12 (KEY_EP);
 //!            state RELEASE 0 · PRESS 1 · REPEAT 2 · ALL_UP 3
 //!   entry    `_start(role: u64)` in RDI, no return (EXIT); the image is a static ELF linked at 0x40_0000 with no page

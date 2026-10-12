@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# The CONTRACT crate of the Kaby Lake i915 port (docs/I915-CONTRACTS.md): the register-definition convention, the one error type,
+# and the MMIO write guard that every later i915-*-core crate and devices/i915 build on. Ported from Linux
+# drivers/gpu/drm/i915/i915_reg_defs.h (REG_BIT / REG_GENMASK / REG_FIELD_* / _MASKED_*). Original copyright: Intel Corporation.
+[package]
+name = "i915-common-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 port contracts: typed register offsets + bit-field helpers, the shared error type, the write-allow-listed Mmio guard"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+coralos-hal = { path = "../../hal" }
+
+[workspace]

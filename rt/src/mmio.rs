@@ -29,6 +29,10 @@ pub enum MmioError {
     OutOfRange { off: u64, width: u64, len: u64 },
     /// The offset is not a multiple of the access width.
     Misaligned { off: u64, width: u64 },
+    /// A write outside the window's write allow-list (WriteWindow). Nothing was written.
+    WriteNotAllowed { off: u64, width: u64 },
+    /// A write allow-list entry is not a 4-byte-aligned range inside the granted window (refused at `open`).
+    AllowListInvalid { off: u64, len: u64, window_len: u64 },
 }
 
 impl MmioError {
@@ -39,6 +43,8 @@ impl MmioError {
             MmioError::MapFailed { .. } => "MMIO-MAP-FAILED",
             MmioError::OutOfRange { .. } => "MMIO-OUT-OF-RANGE",
             MmioError::Misaligned { .. } => "MMIO-MISALIGNED",
+            MmioError::WriteNotAllowed { .. } => "MMIO-WRITE-NOT-ALLOWED",
+            MmioError::AllowListInvalid { .. } => "MMIO-ALLOW-LIST-INVALID",
         }
     }
 }
@@ -120,5 +126,79 @@ impl ReadWindow {
         let va = self.check(off, 4)?;
         // SAFETY: as `read8`; 4-byte aligned.
         Ok(unsafe { core::ptr::read_volatile(va as *const u32) })
+    }
+}
+
+/// A byte range `[off, off + len)` of a window that a [`WriteWindow`] may write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteRange {
+    pub off: u64,
+    pub len: u64,
+}
+
+impl WriteRange {
+    /// Exactly one 32-bit register at `off`.
+    pub const fn reg32(off: u32) -> WriteRange {
+        WriteRange { off: off as u64, len: 4 }
+    }
+}
+
+/// A mapped device window that is readable everywhere and WRITABLE ONLY inside a `&'static` allow-list fixed when it is opened
+/// (2026-10-12, i915 increment 1). *Exposing an operation is not granting it*: the only write is [`WriteWindow::write32`], it checks
+/// the offset against the list on every call, and a write outside the list is a named [`MmioError::WriteNotAllowed`] that touches
+/// nothing. There is no 8- or 16-bit write. The loader's own grant is still the outer bound; this is the in-process one, so a
+/// driver that is only meant to wake the GPU cannot, by a typo, program a display register.
+#[derive(Debug)]
+pub struct WriteWindow {
+    win: ReadWindow,
+    allow: &'static [WriteRange],
+}
+
+impl WriteWindow {
+    /// Map the window in `slot` (at least `need` bytes) with `allow` as its write list. Every entry must be 4-byte aligned, a
+    /// multiple of 4 long and inside the granted length, else `AllowListInvalid` (an allow-list that points outside the grant is a
+    /// bug to find at open, not at the first write).
+    pub fn open<R: MmioRaw>(raw: &mut R, slot: u32, need: u64, allow: &'static [WriteRange]) -> Result<WriteWindow, MmioError> {
+        let win = ReadWindow::open(raw, slot, need)?;
+        for r in allow {
+            let end = r.off.checked_add(r.len);
+            if r.off % 4 != 0 || r.len == 0 || r.len % 4 != 0 || end.map_or(true, |e| e > win.len) {
+                return Err(MmioError::AllowListInvalid { off: r.off, len: r.len, window_len: win.len });
+            }
+        }
+        Ok(WriteWindow { win, allow })
+    }
+
+    pub const fn len(&self) -> u64 {
+        self.win.len
+    }
+    pub const fn is_empty(&self) -> bool {
+        self.win.len == 0
+    }
+    pub fn read8(&self, off: u64) -> Result<u8, MmioError> {
+        self.win.read8(off)
+    }
+    pub fn read16(&self, off: u64) -> Result<u16, MmioError> {
+        self.win.read16(off)
+    }
+    pub fn read32(&self, off: u64) -> Result<u32, MmioError> {
+        self.win.read32(off)
+    }
+
+    /// Is a 32-bit write at `off` inside the allow-list?
+    pub fn allows32(&self, off: u64) -> bool {
+        self.allow.iter().any(|r| off >= r.off && off.checked_add(4).map_or(false, |e| e <= r.off + r.len))
+    }
+
+    /// Write one 32-bit register. Range and alignment are checked first (as a read), then the allow-list; only then is memory touched.
+    pub fn write32(&mut self, off: u64, v: u32) -> Result<(), MmioError> {
+        let va = self.win.check(off, 4)?;
+        if !self.allows32(off) {
+            return Err(MmioError::WriteNotAllowed { off, width: 4 });
+        }
+        // SAFETY: `check` proved [off, off + 4) lies inside the window the kernel granted and mapped at `base`, 4-byte aligned;
+        // the allow-list test above proved the register is one this window was opened to write.
+        unsafe { core::ptr::write_volatile(va as *mut u32, v) };
+        Ok(())
     }
 }
