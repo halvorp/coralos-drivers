@@ -156,6 +156,52 @@ Gtt::walk(va) -> Result<Walk, MemError>                    // PML4/PDP/PD/PT ind
 `[I915-MEMORY va_bits=48 stale_access=denied msi=ok]` - `va_bits=48` from `PlatformDescriptor.info.ppgtt_size`, `stale_access=denied`
 from a `check_access` probe after an unbind, `msi` from the IRQ qualification (not this crate).
 
+## 8. Sessions, objects, contexts, execbuffer (`i915-gem-core`)
+
+`Gem<V, T>` is the whole GEM state of one device as a planner. `V`/`T` are the VMA and page-table capacities of each address space
+(`Gtt<V, T>`). It is a few hundred KiB: the executor keeps it in a static, not on a stack.
+
+* **Session** (`drm_file`): `open_session(caps, PpgttInit, sink) -> SessionId`. A `SessionId` is an incarnation (u64 counter, never
+  reused); a closed session's id is `SESSION-GONE` forever. Opening makes context 0 on a new address space from the executor's pages.
+* **Handles are session-scoped and generation-tagged**: `gen << 16 | (slot + 1)`, never 0. The lookup reads ONLY the caller's own table.
+  A live handle of another session is `CROSS-SESSION-HANDLE` (errno ENOENT; EINVAL from `GEM_CLOSE`, as `drm_gem_handle_delete`); an
+  earlier occupant of a slot is `STALE-HANDLE`; anything else `HANDLE-NOT-IN-SESSION`. A slot whose generation would wrap is retired.
+  An object is freed (unbound everywhere, pages released, `Effect::ObjectFreed`) only when it has no handle, no unretired request and
+  no mmap lease: closing a handle never frees memory the GPU may still write.
+* **Backing pages are requested, never allocated**: `PageSource::alloc_pages(PageRequest{obj, bytes, cache})` then `pages(obj)` (device
+  addresses). Pages are lazy (first `set_domain`, mmap lease or execbuffer). `Effect::FreePages` releases them.
+* **Everything the world must do is an `Effect`** or a bind/unbind plan streamed to the `EffectSink`. Order of one execbuffer:
+  binds (eviction victims inside the plan, `AwaitRetire` ahead of their scratch fill) -> `PatchReloc` -> `Clflush` ->
+  `AwaitRequest`/`AwaitInFence`/`AwaitSyncobj` -> `SignalSyncobj`/`OutFence` -> `Submit` (the ELSP plan).
+* **Execbuffer2** = `i915-uapi-core::validate_execbuf2` (all pre-execution refusals, over this crate's `ExecEnv` view) + reserve
+  (`eb_reserve` passes: 0 no eviction, 1 LRU eviction, 2 unpin + evict the whole VM; `ENOSPC` after) + relocation as `PatchReloc`
+  (the MINIMAL FAITHFUL path: no GPU relocation, no slow path) + `EngineSet::build_request` + `dequeue`. A submission's own VMAs are
+  pinned for its duration and never victims. Softpinned objects must land exactly where asked or the submission fails
+  (`EXEC-PINNED-MISPLACED`).
+* **Contexts**: params per `ctx_setparam`/`set_proto_ctx_param`; VM and ENGINES only at creation; SSEU/PXP/low-latency refused by name.
+  The per-engine hardware context (`i915_submit_core::Engine::create_context`) is created by the executor and attached
+  (`attach_engine_context`); a submission without one is `EXEC-ENGINE-CONTEXT-MISSING`.
+* **Activity**: a request is COMPLETE when `seqno_passed(hw_seqno(engine, ectx), seqno)` (`observe_seqno` feeds the HWSP values) and
+  RETIRED by `retire()`, which also frees what that unblocks. `busy()` and `wait_plan()` are Linux's; `wait_finish` is the ioctl's
+  `timeout_ns` accounting (the caller blocks, this crate never does).
+* **Hangs**: `request_reset(engine, ectx, seqno, guilty, now_ms)`. Linux bans a recoverable, bannable context on the THIRD hang inside
+  120 s (two-slot history), a non-recoverable one on its first; the client's ban score (+3 per ban, +1 per hang within 60 s) refuses new
+  contexts from 9. PORT ADDITION: `MAX_GUILTY_BEFORE_BAN` (16) bans a slow hanger Linux never would.
+* **mmap**: `mmap_offset` (policy: GTT needs the aperture, WC/UC need PAT, WB always, FIXED never), `mmap_open` (a lease, only for the
+  session the offset was granted to), `mmap_close`. Closing a handle revokes NEW mappings, not leases.
+* **Reclaim**: `shrink(target_pages)` purges idle `MADV_DONTNEED` objects (unbind, free pages, `__I915_MADV_PURGED`); a purged object
+  answers `retained = false` and `OBJECT-PURGED` (`-EFAULT`) on use.
+* **Refused by name**: `GEM_USERPTR` (`USERPTR-REFUSED`: EINVAL for the zero-size probe, ENODEV otherwise), local memory / non-SYSTEM
+  placements, protected content, SET_PAT, SSEU reconfiguration, parallel/bonded submission, the command parser.
+* Bounds (`limits.rs`, each pinned by `tests/bounds.rs` and a behavioural test): `MAX_SESSIONS` 8, `MAX_HANDLES` 256 per session,
+  `MAX_OBJECTS` 512, `MAX_CTX_PER_SESSION` 16, `MAX_CONTEXTS` 32, `MAX_VMS` 8, `MAX_USER_ENGINES` 64, `MAX_ACTIVE` 64,
+  `MAX_EXEC_OBJECTS` 128, `MAX_MMAP_OFFSETS` 64, `MAX_LEASES` 64, `MAX_HW_SEQNOS` 160, object size <= system RAM.
+
+### Markers (P5)
+
+`[I915-GEM REFUSED why=<GemError::name()> errno=<n>]` per refused ioctl (the names are unique, uppercase, dash-separated;
+`tests/bounds.rs::errors_have_distinct_stable_names`).
+
 ## Additive changes since CONTRACT_ABI 1 was cut
 
 * 2026-10-12: `coralos-hal` gains `Dma::alloc` (provided), `DmaRequest`, `DmaGrant`, `check_dma_request`, `check_dma_width`, and

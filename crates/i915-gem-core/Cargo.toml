@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/gem/{i915_gem_object.c, i915_gem_create.c, i915_gem_execbuffer.c, i915_gem_context.c,
+# i915_gem_mman.c, i915_gem_wait.c, i915_gem_busy.c, i915_gem_domain.c, i915_gem_tiling.c, i915_gem_shrinker.c, i915_gem_userptr.c},
+# i915_gem.c (madvise) and gt/intel_reset.c (guilty accounting) (v7.0-rc6). Original copyright: Intel Corporation.
+[package]
+name = "i915-gem-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 GEM core for Kaby Lake: session-scoped object handles, contexts and VMs, softpin execbuffer2 planning (bind + request + ELSP), eviction, busy/wait on seqno, mmap policy, madvise/purge - pure planners and effect lists, no MMIO"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-devinfo-core = { path = "../i915-devinfo-core" }
+i915-memory-core = { path = "../i915-memory-core" }
+i915-submit-core = { path = "../i915-submit-core" }
+i915-uapi-core = { path = "../i915-uapi-core" }
+
+[dev-dependencies]
+i915-gt-core = { path = "../i915-gt-core" }
+
+[workspace]
