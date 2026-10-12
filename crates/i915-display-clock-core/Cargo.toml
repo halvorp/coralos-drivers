@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/display/{intel_display_power.c, intel_display_power_well.c, intel_display_power_map.c,
+# intel_cdclk.c, intel_dpll_mgr.c, intel_ddi.c (skl_ddi_*_clock)} and drivers/gpu/drm/i915/intel_pcode.c (v7.0-rc6): the Skylake / Kaby Lake
+# power wells, CDCLK and DPLL0..3 as constraint solvers and effect plans. Original copyright: Intel Corporation.
+[package]
+name = "i915-display-clock-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "Kaby Lake (Gen9.5) display power wells, CDCLK and DPLL0..3: pure solvers + bounded write/poll transaction plans with rollback"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+i915-kbl-display-core = { path = "../i915-kbl-display-core" }
+
+[workspace]
