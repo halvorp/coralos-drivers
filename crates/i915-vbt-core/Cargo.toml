@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/display/{intel_bios.c, intel_vbt_defs.h}.
+# Original copyright: Intel Corporation (Eric Anholt and the i915 authors).
+
+[package]
+name = "i915-vbt-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 Video BIOS Table (VBT/BDB) parsing: child devices, eDP, panel timing, PSR, backlight; total, with named refusals"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]
