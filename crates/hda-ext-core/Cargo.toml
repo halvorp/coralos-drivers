@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "hda-ext-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The planners speak avs-fw-core's vocabulary (Reg / Op / Step / Program / Runner): one set of effects for the whole cAVS bring-up.
+avs-fw-core = { path = "../avs-fw-core" }
+
+[workspace]

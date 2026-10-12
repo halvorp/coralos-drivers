@@ -135,3 +135,11 @@ fn firmware_envelope_constants() {
     assert_eq!(AVS_FW_EXT_MANIFEST_SIZE, 16); // loader.c:69
     assert_eq!(SKL_MIN_FW_VERSION, (9, 21, 0, 4732)); // core.c:817
 }
+
+#[test]
+fn a_sixteen_bit_register_is_a_distinct_access_width() {
+    // hda-ext-core programs SD_FORMAT / SD_LVI / STATESTS with readw/writew; the three widths must not compare equal
+    use avs_fw_core::effect::Width;
+    assert_ne!(Width::W16, Width::B8);
+    assert_ne!(Width::W16, Width::D32);
+}
