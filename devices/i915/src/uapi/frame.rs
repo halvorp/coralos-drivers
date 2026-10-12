@@ -13,6 +13,14 @@ pub fn malformed_reply(err: WireError, out: &mut [u8]) -> Result<usize, WireErro
     finish(h, n, out)
 }
 
+/// A refusal of a call whose header DID decode: the request's opcode, id and incarnation echoed, `status`, and `-errno` (a zero-size
+/// body: the refusals of the transport layer happen before any handler knows the body of its reply). Returns the frame length.
+pub fn refusal_reply(request: Header, status: Status, errno: i32, out: &mut [u8]) -> Result<usize, WireError> {
+    let have = out.len();
+    let n = msg::encode_reply::<msg::Empty>(out.get_mut(HEADER_BYTES..).ok_or(WireError::OutputTooSmall { need: HEADER_BYTES + 8, have })?, status, -errno, None)?;
+    finish(request, n, out)
+}
+
 /// Write the reply header for a payload already placed at `out[HEADER_BYTES..HEADER_BYTES + payload_len]`. Returns the frame length.
 pub fn finish(request: Header, payload_len: usize, out: &mut [u8]) -> Result<usize, WireError> {
     request.reply(payload_len as u32).encode(out)?;

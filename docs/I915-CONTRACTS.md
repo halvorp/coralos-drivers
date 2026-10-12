@@ -227,5 +227,23 @@ syncobj / timeline / sync_file, PRIME and the dma-buf sync bridge. A reply paylo
 a fixed body. Wire bounds are VALIDATION limits; no table is sized by them. The default build answers every one of these `Unsupported`
 with the reason `INCREMENT-NOT-ENABLED` (`uapi::frame`); with `p3-exec` the `UapiService` serves them over gem-core, uapi-core,
 syncobj-core and the executor. Blocking calls (GEM-WAIT, SYNCOBJ-WAIT, SYNC-FILE-WAIT) are PARKED and answered by `poll()` with the
-same request id. Not wired yet: the live endpoint loop (`service.rs` still answers 1.1 frames Unsupported); the next increment owns
-receive-buffer sizing and the peer-death notification that calls `session_dead`.
+same request id.
+
+**The live loop (`devices/i915/src/live`, same feature).** `Live` serves the service on the device's endpoints (`EP_I915_REQ` 65 /
+`EP_I915_REPLY` 66). It BLOCKS on exactly: a request, the engine interrupt (when armed), the deadline `UapiService::next_deadline_ms`
+reports (a parked timed wait; and only while the engine has submitted work in flight, its stall check plus - with no interrupt armed - a
+completion poll), and peer death. An idle device passes no deadline: there is no fixed-period poll. The receive buffer is a whole inline frame
+(`MAX_FRAME_BYTES`); a larger one is refused by name (`WIRE-PAYLOAD-TOO-LARGE`). Peer death (a wait, a receive or a reply send) `session_dead`s every
+session of the connection. A full reply ring keeps the reply, takes no new request, and retries on a timer that exists only while a reply is unsent.
+`service()` (the library's own entry) still answers parked; `service_with(UapiHost)` is the entry that assembles and serves, because
+the CPU view of granted memory needs `unsafe` this library forbids and the aperture size / machine memory come from the host.
+
+**ABI 1.2 - the payload region** (`i915-wire/src/region.rs`). A call larger than one inline frame (a full EXECBUFFER2 is ~84 KiB) names its
+bytes in a region the CLIENT granted: the frame is a 40-byte `RegionRef` with `FLAG_PAYLOAD_REGION`; the device copies the payload out once, and a reply
+that does not fit a frame goes to the reply area the same `RegionRef` named (refused by name, `REPLY-TOO-LARGE`, if it does not fit). Bounds: 4 MiB
+(`MAX_REGION_PAYLOAD`). The device reaches regions through `PayloadRegions`; the production binding is `NoRegions` (`PAYLOAD-REGION-UNAVAILABLE`) until the
+kernel has a call that maps a foreign grant into a ring-3 device.
+
+**Memory.** Each hardware context's timeline gets its OWN status page (Linux `hwsp_alloc`, gt/intel_timeline.c:20-35, :88-96; the cacheline
+allocator of older kernels is gone from the pinned v7.0-rc6 tree) - there is no slot count. The pool returns idle whole grants to the host
+(`Dma::free`, a provided method: `Unsupported` where the host has no call - rt's has none today) when more pages sit idle than are live.

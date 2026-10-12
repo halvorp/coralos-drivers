@@ -108,6 +108,8 @@ pub const fn dma_refusal_name(e: &DmaRefusal) -> &'static str {
         DmaRefusal::CacheTypeUnavailable => "DMA-CACHE-TYPE-UNAVAILABLE",
         DmaRefusal::BadAddrWidth { .. } => "DMA-BAD-ADDR-WIDTH",
         DmaRefusal::BeyondAddrWidth { .. } => "DMA-BEYOND-ADDR-WIDTH",
+        DmaRefusal::Unsupported => "DMA-FREE-UNSUPPORTED",
+        DmaRefusal::NotGranted { .. } => "DMA-NOT-GRANTED",
         DmaRefusal::Host(_) => "DMA-HOST-REFUSED",
     }
 }

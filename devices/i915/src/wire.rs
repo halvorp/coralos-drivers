@@ -77,6 +77,8 @@ pub mod exit_code {
     pub const PANIC: u64 = 3;
     /// The forcewake proof of life failed (the `[I915-FORCEWAKE FAIL ...]` line names why); no further register was written.
     pub const PROOF_FAILED: u64 = 4;
+    /// The uAPI service could not be assembled or the live loop could not start (feature `p3-exec`; the log line names why).
+    pub const UAPI_FAILED: u64 = 5;
 }
 
 /// Bytes of request the parked loop accepts.

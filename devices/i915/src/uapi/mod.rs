@@ -12,8 +12,10 @@
 //! | `service` (feature `p3-exec`) | [`UapiService`]: sessions, dispatch, deferred waits, polling, session death |
 //! | `calls_*`, `exec_call` | one handler per opcode: decode (wire) -> validate (uapi-core) -> plan (gem-core) -> execute (exec/) |
 //! | `adapt` | the seams gem-core plans against, over the executor |
-//! | `pool` | page recycling (the HAL has no `free`) |
+//! | `pool` | page recycling, and giving idle grants back to the host where `Dma::free` exists |
 //! | `fx` | applying the planner's effects; hardware contexts and address-space pages |
+//!
+//! The loop that serves these calls on the device's endpoints is [`crate::live`] (same feature).
 //!
 //! INCREMENT GATING: everything but [`frame`] is compiled only with `p3-exec`. With it OFF, [`frame::answer_without_service`] answers
 //! every uAPI request `Unsupported` with the reason `INCREMENT-NOT-ENABLED`, and the default build is unchanged: proof of life and the
@@ -44,6 +46,6 @@ pub use adapt::ObjTable;
 #[cfg(feature = "p3-exec")]
 pub use fail::Fail;
 #[cfg(feature = "p3-exec")]
-pub use service::{bring_up_render, Handled, Hw, RenderConfig, UapiService};
+pub use service::{bring_up_render, Dispatched, Handled, Hw, RenderConfig, UapiService, COMPLETION_POLL_MS};
 #[cfg(feature = "p3-exec")]
 pub(crate) use i915_wire::errno;

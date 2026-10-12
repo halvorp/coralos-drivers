@@ -22,17 +22,22 @@ pub struct FakeDma {
     pub requests: Vec<(usize, usize, Coherence)>,
     /// Every region granted, in order.
     pub granted: Vec<DmaRegion>,
+    /// Every grant returned through [`Dma::free`], in order.
+    pub freed: Vec<DmaGrant>,
+    /// `false` = behave as a host with no free call (the trait default): `free` answers `Unsupported`.
+    pub can_free: bool,
 }
 
 impl FakeDma {
     pub const VIRT_OFFSET: u64 = 0x7000_0000_0000;
     /// Grants start at `phys_base` (rounded up to a page).
     pub fn new(phys_base: u64) -> Self {
-        FakeDma { next_phys: phys_base.div_ceil(PAGE) * PAGE, refuse: VecDeque::new(), requests: Vec::new(), granted: Vec::new() }
+        FakeDma { next_phys: phys_base.div_ceil(PAGE) * PAGE, refuse: VecDeque::new(), requests: Vec::new(), granted: Vec::new(), freed: Vec::new(), can_free: true }
     }
-    /// Whole pages held so far — never fewer, since nothing is returned.
+    /// Whole pages held now: everything granted minus everything freed.
     pub fn pages_held(&self) -> u64 {
-        self.granted.iter().map(|r| (r.len as u64).div_ceil(PAGE)).sum()
+        let pages = |l: usize| (l as u64).div_ceil(PAGE);
+        self.granted.iter().map(|r| pages(r.len)).sum::<u64>() - self.freed.iter().map(|g| pages(g.len)).sum::<u64>()
     }
 }
 
@@ -58,6 +63,20 @@ impl Dma for FakeDma {
         check_dma_width(&probe, req.addr_width)?;
         let r = self.alloc_coherent(req.size, req.align, req.cache)?;
         Ok(DmaGrant { cpu_mapping: r.virt, device_addr: r.phys, len: r.len })
+    }
+
+    /// Accepts exactly a grant that was made and not yet freed (`NotGranted` otherwise, nothing recorded).
+    fn free(&mut self, grant: DmaGrant) -> Result<(), DmaRefusal> {
+        if !self.can_free {
+            return Err(DmaRefusal::Unsupported);
+        }
+        let live = self.granted.iter().any(|r| r.phys == grant.device_addr && r.virt == grant.cpu_mapping && r.len == grant.len);
+        let again = self.freed.iter().any(|g| g.device_addr == grant.device_addr);
+        if !live || again {
+            return Err(DmaRefusal::NotGranted { device_addr: grant.device_addr, len: grant.len });
+        }
+        self.freed.push(grant);
+        Ok(())
     }
 }
 

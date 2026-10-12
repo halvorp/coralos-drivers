@@ -5,7 +5,9 @@
 #![cfg(feature = "p3-exec")]
 mod exec_common;
 use exec_common::*;
+use coralos_hal::fake::FakeDma;
 use i915_device::exec::dma::ObjKind;
+use i915_device::uapi::pool::HostFree;
 use i915_device::uapi::{bring_up_render, Handled, Hw, RenderConfig, UapiService};
 use i915_devinfo_core::clock::{gen9_clock_from_ctc, Gen9Clock};
 use i915_devinfo_core::sseu::gen9_sseu_info;
@@ -54,7 +56,18 @@ macro_rules! hw {
 }
 
 fn world() -> W {
+    world_with(ENDOWMENT)
+}
+
+/// The simulated device with `endowment` bytes of DMA grant.
+fn world_with(endowment: usize) -> W {
+    world_on(FakeDma::new(PHYS_BASE), endowment)
+}
+
+/// The simulated device on a given fake host (`can_free = false` poses as a host with no free call).
+fn world_on(dma: FakeDma, endowment: usize) -> W {
     let (chip, mem, mut ex, mut gm) = built();
+    gm.alloc = i915_device::exec::dma::GpuAlloc::new(dma, &kbl(), endowment);
     let mut log = Lines::default();
     let sseu = gen9_sseu_info((0b001 << 25) | (0b1000 << 20), [0, 0, 0]);
     let Gen9Clock::Hz(hz) = gen9_clock_from_ctc(2 << 1) else { panic!("crystal expected") };
@@ -63,6 +76,16 @@ fn world() -> W {
     let cfg = RenderConfig { quirks: FlushQuirks { vf_flush_wa: true, dc_flush_wa_kbl: false }, stall_bound_ms: 1000 };
     let svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log: &mut log, now_ms: 0 }, dev, &geom, cfg).unwrap();
     W { chip, mem, ex, gm, log, svc, now: 1, csb: 0, rid: 0 }
+}
+
+impl W {
+    /// Pages the fake host counts against the device now.
+    fn dma_held(&self) -> u64 {
+        self.gm.alloc.dma().pages_held()
+    }
+    fn dma_freed(&self) -> &[coralos_hal::DmaGrant] {
+        &self.gm.alloc.dma().freed
+    }
 }
 
 /// What a call answered.
@@ -176,7 +199,7 @@ fn submit(w: &mut W, inc: u64, payload: &[u8]) -> (Resp, Option<exec::ExecRepHea
 }
 
 /// The hardware picks up the oldest submission and completes it: the CSB promotes then retires, the context's timeline reaches `seqno`.
-fn gpu_complete(w: &mut W, timeline_off: u32, seqno: u32) {
+fn gpu_complete(w: &mut W, timeline_dev: u64, seqno: u32) {
     let hwsp = *w.gm.alloc.grants().find(|g| g.kind == ObjKind::Hwsp).unwrap();
     let first = w.csb;
     let entry = |i: u32| hwsp.cpu_mapping + (0x10 + 2 * (i % 6)) as u64 * 4;
@@ -184,7 +207,8 @@ fn gpu_complete(w: &mut W, timeline_off: u32, seqno: u32) {
     w.mem.put(entry(first) + 4, 0);
     w.mem.put(entry(first + 1), 1 << 3);
     w.mem.put(entry(first + 1) + 4, 0);
-    w.mem.put(hwsp.cpu_mapping + timeline_off as u64, seqno);
+    let tl_cpu = w.gm.alloc.cpu_of(timeline_dev, 4).expect("the timeline page is a granted page");
+    w.mem.put(tl_cpu, seqno); // the GPU writes the seqno through the context's OWN timeline page
     w.mem.put(hwsp.cpu_mapping + 0x1f * 4, (first + 1) % 6);
     w.csb += 2;
 }
@@ -234,7 +258,7 @@ fn a_session_stores_a_dword_through_execbuffer2_and_reads_it_back_through_its_le
     assert!(w.svc.take_ready().is_none());
 
     // the hardware runs the batch: it stores VALUE at the result address and the timeline reaches the request's seqno
-    let tl = w.svc.timeline_offsets()[0];
+    let tl = w.svc.timeline_addrs()[0];
     w.gm.store32(rl.grant_addr, VALUE).unwrap(); // MI_STORE_DWORD_IMM executed
     gpu_complete(&mut w, tl, head.seqno);
     poll(&mut w);
@@ -271,7 +295,7 @@ fn a_blocking_gem_wait_is_answered_when_the_request_completes_or_times_out() {
     let first = parse(&w.svc.take_ready().expect("the timed-out wait is answered"));
     assert!(first.is_err(errno::ETIME), "errno {}", first.errno);
     assert_eq!(w.svc.parked_calls(), 1, "the unbounded wait is still parked");
-    let tl = w.svc.timeline_offsets()[0];
+    let tl = w.svc.timeline_addrs()[0];
     gpu_complete(&mut w, tl, head.seqno);
     poll(&mut w);
     let second = parse(&w.svc.take_ready().expect("the unbounded wait is answered"));
@@ -395,7 +419,7 @@ fn use_everything(w: &mut W) -> u64 {
     for ctx in [0, c1] {
         let (_, head) = submit(w, inc, &exec_payload(result, batch, &[(s1, FENCE_SIGNAL)], None, ctx));
         let head = head.unwrap_or_else(|| panic!("exec on ctx {ctx} refused: {:?}", w.log.0.last()));
-        let tl = *w.svc.timeline_offsets().last().unwrap();
+        let tl = *w.svc.timeline_addrs().last().unwrap();
         gpu_complete(w, tl, head.seqno);
         poll(w);
     }
@@ -426,25 +450,75 @@ fn killing_a_session_frees_every_handle_context_vm_lease_syncobj_and_page() {
     assert_eq!(call(&mut w, inc, Opcode::GemBusy, &GemBusyReq::default()).status, Status::StaleSession);
 }
 
-#[test]
-fn churning_sessions_recycles_memory_instead_of_growing() {
-    let mut w = world();
-    let inc = use_everything(&mut w);
-    w.svc.session_dead(&mut hw!(w), inc);
-    for _ in 0..3 {
-        poll(&mut w);
-    }
-    let (host_pages, left) = (w.svc.pool().pages_from_host(), w.gm.alloc.left());
-    for _ in 0..12 {
-        let inc = use_everything(&mut w);
+/// Run `n` full sessions to their death and return the service to rest.
+fn churn(w: &mut W, n: usize) {
+    for _ in 0..n {
+        let inc = use_everything(w);
         w.svc.session_dead(&mut hw!(w), inc);
         for _ in 0..3 {
-            poll(&mut w);
+            poll(w);
         }
     }
+}
+
+#[test]
+fn churning_sessions_on_a_host_with_no_free_recycles_memory_and_says_so() {
+    let mut dma = FakeDma::new(PHYS_BASE);
+    dma.can_free = false; // rt's binding today: no call returns a grant
+    let mut w = world_on(dma, ENDOWMENT);
+    churn(&mut w, 1);
+    let (host_pages, left) = (w.svc.pool().pages_from_host(), w.gm.alloc.left());
+    churn(&mut w, 12);
     assert_eq!(w.svc.pool().pages_lost(), 0);
     assert_eq!(w.svc.pool().pages_from_host(), host_pages, "no new pages were taken from the host after the first cycle");
-    assert_eq!(w.gm.alloc.left(), left, "the DMA endowment is untouched by further cycles... except context images and rings, which are pooled too");
+    assert_eq!(w.gm.alloc.left(), left, "the DMA endowment is untouched by further cycles");
+    assert_eq!(w.svc.pool().pages_out(), 0);
+    assert_eq!(w.svc.pool().host_free(), HostFree::Unsupported, "the pool asked once and recorded the host's answer");
+    assert_eq!(w.svc.pool().pages_returned(), 0);
+    assert!(w.svc.pool().pages_free() > 0, "it kept the memory instead of dropping it");
+    assert!(w.dma_freed().is_empty(), "nothing reached the host");
+}
+
+#[test]
+fn churning_sessions_on_a_host_that_frees_returns_the_idle_memory() {
+    let mut w = world();
+    let base_held = w.dma_held();
+    let left0 = w.gm.alloc.left();
+    churn(&mut w, 1);
+    assert_eq!(w.svc.pool().pages_out(), 0);
+    assert_eq!(w.svc.pool().high_water(), 0, "the high-water mark is the live set: nothing live, nothing worth keeping");
+    assert_eq!(w.svc.pool().pages_free(), 0, "an idle device holds no slack");
+    assert_eq!(w.svc.pool().host_free(), HostFree::Works);
+    assert_eq!(w.svc.pool().pages_from_host(), w.svc.pool().pages_returned(), "everything taken was given back");
+    assert_eq!(w.svc.pool().grants_held(), 0);
+    assert_eq!(w.dma_held(), base_held, "the host counts exactly the bring-up memory against the device again");
+    assert_eq!(w.gm.alloc.left(), left0, "and the endowment is whole");
+    assert!(!w.dma_freed().is_empty());
+    churn(&mut w, 12);
+    assert_eq!(w.dma_held(), base_held, "twelve more sessions later: still only the bring-up memory");
+    assert_eq!(w.svc.pool().pages_lost(), 0);
+}
+
+#[test]
+fn the_pool_keeps_slack_up_to_the_live_set_and_no_more() {
+    let mut w = world();
+    let a = open(&mut w);
+    let b = open(&mut w);
+    let live_two = w.svc.pool().pages_out();
+    assert!(live_two > 0);
+    let held_two = w.dma_held();
+    // objects that come and go while the sessions stay: the slack never exceeds what is live
+    for _ in 0..20 {
+        let hs: Vec<u32> = (0..8).map(|_| create(&mut w, a, 16 * 4096)).collect();
+        for h in hs {
+            assert_eq!(call(&mut w, a, Opcode::GemClose, &GemCloseReq { handle: h, ..Default::default() }).errno, 0);
+        }
+        poll(&mut w);
+        assert!(w.svc.pool().pages_free() <= w.svc.pool().high_water(), "free {} live {}", w.svc.pool().pages_free(), w.svc.pool().pages_out());
+    }
+    w.svc.session_dead(&mut hw!(w), b);
+    w.svc.session_dead(&mut hw!(w), a);
+    assert!(w.dma_held() < held_two, "closing the sessions returned memory to the host");
     assert_eq!(w.svc.pool().pages_out(), 0);
 }
 
@@ -460,7 +534,7 @@ fn a_session_that_dies_with_work_in_flight_is_freed_when_the_work_retires() {
     w.svc.session_dead(&mut hw!(w), inc);
     assert!(w.svc.gem().object_count() >= 2, "the objects live until the GPU is done with them");
     assert_eq!(w.svc.requests_in_flight(), 1);
-    let tl = w.svc.timeline_offsets()[0];
+    let tl = w.svc.timeline_addrs()[0];
     gpu_complete(&mut w, tl, head.seqno);
     for _ in 0..3 {
         poll(&mut w);
@@ -487,7 +561,7 @@ fn a_request_waiting_on_an_unsignalled_fence_is_held_until_the_fence_signals() {
     assert_eq!(w.svc.gated_requests(), 1);
     assert_eq!(w.chip.writes_to(0x2230).len(), 4, "B has not been written to the ELSP");
     // A completes: its fence signals, B is released and written to the ELSP in the same poll
-    let tl = w.svc.timeline_offsets()[0];
+    let tl = w.svc.timeline_addrs()[0];
     gpu_complete(&mut w, tl, a.seqno);
     poll(&mut w);
     poll(&mut w);
@@ -526,7 +600,7 @@ fn timeline_points_are_signalled_by_retirement_and_queried() {
     assert_eq!(send_raw(&mut w, inc, Opcode::SyncobjTimelineWait, &wait[..n]).unwrap().errno, 0, "the point exists");
     let n = WaitReq::encode(&mut wait, 0, 0, &[t], Some(&[5])).unwrap();
     assert!(send_raw(&mut w, inc, Opcode::SyncobjTimelineWait, &wait[..n]).unwrap().is_err(errno::ETIME));
-    let tl = w.svc.timeline_offsets()[0];
+    let tl = w.svc.timeline_addrs()[0];
     gpu_complete(&mut w, tl, head.seqno);
     poll(&mut w);
     assert_eq!(q(&mut w, 0), 5, "retirement signalled the point");
@@ -665,14 +739,46 @@ fn sessions_are_a_growable_table() {
 }
 
 #[test]
-fn the_status_page_holds_a_bounded_number_of_timelines_and_says_so_by_name() {
-    let mut w = world();
+fn two_hundred_timelines_each_get_their_own_page_and_the_cap_is_memory_not_a_constant() {
+    // the old design fixed 60 slots in the one status page "(hardware: one 4 KiB page)"; Linux gives every timeline a page (hwsp_alloc)
+    let mut w = world_with(64 << 20);
+    let inc = open(&mut w);
+    let (batch, result) = (create(&mut w, inc, 4096), create(&mut w, inc, 4096));
+    let bl = lease(&mut w, inc, batch, 4096);
+    write_batch(&mut w, &bl);
+    let mut first = None;
+    for i in 0..200 {
+        let ctx = call(&mut w, inc, Opcode::ContextCreate, &ContextCreateReq {}).body::<ContextRep>().ctx_id;
+        let (r, head) = submit(&mut w, inc, &exec_payload(result, batch, &[], None, ctx));
+        assert!(head.is_some(), "context {i} refused: errno {} log {:?}", r.errno, w.log.0.last());
+        first = first.or(head);
+    }
+    assert_eq!(w.svc.live_hw_contexts(), 200, "200 timelines live at once (more than the old 60)");
+    let mut tls = w.svc.timeline_addrs();
+    assert_eq!(tls.iter().filter(|a| *a % 4096 != 0).count(), 0, "a timeline's seqno dword is the first dword of its page");
+    tls.sort();
+    tls.dedup();
+    assert_eq!(tls.len(), 200, "every timeline has a page of its own");
+    let hwsp = w.gm.alloc.grants().find(|g| g.kind == ObjKind::Hwsp && g.device_addr == w.gm.alloc.grants().filter(|g| g.kind == ObjKind::Hwsp).map(|g| g.device_addr).min().unwrap()).copied().unwrap();
+    assert!(tls.iter().all(|a| *a != hwsp.device_addr), "none of them is the engine's status page");
+    // the GPU completes the first context's request by writing ITS OWN page: the service reads the seqno there, not in the status page
+    assert_eq!(w.svc.requests_in_flight(), 200);
+    let tl0 = w.svc.timeline_addrs()[0];
+    gpu_complete(&mut w, tl0, first.unwrap().seqno);
+    poll(&mut w);
+    assert_eq!(w.svc.requests_in_flight(), 199, "exactly that request retired");
+}
+
+#[test]
+fn a_timeline_is_refused_by_name_only_when_memory_is_gone() {
+    // 24 pages of endowment past the device's bring-up: contexts run out of pages, and the refusal names the endowment, not a slot count
+    let mut w = world_with(2 << 20);
     let inc = open(&mut w);
     let (batch, result) = (create(&mut w, inc, 4096), create(&mut w, inc, 4096));
     let bl = lease(&mut w, inc, batch, 4096);
     write_batch(&mut w, &bl);
     let mut refused_at = None;
-    for i in 0..70 {
+    for i in 0..200 {
         let ctx = call(&mut w, inc, Opcode::ContextCreate, &ContextCreateReq {}).body::<ContextRep>().ctx_id;
         let (r, head) = submit(&mut w, inc, &exec_payload(result, batch, &[], None, ctx));
         if head.is_none() {
@@ -681,11 +787,12 @@ fn the_status_page_holds_a_bounded_number_of_timelines_and_says_so_by_name() {
             break;
         }
     }
-    let n = refused_at.expect("the status page ran out of timeline slots");
-    assert!(refused(&w, "HWSP-TIMELINE-SLOTS-EXHAUSTED") || refused_by_engine(&w), "named: {:?}", w.log.0.last());
-    assert!(n >= 30, "tens of contexts fit one status page, got {n}");
+    assert!(refused_at.expect("2 MiB cannot hold 200 contexts") > 0);
+    assert!(refused(&w, "DMA-ENDOWMENT-EXHAUSTED") || refused(&w, "OUT-OF-MEMORY"), "named: {:?}", w.log.0.last());
+    assert!(!refused(&w, "HWSP-TIMELINE-SLOTS-EXHAUSTED"), "the slot-count refusal no longer exists");
 }
 
+#[allow(dead_code)]
 fn refused_by_engine(w: &W) -> bool {
     w.log.0.iter().any(|l| l.contains("refused") && (l.contains("OUT-OF-MEMORY") || l.contains("CONTEXT") || l.contains("TAG")))
 }

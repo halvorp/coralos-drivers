@@ -6,10 +6,10 @@
 use super::adapt::{Hwx, Sink};
 use super::fail::Fail;
 use super::pool::Run;
-use super::service::{bind_ggtt_pages, Hw, HwCtx, VmRec, HWSP_TIMELINE_BASE, HWSP_TIMELINE_SLOTS, HWSP_TIMELINE_STRIDE};
+use super::service::{bind_ggtt_pages, Hw, HwCtx, VmRec};
 use super::UapiService;
 use crate::exec::dma::{CpuMem, Grant, ObjKind};
-use crate::exec::engine::CtxObjects;
+use crate::exec::engine::{CtxObjects, TimelinePage};
 use crate::log::Log;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
@@ -212,59 +212,60 @@ impl UapiService {
         }
         let vm = self.gem.context_vm(sid, ctx_id)?;
         let pml4 = self.gem.vm_pml4(vm).ok_or(Fail::new(errno::EIO, "VM-GONE"))?;
-        let tl_slot = self.tl_used.iter().position(|u| !u).ok_or(Fail::new(errno::ENOMEM, "HWSP-TIMELINE-SLOTS-EXHAUSTED"))?;
         self.hwctx.try_reserve(1).map_err(|_| Fail::oom("hw-contexts"))?;
         let image_pages = (self.rig.engine.info().context_size as usize).div_ceil(4096);
-        let image = self.pool.alloc(hw.gm, image_pages)?;
-        let ring = match self.pool.alloc(hw.gm, 1) {
-            Ok(r) => r,
-            Err(e) => {
-                self.pool.release(image);
-                return Err(e);
-            }
-        };
-        let undo = |me: &mut UapiService, hw: &mut Hw<'_, B, D, M, L>, bound: &[VmaIdPair]| {
-            for (vma, _) in bound {
-                if let Ok(p) = me.ggtt.plan_unbind(*vma) {
-                    let _ = hw.ex.run_bind_step(hw.log, hw.gm, &p, true, &mut |_| true);
+        // image, ring and the context's OWN timeline page (Linux hwsp_alloc, gt/intel_timeline.c:20-35): each from the pool, each bound in
+        // the GGTT; a failure at any step gives back everything before it (the pool zeroes a recycled run, so the seqno starts at 0).
+        let mut runs: [Option<Run>; 3] = [None; 3];
+        let mut vmas: [Option<i915_memory_core::VmaId>; 3] = [None; 3];
+        let mut ggtt_at = [0u32; 3];
+        let kinds = [(ObjKind::ContextImage, image_pages), (ObjKind::Ring, 1), (ObjKind::Hwsp, 1)];
+        for (i, (kind, pages)) in kinds.into_iter().enumerate() {
+            let step = self.pool.alloc(hw.gm, pages).and_then(|run| {
+                runs[i] = Some(run);
+                let g = Grant { kind, cpu_mapping: run.cpu, device_addr: run.dev, len: run.bytes() };
+                self.bind_run(hw, &g)
+            });
+            match step {
+                Ok((off, vma)) => (ggtt_at[i], vmas[i]) = (off, Some(vma)),
+                Err(e) => {
+                    self.undo_hw_ctx(hw, &runs, &vmas);
+                    return Err(e);
                 }
             }
-            me.pool.release(image);
-            me.pool.release(ring);
-        };
+        }
+        let (image, ring, tl) = (runs[0].expect("allocated"), runs[1].expect("allocated"), runs[2].expect("allocated"));
         let ig = Grant { kind: ObjKind::ContextImage, cpu_mapping: image.cpu, device_addr: image.dev, len: image.bytes() };
         let rg = Grant { kind: ObjKind::Ring, cpu_mapping: ring.cpu, device_addr: ring.dev, len: ring.bytes() };
-        let (image_ggtt, image_vma) = match self.bind_run(hw, &ig) {
-            Ok(x) => x,
-            Err(e) => {
-                undo(self, hw, &[]);
-                return Err(e);
-            }
-        };
-        let (ring_ggtt, ring_vma) = match self.bind_run(hw, &rg) {
-            Ok(x) => x,
-            Err(e) => {
-                undo(self, hw, &[(image_vma, ())]);
-                return Err(e);
-            }
-        };
-        let objs = CtxObjects { image: ig, image_ggtt, ring: rg, ring_ggtt };
-        let timeline_ggtt = self.hwsp_ggtt + HWSP_TIMELINE_BASE + tl_slot as u32 * HWSP_TIMELINE_STRIDE;
-        let ectx = match self.rig.add_context(hw.gm, objs, pml4, timeline_ggtt, 0, true) {
+        let objs = CtxObjects { image: ig, image_ggtt: ggtt_at[0], ring: rg, ring_ggtt: ggtt_at[1] };
+        let own = TimelinePage { ggtt: ggtt_at[2], dev: tl.dev };
+        let ectx = match self.rig.add_context_in(hw.gm, objs, pml4, own.ggtt, 0, true, Some(own)) {
             Ok(id) => id,
             Err(e) => {
-                undo(self, hw, &[(image_vma, ()), (ring_vma, ())]);
+                self.undo_hw_ctx(hw, &runs, &vmas);
                 return Err(e.into());
             }
         };
         if let Err(e) = self.gem.attach_engine_context(sid, ctx_id, 0, 0, ectx) {
             let _ = self.rig.remove_context(ectx);
-            undo(self, hw, &[(image_vma, ()), (ring_vma, ())]);
+            self.undo_hw_ctx(hw, &runs, &vmas);
             return Err(e.into());
         }
-        self.tl_used[tl_slot] = true;
-        self.hwctx.push(HwCtx { slot, ectx, image, ring, image_vma, ring_vma, tl_slot });
+        let vma = |i: usize| vmas[i].expect("bound");
+        self.hwctx.push(HwCtx { slot, ectx, image, ring, image_vma: vma(0), ring_vma: vma(1), tl, tl_vma: vma(2) });
         Ok(())
+    }
+
+    /// Unbind whatever was bound and give every run back (a half-made hardware context, or a freed one).
+    fn undo_hw_ctx<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, runs: &[Option<Run>], vmas: &[Option<i915_memory_core::VmaId>]) {
+        for vma in vmas.iter().flatten() {
+            if let Ok(p) = self.ggtt.plan_unbind(*vma) {
+                let _ = hw.ex.run_bind_step(hw.log, hw.gm, &p, true, &mut |_| true);
+            }
+        }
+        for r in runs.iter().flatten() {
+            self.pool.release(*r);
+        }
     }
 
     fn bind_run<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, g: &Grant) -> Result<(u32, i915_memory_core::VmaId), Fail> {
@@ -284,19 +285,10 @@ impl UapiService {
         if self.rig.remove_context(h.ectx).is_err() {
             return; // still has a request in flight: the next retire frees it
         }
-        for vma in [h.image_vma, h.ring_vma] {
-            if let Ok(p) = self.ggtt.plan_unbind(vma) {
-                let _ = hw.ex.run_bind_step(hw.log, hw.gm, &p, true, &mut |_| true);
-            }
-        }
-        self.pool.release(h.image);
-        self.pool.release(h.ring);
-        if h.tl_slot < HWSP_TIMELINE_SLOTS {
-            self.tl_used[h.tl_slot] = false;
-        }
+        self.undo_hw_ctx(hw, &[Some(h.image), Some(h.ring), Some(h.tl)], &[Some(h.image_vma), Some(h.ring_vma), Some(h.tl_vma)]);
         self.hwctx.swap_remove(i);
+        self.trim_pool(hw);
     }
 }
 
-type VmaIdPair = (i915_memory_core::VmaId, ());
 

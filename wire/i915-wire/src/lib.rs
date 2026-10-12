@@ -19,6 +19,9 @@
 //! ```
 //! A REPLY has the request's opcode, request_id and incarnation, and its payload begins with a `u32` [`Status`].
 //!
+//! ABI 1.2 adds the PAYLOAD REGION ([`region`]): a frame whose payload is too large to travel inline (`payload_bytes` <= [`MAX_PAYLOAD`]) names bytes
+//! in a region the client granted, instead (`FLAG_PAYLOAD_REGION`, a [`region::RegionRef`] as the whole inline payload).
+//!
 //! ABI 1.1 adds the uAPI messages ([`msg`]): one opcode per i915 call, a request payload and a reply payload for each, every field
 //! fixed-endian and explicitly decoded, every bound a VALIDATION limit (Linux's own) and never a storage size. A reply payload is
 //! `status: u32`, `errno: i32` (`0` or `-errno`, exactly what the ioctl returned), then a body of fixed size per opcode (zeroes when
@@ -32,19 +35,26 @@
 pub mod codec;
 pub mod errno;
 pub mod msg;
+pub mod region;
 
 /// `b"I915"` as a little-endian u32.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"I915");
 pub const ABI_MAJOR: u16 = 1;
 /// 1: the uAPI messages (opcodes `0x100..`). Every opcode records the minor that introduced it ([`Opcode::since_minor`]).
-pub const ABI_MINOR: u16 = 1;
+/// 2: the payload region ([`FLAG_PAYLOAD_REGION`], [`region`]); additive - no opcode changed.
+pub const ABI_MINOR: u16 = 2;
 pub const HEADER_BYTES: usize = 40;
 /// The largest payload a frame may declare (64 KiB): a submit carries object and dependency tables, never GPU data.
 pub const MAX_PAYLOAD: u32 = 64 * 1024;
 
+/// The largest whole frame that travels inline: the header and a full [`MAX_PAYLOAD`]. A receive buffer is sized to this, never less.
+pub const MAX_FRAME_BYTES: usize = HEADER_BYTES + MAX_PAYLOAD as usize;
+
 pub const FLAG_REPLY: u32 = 1 << 0;
+/// The payload is a [`region::RegionRef`], not the call's own payload (ABI minor 2, [`region::REGION_SINCE_MINOR`]).
+pub const FLAG_PAYLOAD_REGION: u32 = 1 << 1;
 /// Every flag bit this ABI defines.
-pub const FLAGS_KNOWN: u32 = FLAG_REPLY;
+pub const FLAGS_KNOWN: u32 = FLAG_REPLY | FLAG_PAYLOAD_REGION;
 
 macro_rules! opcodes {
     ($($(#[$m:meta])* $name:ident = $val:expr, $since:expr, $text:expr;)*) => {
@@ -176,6 +186,8 @@ pub enum WireError {
     PayloadLengthMismatch { declared: u32, actual: usize },
     /// The opcode exists, but a later minor than the frame declares introduced it.
     OpcodeNewerThanMinor { opcode: u32, since: u16, got: u16 },
+    /// A flag exists, but a later minor than the frame declares introduced it.
+    FlagNewerThanMinor { flag: u32, since: u16, got: u16 },
     // ---- payload decode (the msg modules)
     /// A payload field ran past the end of the payload.
     Truncated { what: &'static str, need: usize, have: usize },
@@ -205,6 +217,7 @@ impl WireError {
             WireError::PayloadTooLarge { .. } => "WIRE-PAYLOAD-TOO-LARGE",
             WireError::PayloadLengthMismatch { .. } => "WIRE-PAYLOAD-LENGTH-MISMATCH",
             WireError::OpcodeNewerThanMinor { .. } => "WIRE-OPCODE-NEWER-THAN-MINOR",
+            WireError::FlagNewerThanMinor { .. } => "WIRE-FLAG-NEWER-THAN-MINOR",
             WireError::Truncated { .. } => "WIRE-TRUNCATED",
             WireError::TrailingBytes { .. } => "WIRE-TRAILING-BYTES",
             WireError::FieldReservedNonZero { .. } => "WIRE-FIELD-RESERVED-NONZERO",
@@ -263,13 +276,24 @@ impl Header {
         Header { major: ABI_MAJOR, minor: ABI_MINOR, opcode, flags: 0, request_id, session_incarnation, payload_bytes }
     }
 
+    /// Does the payload name a region ([`FLAG_PAYLOAD_REGION`]) instead of carrying the call's bytes?
+    pub const fn is_region(&self) -> bool {
+        self.flags & FLAG_PAYLOAD_REGION != 0
+    }
+
     pub const fn is_reply(&self) -> bool {
         self.flags & FLAG_REPLY != 0
     }
 
     /// The reply header to this request, declaring `payload_bytes` of reply payload (which must begin with a [`Status`]).
     pub const fn reply(&self, payload_bytes: u32) -> Header {
-        Header { major: ABI_MAJOR, minor: ABI_MINOR, flags: self.flags | FLAG_REPLY, payload_bytes, ..*self }
+        // the reply travels inline unless the device says otherwise ([`Header::reply_in_region`]): a request's region flag is not inherited
+        Header { major: ABI_MAJOR, minor: ABI_MINOR, flags: (self.flags & !FLAG_PAYLOAD_REGION) | FLAG_REPLY, payload_bytes, ..*self }
+    }
+
+    /// The reply header whose payload is a [`region::RegionRef`] to reply bytes the device placed in the client's reply area.
+    pub const fn reply_in_region(&self) -> Header {
+        Header { flags: self.flags | FLAG_PAYLOAD_REGION | FLAG_REPLY, payload_bytes: region::REGION_REF_BYTES as u32, major: ABI_MAJOR, minor: ABI_MINOR, ..*self }
     }
 
     /// Write the 40 header bytes. `Err(ShortBuffer)` if `out` is shorter; the declared payload is bounds-checked too.
@@ -313,6 +337,9 @@ impl Header {
         let flags = u32_at(buf, 12);
         if flags & !FLAGS_KNOWN != 0 {
             return Err(WireError::UnknownFlags { got: flags });
+        }
+        if flags & FLAG_PAYLOAD_REGION != 0 && minor < region::REGION_SINCE_MINOR {
+            return Err(WireError::FlagNewerThanMinor { flag: FLAG_PAYLOAD_REGION, since: region::REGION_SINCE_MINOR, got: minor });
         }
         let payload_bytes = u32_at(buf, 32);
         if payload_bytes > MAX_PAYLOAD {

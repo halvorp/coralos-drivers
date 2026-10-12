@@ -2,10 +2,12 @@
 //! The [`Dma`] seam — coherent DMA memory a driver hands to its device (the first consumer: the Intel 9260 iwlwifi
 //! port's TX/RX rings, ICT table, keep-warm page and firmware sections).
 //!
-//! ONE CALL, NO FREE. A host OS backs [`Dma::alloc_coherent`] with fresh, zeroed, physically-contiguous pages; a host
+//! ONE CALL, AND `free` ONLY WHERE THE HOST HAS ONE. A host OS backs [`Dma::alloc_coherent`] with fresh, zeroed, physically-contiguous pages; a host
 //! test backs it with the scripted fake (`fake::FakeDma`). There is deliberately no `free`: CoralOS has no call that
 //! returns a DMA grant before the task ends (the grant lives in the task's DMA window and goes back with the task), so
-//! a `free` here would be a nominal call that frees nothing. A driver allocates its rings once at bring-up and reuses
+//! a `free` that frees nothing would be a lie. [`Dma::free`] (additive, 2026-10-13) is therefore a PROVIDED method that
+//! answers [`DmaRefusal::Unsupported`] until a host implements it: a driver that recycles (i915.device's page pool) asks,
+//! and keeps the memory when told no. A driver that never frees allocates its rings once at bring-up and reuses
 //! them, as Linux's iwlwifi does across firmware restarts.
 //!
 //! THE CACHE RULE is [`Coherence`]: the driver says whether its DEVICE snoops CPU caches, and the host picks the CPU
@@ -57,6 +59,10 @@ pub enum DmaRefusal {
     /// The host granted memory whose device address does not fit the request's `addr_width` (named, never used; a host
     /// that cannot place below the width must refuse instead).
     BeyondAddrWidth { device_addr: u64, len: usize, width: u8 },
+    /// The host has no call that returns a grant ([`Dma::free`] default): the memory stays the task's until it ends.
+    Unsupported,
+    /// [`Dma::free`] named a grant this allocator never made, or one already freed (a caller defect, named, nothing freed).
+    NotGranted { device_addr: u64, len: usize },
     /// Any other refusal word the host returned, as itself.
     Host(u64),
 }
@@ -78,6 +84,13 @@ pub trait Dma {
         let region = self.alloc_coherent(req.size, req.align, req.cache)?;
         check_dma_width(&region, req.addr_width)?;
         Ok(DmaGrant { cpu_mapping: region.virt, device_addr: region.phys, len: region.len })
+    }
+
+    /// Return a grant made by [`Dma::alloc`] to the host (additive). The WHOLE grant, as granted: `device_addr` and `len` exactly as
+    /// the [`DmaGrant`] carried them. After `Ok` neither address may be used again; on `Err` nothing was freed and the grant is still
+    /// the caller's. The default is [`DmaRefusal::Unsupported`]: a host with no such call keeps the memory, and says so.
+    fn free(&mut self, _grant: DmaGrant) -> Result<(), DmaRefusal> {
+        Err(DmaRefusal::Unsupported)
     }
 }
 

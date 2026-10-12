@@ -613,6 +613,25 @@ fn a_stuck_seqno_is_declared_hung_after_exactly_the_bound() {
 }
 
 #[test]
+fn the_next_stall_check_is_the_deadline_of_work_in_flight_and_nothing_when_idle() {
+    let mut r = Rig::new();
+    assert_eq!(r.e.next_stall_check(7), None, "an idle engine has no deadline");
+    let a1 = r.rq(0);
+    r.e.dequeue(0).unwrap().unwrap();
+    r.csb(&[(0, 0x1)], 0);
+    assert_eq!(r.e.next_stall_check(100), Some(100), "work in flight whose watch is not armed: look now");
+    r.e.check_hang(100).unwrap();
+    assert_eq!(r.e.next_stall_check(150), Some(100 + BOUND), "armed: exactly when check_hang would declare it");
+    assert!(r.e.check_hang(100 + BOUND - 1).is_ok() && r.e.check_hang(100 + BOUND).is_err(), "and that is the same instant");
+    r.e.observe_seqno(0, a1.seqno - 1).unwrap();
+    assert_eq!(r.e.next_stall_check(300), Some(300), "progress disarms the watch until the next look");
+    r.e.check_hang(300).unwrap();
+    assert_eq!(r.e.next_stall_check(301), Some(300 + BOUND));
+    r.e.observe_seqno(0, a1.seqno).unwrap();
+    assert_eq!(r.e.next_stall_check(302), None, "a completed request has no deadline");
+}
+
+#[test]
 fn progress_resets_the_stall_clock() {
     let mut r = Rig::new();
     let a1 = r.rq(0);

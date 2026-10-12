@@ -113,3 +113,32 @@ fn width_check_is_exact_at_the_boundary_and_the_default_alloc_applies_it_after_t
         Err(DmaRefusal::BeyondAddrWidth { device_addr: 1 << 40, len: 4096, width: 39 })
     );
 }
+
+#[test]
+fn free_is_unsupported_by_default_and_the_fake_frees_exactly_what_it_granted_once() {
+    use crate::dma::DmaGrant;
+    // a host with only alloc_coherent (the trait default): free says so and frees nothing
+    struct NoFree;
+    impl Dma for NoFree {
+        fn alloc_coherent(&mut self, len: usize, _a: usize, _c: Coherence) -> Result<DmaRegion, DmaRefusal> {
+            Ok(DmaRegion { virt: 0x1000, phys: 0x1000, len })
+        }
+    }
+    let g = DmaGrant { cpu_mapping: 0x1000, device_addr: 0x1000, len: 4096 };
+    assert_eq!(NoFree.free(g), Err(DmaRefusal::Unsupported));
+
+    let mut d = FakeDma::new(0x10_0000);
+    let a = d.alloc(req(8192, 39, 1 << 20)).unwrap();
+    let b = d.alloc(req(4096, 39, 1 << 20)).unwrap();
+    assert_eq!(d.pages_held(), 3);
+    assert_eq!(d.free(DmaGrant { len: 4096, ..a }), Err(DmaRefusal::NotGranted { device_addr: a.device_addr, len: 4096 }), "a part of a grant is not a grant");
+    assert_eq!(d.free(DmaGrant { device_addr: a.device_addr + 1, ..a }), Err(DmaRefusal::NotGranted { device_addr: a.device_addr + 1, len: 8192 }));
+    assert_eq!(d.pages_held(), 3, "a refused free holds nothing different");
+    assert_eq!(d.free(a), Ok(()));
+    assert_eq!(d.pages_held(), 1, "the freed grant is no longer held");
+    assert_eq!(d.free(a), Err(DmaRefusal::NotGranted { device_addr: a.device_addr, len: 8192 }), "never twice");
+    assert_eq!(d.freed, vec![a]);
+    d.can_free = false;
+    assert_eq!(d.free(b), Err(DmaRefusal::Unsupported), "the fake can pose as a host with no free call");
+    assert_eq!(d.pages_held(), 1);
+}
