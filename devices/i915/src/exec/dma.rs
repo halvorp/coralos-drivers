@@ -15,7 +15,7 @@
 //! or a test) supplies the loads, stores and cache flush for a `cpu_mapping` address.
 use super::ExecError;
 use alloc::vec::Vec;
-use coralos_hal::{Coherence, Dma, DmaGrant, DmaRequest};
+use coralos_hal::{Coherence, Dma, DmaGrant, DmaRefusal, DmaRequest};
 use i915_devinfo_core::PlatformDescriptor;
 use i915_memory_core::{MemError, TablePage, TablePageRequest, TablePageSource};
 
@@ -111,6 +111,17 @@ impl<D: Dma> GpuAlloc<D> {
         self.left = self.left.saturating_sub(len.div_ceil(PAGE) * PAGE);
         self.grants.push(g); // cannot reallocate: reserved above
         Ok(g)
+    }
+
+    /// Give a whole grant back to the host ([`Dma::free`]): it must be one this allocator made and still holds, exactly as recorded. On
+    /// `Ok` the grant leaves the table (a device address inside it is `OUTSIDE-DMA-GRANT` from now on) and its pages return to the
+    /// endowment. On `Err` nothing changed - in particular `DMA-FREE-UNSUPPORTED` when the host has no free call.
+    pub fn release(&mut self, g: Grant) -> Result<(), ExecError> {
+        let i = self.grants.iter().position(|r| *r == g).ok_or(ExecError::Dma(DmaRefusal::NotGranted { device_addr: g.device_addr, len: g.len }))?;
+        self.dma.free(DmaGrant { cpu_mapping: g.cpu_mapping, device_addr: g.device_addr, len: g.len })?;
+        self.grants.swap_remove(i);
+        self.left += g.len.div_ceil(PAGE) * PAGE;
+        Ok(())
     }
 
     pub fn alloc_ring(&mut self, bytes: usize) -> Result<Grant, ExecError> {

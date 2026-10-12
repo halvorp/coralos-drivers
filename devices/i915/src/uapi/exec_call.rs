@@ -192,6 +192,7 @@ impl UapiService {
             self.observe_and_complete(hw);
         }
         self.poll_waiters(hw);
+        self.trim_pool(hw);
     }
 
     fn observe_and_complete<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {

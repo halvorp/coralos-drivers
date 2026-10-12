@@ -23,11 +23,13 @@ fn frame() -> Vec<u8> {
 fn constants_are_the_documented_values() {
     assert_eq!(MAGIC, 0x3531_3949);
     assert_eq!(&MAGIC.to_le_bytes(), b"I915");
-    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 1)); // minor 1: the uAPI messages
+    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 2)); // minor 1: the uAPI messages; minor 2: the payload region
     assert_eq!(HEADER_BYTES, 40);
     assert_eq!(MAX_PAYLOAD, 65536);
     assert_eq!(FLAG_REPLY, 1);
-    assert_eq!(FLAGS_KNOWN, FLAG_REPLY);
+    assert_eq!(FLAG_PAYLOAD_REGION, 2);
+    assert_eq!(FLAGS_KNOWN, FLAG_REPLY | FLAG_PAYLOAD_REGION);
+    assert_eq!(MAX_FRAME_BYTES, 40 + 65536);
 }
 
 #[test]
@@ -50,7 +52,7 @@ fn encode_produces_exactly_the_hand_written_bytes() {
     let mut out = [0xffu8; 48];
     h.encode(&mut out).unwrap();
     let mut expect = frame();
-    expect[6] = 1; // a request built by this crate declares ABI minor 1 (the hand-written frame above is a minor-0 frame)
+    expect[6] = ABI_MINOR as u8; // a request built by this crate declares ABI minor 2 (ABI_MINOR) (the hand-written frame above is a minor-0 frame)
     assert_eq!(&out[..40], &expect[..40]);
     assert_eq!(&out[40..], &[0xff; 8], "encode writes the header and nothing past it");
 }
@@ -124,10 +126,10 @@ fn each_refusal_is_named_and_carries_the_value() {
     assert_eq!(Header::decode(&f).unwrap_err(), WireError::UnknownOpcode { got: 77 });
 
     let mut f = ok.clone();
-    f[12] = 0x02; // an unknown flag bit
-    assert_eq!(Header::decode(&f).unwrap_err(), WireError::UnknownFlags { got: 2 });
-    f[12] = 0x03; // REPLY plus an unknown bit
-    assert_eq!(Header::decode(&f).unwrap_err(), WireError::UnknownFlags { got: 3 });
+    f[12] = 0x04; // an unknown flag bit (0x02 is the payload region since minor 2)
+    assert_eq!(Header::decode(&f).unwrap_err(), WireError::UnknownFlags { got: 4 });
+    f[12] = 0x05; // REPLY plus an unknown bit
+    assert_eq!(Header::decode(&f).unwrap_err(), WireError::UnknownFlags { got: 5 });
     f[12] = 0x01; // REPLY alone is fine
     assert!(Header::decode(&f).unwrap().0.is_reply());
 

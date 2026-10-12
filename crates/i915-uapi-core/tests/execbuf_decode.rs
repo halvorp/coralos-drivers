@@ -80,10 +80,11 @@ fn buffer_count_bounds() {
 }
 
 #[test]
-fn payload_cap_is_the_wire_max_payload() {
-    let big = vec![0u8; i915_wire::MAX_PAYLOAD as usize + 1];
+fn payload_cap_is_the_wire_max_region_payload() {
+    // (an inline frame is held to MAX_PAYLOAD by the frame decoder; a region-borne payload may be larger, up to MAX_REGION_PAYLOAD)
+    let big = vec![0u8; i915_wire::region::MAX_REGION_PAYLOAD as usize + 1];
     assert_eq!(decode_execbuf2(&big, &L).unwrap_err().name(), "LIMIT-EXCEEDED");
-    // a caller cannot raise the cap above the wire's
+    // a caller cannot raise the cap above the wire's region limit
     let lim = ExecLimits { max_payload: u32::MAX, ..L };
     assert_eq!(decode_execbuf2(&big, &lim).unwrap_err().name(), "LIMIT-EXCEEDED");
     // a smaller cap is honoured

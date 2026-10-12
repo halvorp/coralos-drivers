@@ -14,6 +14,10 @@ pub const BAR0_SLOT: u32 = 0;
 pub const CFG_SLOT: u32 = 1;
 /// The PCI configuration header the identity check reads: 64 bytes (PCI local bus spec header type 0).
 pub const CFG_HEADER_BYTES: u64 = 0x40;
+/// The configuration bytes the device needs: the 64-byte header, and with `p3-exec` also `GMCH_CTRL` (offset 0x50, the GGTT table size).
+pub const CFG_NEED_BYTES: u64 = if cfg!(feature = "p3-exec") { GMCH_CTRL_DWORD as u64 + 4 } else { CFG_HEADER_BYTES };
+/// The dword holding `GMCH_CTRL` (a 16-bit register at PCI configuration offset 0x50, `SNB_GMCH_CTRL`, include/drm/intel/i915_drm.h:49; read with `pci_read_config_word`, gt/intel_ggtt.c:1274).
+pub const GMCH_CTRL_DWORD: u32 = 0x50;
 /// The part of BAR0 the Kaby Lake display readout reads: every register it touches is below 0x80000
 /// (TRANSCONF(EDP) at 0x7f008 is the highest).
 pub const READOUT_WINDOW_BYTES: u64 = 0x8_0000;

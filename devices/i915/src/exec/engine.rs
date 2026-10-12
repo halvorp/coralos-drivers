@@ -81,6 +81,18 @@ pub struct ExecProof {
     pub recovered: bool,
 }
 
+/// A timeline's OWN status page: the 4 KiB object whose first dword is the timeline's seqno (`TIMELINE_SEQNO_BYTES` = 8 bytes at
+/// offset 0). Linux gives every per-context timeline one (`hwsp_alloc`: a PAGE_SIZE internal object, gt/intel_timeline.c:20-35, used when
+/// `intel_timeline_init` is not handed the engine's global status page, :88-96 - and then `has_initial_breadcrumb`, which the uAPI
+/// service's contexts rely on). `ggtt` is where the page is bound (what the GPU writes through), `dev` the same page's DEVICE address in
+/// the grant table (what the CPU reads through). The count of timelines is therefore the count of pages the host will give, never a
+/// constant (RUNTIME-TABLES-HAVE-NO-CAP).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimelinePage {
+    pub ggtt: u32,
+    pub dev: u64,
+}
+
 /// One engine and the memory it runs in.
 pub struct EngineRig {
     pub engine: Engine,
@@ -88,6 +100,8 @@ pub struct EngineRig {
     hwsp_ggtt: u32,
     /// Context objects by context id; grows with the engine's context table (no compile-time cap, D10), fallibly.
     objs: Vec<Option<CtxObjects>>,
+    /// Each context's own timeline page, by context id (`None` = its seqno dword lives in the engine's status page).
+    tls: Vec<Option<TimelinePage>>,
     /// Resets executed (engine or full).
     pub epoch: u32,
     pub proof: ExecProof,
@@ -122,17 +136,23 @@ impl EngineRig {
         if cfg.status_page_ggtt != hwsp_ggtt || hwsp.len < 4096 {
             return Err(ExecError::Layout { what: "status page object vs EngineConfig::status_page_ggtt" });
         }
-        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), epoch: 0, proof: ExecProof::default(), hold: false })
+        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), tls: Vec::new(), epoch: 0, proof: ExecProof::default(), hold: false })
     }
 
     fn hwsp_sink<'a, D: Dma, M: CpuMem>(&self, gm: &'a mut GpuMem<D, M>) -> Hwsp<'a, D, M> {
         Hwsp { gm, page: self.hwsp.device_addr }
     }
 
-    /// The status-page dword holding a timeline's seqno: `hwsp_ggtt` is a GGTT address inside the status page's binding.
-    fn seqno_dword(&self, tl_ggtt: u32) -> Result<u64, ExecError> {
-        let off = tl_ggtt.checked_sub(self.hwsp_ggtt).filter(|o| o % 4 == 0 && *o < 4096).ok_or(ExecError::Layout { what: "timeline seqno slot outside the status page" })?;
-        Ok(self.hwsp.device_addr + off as u64)
+    /// The dword holding a timeline's seqno: `tl_ggtt` is a GGTT address inside the status page's binding, or inside `own` (the
+    /// context's own timeline page). Anywhere else is a layout error, by name.
+    fn seqno_dword(&self, own: Option<TimelinePage>, tl_ggtt: u32) -> Result<u64, ExecError> {
+        let (base_ggtt, base_dev) = own.map_or((self.hwsp_ggtt, self.hwsp.device_addr), |t| (t.ggtt, t.dev));
+        let off = tl_ggtt.checked_sub(base_ggtt).filter(|o| o % 4 == 0 && *o < 4096).ok_or(ExecError::Layout { what: "timeline seqno slot outside its status page" })?;
+        Ok(base_dev + off as u64)
+    }
+
+    fn tl_of(&self, ctx: u32) -> Option<TimelinePage> {
+        self.tls.get(ctx as usize).copied().flatten()
     }
 
     /// Step `ENGINE-ENABLE`: `reset_csb_pointers`, then `enable_execlists`.
@@ -166,10 +186,18 @@ impl EngineRig {
     /// Create a context over `objs` (its image and ring already bound in the GGTT). The register state the engine builds is copied
     /// into page 1 of the image (`LRC_STATE_OFFSET`); page 0 (the per-process HWSP) stays zero.
     pub fn add_context<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, objs: CtxObjects, pml4: u64, timeline_ggtt: u32, rpcs: u32, initial_breadcrumb: bool) -> Result<u32, ExecError> {
+        self.add_context_in(gm, objs, pml4, timeline_ggtt, rpcs, initial_breadcrumb, None)
+    }
+
+    /// [`EngineRig::add_context`] with the timeline's seqno dword in `own`, the context's own timeline page (`None`: the engine's
+    /// status page, as `add_context`). `timeline_ggtt` must lie inside whichever page it is.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_context_in<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, objs: CtxObjects, pml4: u64, timeline_ggtt: u32, rpcs: u32, initial_breadcrumb: bool, own: Option<TimelinePage>) -> Result<u32, ExecError> {
         if objs.ring.len as u32 != RING_BYTES || (objs.image.len as u32) < LRC_STATE_OFFSET + 4096 {
             return Err(ExecError::Layout { what: "context image / ring object size" });
         }
-        self.seqno_dword(timeline_ggtt)?; // the slot must be in the status page
+        self.seqno_dword(own, timeline_ggtt)?; // the slot must be in its status page
+        self.tls.try_reserve(1).map_err(|_| i915_submit_core::SubmitError::OutOfMemory { what: "timeline pages" })?;
         let spec = ContextSpec { lrca: objs.image_ggtt, ring_size: RING_BYTES, ring_ggtt: objs.ring_ggtt, pml4, rpcs, hwsp_ggtt: timeline_ggtt, initial_breadcrumb, default_state: None };
         // room for this context's record BEFORE the engine creates it (a context with no record would be unreachable)
         self.objs.try_reserve(1).map_err(|_| i915_submit_core::SubmitError::OutOfMemory { what: "context objects" })?;
@@ -178,6 +206,10 @@ impl EngineRig {
             self.objs.resize(id as usize + 1, None); // ids are dense (slot reuse), so this is at most one push: reserved above
         }
         self.objs[id as usize] = Some(objs);
+        if self.tls.len() <= id as usize {
+            self.tls.resize(id as usize + 1, None); // reserved above: ids are dense
+        }
+        self.tls[id as usize] = own;
         self.store_state(gm, id)?;
         Ok(id)
     }
@@ -228,6 +260,9 @@ impl EngineRig {
         let o = self.objs(ctx)?;
         self.engine.destroy_context(ctx)?;
         self.objs[ctx as usize] = None;
+        if let Some(t) = self.tls.get_mut(ctx as usize) {
+            *t = None;
+        }
         Ok(o)
     }
 
@@ -313,7 +348,7 @@ impl EngineRig {
             if self.objs[ctx as usize].is_none() {
                 continue;
             }
-            let at = self.seqno_dword(self.engine.context_timeline(ctx)?.hwsp_ggtt)?;
+            let at = self.seqno_dword(self.tl_of(ctx), self.engine.context_timeline(ctx)?.hwsp_ggtt)?;
             let hw = gm.load32(at)?;
             self.engine.observe_seqno(ctx, hw)?;
             self.proof.seqno = self.proof.seqno.max(hw);
@@ -327,6 +362,11 @@ impl EngineRig {
             rep.submitted = 1;
         }
         Ok(rep)
+    }
+
+    /// When the stall bound could next fire (`None`: nothing submitted is outstanding). See `Engine::next_stall_check`.
+    pub fn next_stall_check(&self, now: u64) -> Option<u64> {
+        self.engine.next_stall_check(now)
     }
 
     /// The engine's stall bound, by name: `ENGINE-HUNG` or `ELSP-NOT-ACKED`.
@@ -376,7 +416,10 @@ impl EngineRig {
                     continue;
                 }
                 let tl = *self.engine.context_timeline(ctx)?;
-                gm.store32(self.seqno_dword(tl.hwsp_ggtt)?, tl.seqno())?;
+                gm.store32(self.seqno_dword(self.tl_of(ctx), tl.hwsp_ggtt)?, tl.seqno())?;
+                if let Some(t) = self.tl_of(ctx) {
+                    gm.flush(t.dev, 4096)?; // the context's own page is not the status page flushed below
+                }
                 self.engine.observe_seqno(ctx, tl.seqno())?;
                 self.engine.retire(ctx)?;
                 self.engine.reset_context(ctx)?;

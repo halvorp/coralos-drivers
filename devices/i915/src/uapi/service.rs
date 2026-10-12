@@ -38,6 +38,19 @@ pub struct Hw<'a, B: Mmio, D: Dma, M: CpuMem, L: Log> {
     pub now_ms: u64,
 }
 
+/// Milliseconds between completion checks while the engine has submitted work in flight and no engine interrupt is armed. It is a timer
+/// for work in flight only - an idle device schedules nothing - and it exists because the interrupt-enable registers are not on the
+/// write allow-list until the owner-attended silicon increment; with an interrupt armed `next_deadline_ms` never uses it.
+pub const COMPLETION_POLL_MS: u64 = 4;
+
+/// What became of a decoded call ([`UapiService::handle_payload`]): the reply header and payload length, or parked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatched {
+    /// The reply payload is `out[HEADER_BYTES..HEADER_BYTES + n]`; frame it under this header.
+    Reply(Header, usize),
+    Parked,
+}
+
 /// What became of a frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handled {
@@ -83,7 +96,9 @@ pub(crate) struct HwCtx {
     pub ring: Run,
     pub image_vma: VmaId,
     pub ring_vma: VmaId,
-    pub tl_slot: usize,
+    /// This context's own timeline page (Linux `hwsp_alloc`): its pool run, its GGTT vma and where the GPU writes the seqno.
+    pub tl: Run,
+    pub tl_vma: VmaId,
 }
 
 /// The pages behind one address space: the PML4 and the four scratch pages, and every page-table page planned for it.
@@ -136,9 +151,6 @@ pub struct UapiService {
     pub(crate) primes: Vec<PrimeRec>,
     pub(crate) next_prime: u64,
     pub(crate) hwctx: Vec<HwCtx>,
-    /// Timeline slots in the status page: `HWSP_TIMELINE_SLOTS` entries, one per live hardware context (HARDWARE-bounded: one 4 KiB
-    /// page; slot `n` is `hwsp_ggtt + HWSP_TIMELINE_BASE + n * HWSP_TIMELINE_STRIDE`).
-    pub(crate) tl_used: [bool; HWSP_TIMELINE_SLOTS],
     pub(crate) vms: Vec<VmRec>,
     pub(crate) inflight: Vec<Inflight>,
     pub(crate) gates: Vec<Gate>,
@@ -147,15 +159,7 @@ pub struct UapiService {
     /// Fences imported onto objects with DMA_BUF_IOCTL_IMPORT_SYNC_FILE: `(object, fence, importing session)`. Work that uses the object
     /// waits for them.
     pub(crate) implicit: Vec<(ObjId, FenceId, u64)>,
-    pub(crate) hwsp_ggtt: u32,
 }
-
-/// First timeline dword of the status page: past the CSB (`I915_HWS_CSB_BUF0_INDEX` and its write index sit below 0x100).
-pub const HWSP_TIMELINE_BASE: u32 = 0x100;
-/// Bytes between two timelines' seqno dwords (a cache line).
-pub const HWSP_TIMELINE_STRIDE: u32 = 0x40;
-/// Timelines one status page holds: `(4096 - 0x100) / 0x40`. HARDWARE-bounded (one 4 KiB page); named refusal beyond it.
-pub const HWSP_TIMELINE_SLOTS: usize = ((4096 - HWSP_TIMELINE_BASE) / HWSP_TIMELINE_STRIDE) as usize;
 
 /// Bring up the render engine and the GGTT and return the service: the window, the scratch page, the GGTT, the status page, the
 /// engine rig with execlists enabled. The geometry (`GgttGeometry::probe`) comes from the PCI GMCH control word and the BAR sizes.
@@ -174,8 +178,8 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
     let mut d = dev;
     d.route_engines(1 << i915_devinfo_core::engine::RCS0); // GPU-ENGINES-ADVERTISED-ARE-ROUTED: only the render engine has a submit row
     let gem = Gem::new(d, GemConfig { pat_enabled: true });
-    emit(hw.log, format_args!("[I915-UAPI READY engines=rcs0 timeline_slots={} wire={}.{}]", HWSP_TIMELINE_SLOTS, i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR));
-    Ok(UapiService::from_parts(gem, ggtt, rig, hwsp_ggtt))
+    emit(hw.log, format_args!("[I915-UAPI READY engines=rcs0 timelines=page-each wire={}.{}]", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR));
+    Ok(UapiService::from_parts(gem, ggtt, rig))
 }
 
 /// Bind a granted run into the GGTT (`ggtt.plan_bind` over its pages, then execute and read back): returns the GGTT offset and the VMA.
@@ -204,7 +208,7 @@ pub(crate) fn bind_ggtt_pages<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_
 }
 
 impl UapiService {
-    pub fn from_parts(gem: Gem, ggtt: Gtt, rig: EngineRig, hwsp_ggtt: u32) -> UapiService {
+    pub fn from_parts(gem: Gem, ggtt: Gtt, rig: EngineRig) -> UapiService {
         UapiService {
             gem,
             sync: Sync::new(),
@@ -217,14 +221,12 @@ impl UapiService {
             primes: Vec::new(),
             next_prime: 1,
             hwctx: Vec::new(),
-            tl_used: [false; HWSP_TIMELINE_SLOTS],
             vms: Vec::new(),
             inflight: Vec::new(),
             gates: Vec::new(),
             waiters: Vec::new(),
             ready: Vec::new(),
             implicit: Vec::new(),
-            hwsp_ggtt,
         }
     }
 
@@ -256,9 +258,9 @@ impl UapiService {
     pub fn live_vm_records(&self) -> usize {
         self.vms.len()
     }
-    /// The status-page byte offset of each live hardware context's timeline dword (where the GPU writes its seqno).
-    pub fn timeline_offsets(&self) -> Vec<u32> {
-        self.hwctx.iter().map(|h| HWSP_TIMELINE_BASE + h.tl_slot as u32 * HWSP_TIMELINE_STRIDE).collect()
+    /// The DEVICE address of each live hardware context's timeline dword (where the GPU writes its seqno; a test plays the GPU there).
+    pub fn timeline_addrs(&self) -> Vec<u64> {
+        self.hwctx.iter().map(|h| h.tl.dev).collect()
     }
     pub fn live_object_pages(&self) -> usize {
         self.objs.live()
@@ -294,9 +296,21 @@ impl UapiService {
                 return frame::malformed_reply(e, out).map(Handled::Reply);
             }
         };
+        match self.handle_payload(hw, &h, payload, out)? {
+            Dispatched::Reply(rh, n) => frame::finish(rh, n, out).map(Handled::Reply),
+            Dispatched::Parked => Ok(Handled::Parked),
+        }
+    }
+
+    /// [`UapiService::handle`] after the header is decoded and the payload is in hand - from the frame itself, or copied out of a
+    /// payload region (`i915_wire::region`), where it may be larger than an inline frame holds. The reply PAYLOAD is written at
+    /// `out[HEADER_BYTES..]` (`out` must be at least `HEADER_BYTES + 64` long) and the header it needs is returned with its length;
+    /// the caller frames it (`frame::finish`, which refuses a payload past `MAX_PAYLOAD`) or places it in the client's reply area.
+    pub fn handle_payload<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, h: &Header, payload: &[u8], out: &mut [u8]) -> Result<Dispatched, WireError> {
+        let h = *h;
         if h.is_reply() {
             let e = WireError::BadValue { what: "request.flags.REPLY", got: 1 };
-            return frame::malformed_reply(e, out).map(Handled::Reply);
+            return frame::malformed_reply(e, out).map(|n| Dispatched::Reply(Header::request(Opcode::Hello, 0, 0, 0).reply(0), n - HEADER_BYTES));
         }
         if out.len() < HEADER_BYTES + 64 {
             return Err(WireError::OutputTooSmall { need: HEADER_BYTES + 64, have: out.len() });
@@ -313,7 +327,7 @@ impl UapiService {
                 h.session_incarnation = inc;
                 n
             }
-            Ok(Done::Parked) => return Ok(Handled::Parked),
+            Ok(Done::Parked) => return Ok(Dispatched::Parked),
             Err(f) => {
                 if f.errno != errno::ENOENT || op as u32 >= 0x100 {
                     emit(hw.log, format_args!("[I915-UAPI op={} refused name={} errno={}]", op.name(), f.name, f.errno));
@@ -322,7 +336,33 @@ impl UapiService {
                 write_failure(op, status, f.errno, &mut out[HEADER_BYTES..])?
             }
         };
-        frame::finish(h, n, out).map(Handled::Reply)
+        Ok(Dispatched::Reply(h, n))
+    }
+
+    /// Any live session's incarnation (the first), if there is one: a peer that died takes all of its sessions with it, one at a time.
+    pub fn any_session(&self) -> Option<u64> {
+        self.sessions.iter().flatten().next().map(|s| s.inc)
+    }
+
+    /// When the device next has something to do WITHOUT being asked: the earliest of the deadlines of parked timed waits, and - only
+    /// while the engine has submitted work in flight - its stall check and (when no engine interrupt is armed, so completion cannot wake the
+    /// loop by itself) a completion poll [`COMPLETION_POLL_MS`] away. `None` = nothing is timed: block until a request or an interrupt.
+    /// An idle device has no deadline at all (doctrine: an idle wake-up is a bug); a timer exists only while work is in flight.
+    pub fn next_deadline_ms(&self, now: u64, irq_armed: bool) -> Option<u64> {
+        let mut next: Option<u64> = None;
+        let mut want = |t: u64| next = Some(next.map_or(t, |n| n.min(t)));
+        for w in &self.waiters {
+            if let Some(d) = w.deadline_ms {
+                want(d);
+            }
+        }
+        if let Some(stall) = self.rig.next_stall_check(now) {
+            want(stall);
+            if !irq_armed {
+                want(now.saturating_add(COMPLETION_POLL_MS));
+            }
+        }
+        next
     }
 
     fn route<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, h: &Header, p: &[u8], out: &mut [u8]) -> Result<Done, Fail> {
@@ -437,7 +477,19 @@ impl UapiService {
         let _ = self.close_gem_session(hw, inc);
         self.sessions[i] = None;
         self.refresh_gate_state();
+        self.trim_pool(hw);
         emit(hw.log, format_args!("[I915-UAPI session dead inc={}]", inc));
+    }
+
+    /// Give idle memory back to the host when the pool holds more than the live set justifies ([`PagePool::trim`]); logs what it returned.
+    pub(crate) fn trim_pool<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {
+        if !self.pool.wants_trim() {
+            return;
+        }
+        let n = self.pool.trim(hw.gm);
+        if n != 0 {
+            emit(hw.log, format_args!("[I915-UAPI pool returned pages={} live={} held_grants={}]", n, self.pool.pages_out(), self.pool.grants_held()));
+        }
     }
 
     pub(crate) fn close_gem_session<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, inc: u64) -> Result<(), Fail> {

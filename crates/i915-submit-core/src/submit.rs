@@ -293,6 +293,34 @@ impl Engine {
         Ok(())
     }
 
+    /// The earliest clock value at which [`Engine::check_hang`] could declare a hang, or `None` when nothing is outstanding (an idle
+    /// engine is never hung: nothing to wake for). Read-only. A device loop that blocks until "a request, an interrupt or the next
+    /// deadline" uses this as the deadline of an engine with work in flight. A submitted, incomplete request whose watch is not armed
+    /// yet answers `now`: the next `check_hang` arms it, and it is asked again then. (A bound of this crate's own: not a Linux function.)
+    pub fn next_stall_check(&self, now: u64) -> Option<u64> {
+        let bound = self.cfg.stall_bound;
+        let mut next = None;
+        if let Some(since) = self.watch.pending_since {
+            if self.execlists.has_pending() {
+                next = Some(since.saturating_add(bound));
+            }
+        }
+        for rq in self.reqs.as_slice() {
+            if !rq.submitted {
+                continue;
+            }
+            let Ok(c) = self.ctx(rq.ctx) else { continue };
+            if seqno_passed(c.hw_seqno, rq.seqno) {
+                continue;
+            }
+            let m = (rq.ctx, rq.seqno, seqno_passed(c.hw_seqno, rq.seqno.wrapping_sub(1)));
+            let at = if self.watch.marker == Some(m) { self.watch.since.saturating_add(bound) } else { now };
+            next = Some(next.map_or(at, |n: u64| n.min(at)));
+            break;
+        }
+        next
+    }
+
     /// After an engine reset (or a CSB error): schedule out every outstanding port, forget the stall state, and return the plan
     /// that puts the hardware's CSB pointers back to entry 0 (`reset_csb_pointers`). Unfinished requests keep their state, untouched:
     /// replaying or cancelling them (`execlists_reset_rewind`, `execlists_reset_cancel`) is NOT ported, so a caller that resets a

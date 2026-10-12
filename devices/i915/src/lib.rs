@@ -30,6 +30,8 @@ extern crate alloc;
 pub mod exec;
 pub mod gt;
 pub mod identity;
+#[cfg(feature = "p3-exec")]
+pub mod live;
 pub mod log;
 pub mod regio;
 pub mod report;
@@ -42,3 +44,5 @@ pub mod wire;
 pub use startup::{bringup, startup, BringupError, Ready, StartError};
 #[cfg(target_arch = "x86_64")]
 pub use service::{on_panic, service};
+#[cfg(all(target_arch = "x86_64", feature = "p3-exec"))]
+pub use service::{service_with, RtTransport, UapiHost};

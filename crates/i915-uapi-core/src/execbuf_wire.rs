@@ -52,12 +52,13 @@ pub struct ExecLimits {
     pub max_relocs_total: u32,
     /// Syncobj fences per submit: the fence array plus every timeline block.
     pub max_fences: u32,
-    /// Bytes of payload (never above `i915_wire::MAX_PAYLOAD`).
+    /// Bytes of payload (never above `i915_wire::region::MAX_REGION_PAYLOAD`: a payload larger than one inline frame arrives through a
+    /// payload region, ABI 1.2; the inline limit itself is the frame decoder's).
     pub max_payload: u32,
 }
 
 impl ExecLimits {
-    pub const DEFAULT: ExecLimits = ExecLimits { max_buffers: 1024, max_relocs_total: 1024, max_fences: 256, max_payload: i915_wire::MAX_PAYLOAD };
+    pub const DEFAULT: ExecLimits = ExecLimits { max_buffers: 1024, max_relocs_total: 1024, max_fences: 256, max_payload: i915_wire::region::MAX_REGION_PAYLOAD };
 }
 
 impl Default for ExecLimits {
@@ -230,7 +231,7 @@ pub const ILLEGAL_FLAGS: u64 = UNKNOWN_FLAGS | ef::I915_EXEC_CONSTANTS_MASK | ef
 /// Decode one flattened EXECBUFFER2 payload against `limits`. The order of refusals follows Linux's: buffer count, then
 /// `i915_gem_check_execbuffer`, then the tables, the fence array and the extension chain.
 pub fn decode_execbuf2<'a>(payload: &'a [u8], limits: &ExecLimits) -> Result<ExecbufRequest<'a>, UapiError> {
-    let cap = limits.max_payload.min(i915_wire::MAX_PAYLOAD) as usize;
+    let cap = limits.max_payload.min(i915_wire::region::MAX_REGION_PAYLOAD) as usize;
     if payload.len() > cap {
         return Err(UapiError::LimitExceeded { what: "execbuf.payload_bytes", got: payload.len() as u64, max: cap as u64 });
     }
