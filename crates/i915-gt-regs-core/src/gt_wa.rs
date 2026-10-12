@@ -12,6 +12,10 @@ pub const GEN9_PREEMPT_GPGPU_SYNC_SWITCH_DISABLE: u32 = 1 << 2; // intel_gt_regs
 pub const GEN7_FF_SLICE_CS_CHICKEN1: Reg = Reg::new(0x20e0); // intel_gt_regs.h:167
 pub const GEN9_FFSC_PERCTX_PREEMPT_CTRL: u32 = 1 << 14; // intel_gt_regs.h:168
 pub const GEN9_CTX_PREEMPT_REG: Reg = Reg::new(0x2248); // intel_gt_regs.h:241
+pub const FF_SLICE_CHICKEN: Reg = Reg::new(0x2088); // intel_gt_regs.h:104
+pub const FF_SLICE_CHICKEN_CL_PROVOKING_VERTEX_FIX: u32 = 1 << 1; // intel_gt_regs.h:105
+pub const _3D_CHICKEN3: Reg = Reg::new(0x2090); // intel_gt_regs.h:118
+pub const _3D_CHICKEN_SF_PROVOKING_VERTEX_FIX: u32 = 1 << 12; // intel_gt_regs.h:119
 pub const GEN8_CS_CHICKEN1: Reg = Reg::new(0x2580); // intel_gt_regs.h:284
 pub const GEN9_PREEMPT_3D_OBJECT_LEVEL: u32 = 1 << 0; // intel_gt_regs.h:285
 pub const GAM_ECOCHK: Reg = Reg::new(0x4090); // intel_gt_regs.h:303
@@ -29,6 +33,7 @@ pub const GEN8_4X4_STC_OPTIMIZATION_DISABLE: u32 = bit(6); // intel_gt_regs.h:44
 pub const GEN9_PARTIAL_RESOLVE_IN_VC_DISABLE: u32 = bit(1); // intel_gt_regs.h:450
 pub const COMMON_SLICE_CHICKEN2: Reg = Reg::new(0x7014); // intel_gt_regs.h:461
 pub const GEN9_PBE_COMPRESSED_HASH_SELECTION: u32 = 1 << 13; // intel_gt_regs.h:462
+pub const GEN9_DISABLE_GATHER_AT_SET_SHADER_COMMON_SLICE: u32 = 1 << 12; // intel_gt_regs.h:463
 pub const GEN8_SBE_DISABLE_REPLAY_BUF_OPTIMIZATION: u32 = 1 << 8; // intel_gt_regs.h:464
 pub const HDC_CHICKEN0: Reg = Reg::new(0x7300); // intel_gt_regs.h:489
 pub const HDC_FORCE_CSR_NON_COHERENT_OVR_DISABLE: u32 = 1 << 15; // intel_gt_regs.h:490
@@ -85,7 +90,9 @@ pub const GEN9_BCS0_MOCS0: u32 = 0xcc00; // intel_gt_regs.h:1031 (Linux name `__
 pub const LNCFCMOCS_REG_COUNT: u32 = 32; // intel_gt_regs.h:962
 
 /// Every plain register (not the aliases) of this module, by name: checked for alignment and uniqueness by the tests.
-pub const GT_WA_CATALOG: [(&str, Reg); 28] = [
+pub const GT_WA_CATALOG: [(&str, Reg); 30] = [
+    ("FF_SLICE_CHICKEN", FF_SLICE_CHICKEN),
+    ("_3D_CHICKEN3", _3D_CHICKEN3),
     ("GEN8_MCR_SELECTOR", GEN8_MCR_SELECTOR),
     ("GEN9_CSFE_CHICKEN1_RCS", GEN9_CSFE_CHICKEN1_RCS),
     ("GEN7_FF_SLICE_CS_CHICKEN1", GEN7_FF_SLICE_CS_CHICKEN1),
