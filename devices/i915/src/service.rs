@@ -64,6 +64,15 @@ pub fn service() -> ! {
     let mut buf = [0u8; REQUEST_BUF];
     loop {
         let n = recv(SERVICE_EP as u64, &mut buf);
+        // An ABI-1.1 frame (magic "I915"): the uAPI service is not wired to this endpoint yet (src/uapi is driven by its own tests), so
+        // every such request gets the named answer - Unsupported, reason INCREMENT-NOT-ENABLED - instead of the old protocol's BAD_VERSION.
+        if n >= 4 && n <= buf.len() as u64 && buf[..4] == *b"I915" {
+            let mut out = [0u8; 96];
+            if let Ok(len) = crate::uapi::frame::answer_without_service(&buf[..n as usize], &mut out) {
+                let _ = send(REPLY_EP as u64, &out[..len]);
+            }
+            continue;
+        }
         match handle(n, &buf) {
             Some(reply) => {
                 let _ = send(REPLY_EP as u64, &reply);

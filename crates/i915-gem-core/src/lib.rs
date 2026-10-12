@@ -55,6 +55,7 @@ pub mod ids;
 pub mod limits;
 pub mod mman;
 pub mod object;
+pub mod prime;
 pub mod seam;
 pub mod table;
 pub mod shrink;

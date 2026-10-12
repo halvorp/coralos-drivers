@@ -27,7 +27,7 @@ entry = []
 # P2: the GGTT window (BAR0 + 8 MiB) and the GGTT invalidate register.
 p2-memory = []
 # P3: execlists on the render engine, the per-engine RESET_CTL handshakes and GEN6_GDRST. Needs P2 (its objects are GGTT-bound).
-p3-exec = ["p2-memory"]
+p3-exec = ["p2-memory", "dep:i915-gem-core", "dep:i915-uapi-core", "dep:i915-syncobj-core"]
 
 [[bin]]
 name = "i915-device"
@@ -49,6 +49,10 @@ i915-memory-core = { path = "../../crates/i915-memory-core" }
 i915-submit-core = { path = "../../crates/i915-submit-core" }
 i915-display-clock-core = { path = "../../crates/i915-display-clock-core" }
 i915-display-link-core = { path = "../../crates/i915-display-link-core" }
+# the uAPI service (src/uapi, feature p3-exec): GEM planning, uAPI validation, drm_syncobj semantics
+i915-gem-core = { path = "../../crates/i915-gem-core", optional = true }
+i915-uapi-core = { path = "../../crates/i915-uapi-core", optional = true }
+i915-syncobj-core = { path = "../../crates/i915-syncobj-core", optional = true }
 
 [dev-dependencies]
 coralos-hal = { path = "../../hal", features = ["fake"] }

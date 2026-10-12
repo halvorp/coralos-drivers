@@ -23,7 +23,7 @@ fn frame() -> Vec<u8> {
 fn constants_are_the_documented_values() {
     assert_eq!(MAGIC, 0x3531_3949);
     assert_eq!(&MAGIC.to_le_bytes(), b"I915");
-    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 0));
+    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 1)); // minor 1: the uAPI messages
     assert_eq!(HEADER_BYTES, 40);
     assert_eq!(MAX_PAYLOAD, 65536);
     assert_eq!(FLAG_REPLY, 1);
@@ -49,7 +49,9 @@ fn encode_produces_exactly_the_hand_written_bytes() {
     let h = Header::request(Opcode::SubmitBatch, 0x0807_0605_0403_0201, 0x1112_1314_1516_1718, 3);
     let mut out = [0xffu8; 48];
     h.encode(&mut out).unwrap();
-    assert_eq!(&out[..40], &frame()[..40]);
+    let mut expect = frame();
+    expect[6] = 1; // a request built by this crate declares ABI minor 1 (the hand-written frame above is a minor-0 frame)
+    assert_eq!(&out[..40], &expect[..40]);
     assert_eq!(&out[40..], &[0xff; 8], "encode writes the header and nothing past it");
 }
 
