@@ -60,9 +60,8 @@ impl<M: Mmio> WriteGuard<M> {
             None => Ok(()),
         }
     }
-    pub fn inner(&mut self) -> &mut M {
-        &mut self.inner
-    }
+    /// Ends the guard and returns the device handle. There is deliberately no `&mut M` accessor: a borrow of the raw
+    /// handle while the guard lives would let a caller write past the allow-list (sentinel WRAPPER-CLOSES-HOLE, 2026-10-12).
     pub fn into_inner(self) -> M {
         self.inner
     }
