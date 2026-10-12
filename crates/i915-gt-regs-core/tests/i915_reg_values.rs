@@ -64,3 +64,10 @@ fn pcu_mailbox_words_have_linux_values() {
     assert_eq!(GEN7_PCODE_MIN_FREQ_TABLE_GT_RATIO_OUT_OF_RANGE, 0x10); // :1095
     assert_eq!((SKL_PCODE_CDCLK_CONTROL, SKL_CDCLK_PREPARE_FOR_CHANGE, SKL_CDCLK_READY_FOR_CHANGE), (0x7, 0x3, 0x1)); // :1107-1109
 }
+
+/// Re-homed from i915-display-link-core (2026-10-12): i915_reg.h:1035 / :1055, values from GCC over the Linux header.
+#[test]
+fn south_chicken1_and_pwm_granularity_have_linux_values() {
+    assert_eq!(SOUTH_CHICKEN1.offset(), 0xc2000, "SOUTH_CHICKEN1");
+    assert_eq!(SPT_PWM_GRANULARITY, 0x1, "SPT_PWM_GRANULARITY");
+}

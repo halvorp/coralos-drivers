@@ -211,3 +211,10 @@ RUNTIME-TABLES-HAVE-NO-CAP, DECISIONS.md D10), so a `Gem` is a handful of empty 
 * 2026-10-12: `coralos-hal` gains `Dma::alloc` (provided), `DmaRequest`, `DmaGrant`, `check_dma_request`, `check_dma_width`, and
   `DmaRefusal::{BadAddrWidth, BeyondAddrWidth}`. A downstream `match` on `DmaRefusal` that was exhaustive must add them (only `rt`
   constructs the enum; nothing in this repo matches it).
+* 2026-10-12 (display write planners, plan §1 item 11 / increments P4 and P7): `i915-kbl-display-core` gains pure write ENCODERS
+  (`skl_plane`, `skl_wm`, `mode_write`, `skl_pfit`, `regs_write`: values only, no effects). The new crate `i915-display-modeset-core`
+  holds the effect plans (it sits above `display-clock-core` / `display-link-core`, which depend on kbl-display-core, so the
+  transaction cannot live inside it). `devices/i915`'s first display write increment (adoption) must use
+  `i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST` (exactly `PLANE_SURF` of PLANE_1 on pipe A) as its `WriteGuard` list; the
+  device's own allow-list is NOT widened by this change. The pipe-enable transaction (`enable::build_enable`) needs a separate,
+  owner-attended allow-list decision before anything executes it.

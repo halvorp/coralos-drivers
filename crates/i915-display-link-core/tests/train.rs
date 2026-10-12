@@ -12,7 +12,7 @@ use i915_display_link_core::linkstatus::*;
 use i915_display_link_core::plan::Effect;
 use i915_display_link_core::regs::*;
 use i915_display_link_core::train::*;
-use i915_kbl_display_core::regs::*;
+use i915_kbl_display_core::regs::{DDI_BUF_CTL_ENABLE, DDI_BUF_EMP_MASK};
 use i915_kbl_display_core::Ddi;
 
 const EDP14_DPCD: [u8; 15] = [0x14, 0x14, 0x84, 0x01, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];

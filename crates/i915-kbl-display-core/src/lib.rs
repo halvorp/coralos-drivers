@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! i915-kbl-display-core: what a Kaby Lake (Gen9.5, display version 9) GPU's display engine is doing when the
-//! firmware hands over, decoded from register values the caller supplies. READ ONLY: this crate contains no write and
-//! no MMIO; it asks a closure for a register and decodes the answer exactly as Linux's i915 does at driver load.
+//! firmware hands over, decoded from register values the caller supplies (the readout), and the VALUES Linux would program for a
+//! plane, a watermark / DDB split and an eDP pipe (the write encoders: `skl_plane`, `skl_wm`, `mode_write`, `skl_pfit`,
+//! `regs_write`). This crate performs no MMIO and issues no effect: it asks a closure for a register and decodes the answer, or it
+//! returns `(register, value)` pairs in Linux's order. The ordered, rollback-carrying transactions that EXECUTE those values are
+//! `i915-display-modeset-core` (it must sit above `i915-display-clock-core` and `i915-display-link-core`, which depend on this
+//! crate).
 //!
 //! Ported from Linux drivers/gpu/drm/i915 (display/intel_display.c, intel_ddi.c, intel_dpll_mgr.c, intel_cdclk.c,
 //! skl_universal_plane.c, skl_scaler.c, intel_display_power_well.c, intel_display_device.c, i915_pci.c) at v7.0-rc6;
@@ -44,6 +48,11 @@ pub mod ddi;
 pub mod dpll;
 pub mod error;
 pub mod plane;
+pub mod mode_write;
+pub mod regs_write;
+pub mod skl_pfit;
+pub mod skl_plane;
+pub mod skl_wm;
 pub mod platform;
 pub mod power;
 pub mod readout;
