@@ -3,6 +3,24 @@
 The owner's rulings that govern this repository. Newest first. Each is recorded as given; where a ruling is
 still being worked out, it says so and names what is pending rather than guessing.
 
+## 2026-10-12 — Architect (Astra), Kaby Lake GPU ruling, step 2
+
+**D8 — `i915.device` boundary, read-only first.** The Intel GPU driver is ONE public `.device` that runs Kaby Lake by
+runtime dispatch (Gen8 / Cherry Trail rows migrate into it later); nothing in it may import a helper from the closed tree's
+`coral-i915-gem` or link its `coral-drm-driver` glue. Step 2 is the skeleton: `devices/i915` reads the PCI identity from the
+function's configuration page, refuses any id outside `crates/i915-kbl-display-core`'s Kaby Lake table BY NAME (8086:591c, the
+Pixelbook Go's, is in it; a Cherry Trail id is not and is never aliased to it), opens BAR0 and logs the display state the firmware
+left (`[I915-KBL-READOUT pipe=…]`, one line per pipe, plus power wells, CDCLK, DDIs, DPLLs, planes, scalers), then answers every
+wire request with an explicit UNSUPPORTED. It writes nothing. `rt/` gains `mmio.rs`: `ReadWindow`, a READ-ONLY, grant-bounded
+view of a device window (no new system call or number: `MMIO_MAP` / `MMIO_LEN` were already listed). *Exposing an operation is not
+granting it* - a read-only bring-up is not one typo from a write.
+
+**PENDING architect review, named so they are not mistaken for rulings:** (1) the slot convention - BAR0 in MMIO slot 0 and the
+config page, read-only, in slot 1 - is taken from how the closed tree endows its other PCI `.device`s; (2) the i915 wire
+protocol's endpoint numbers (`SERVICE_EP` 13 / `REPLY_EP` 14, `devices/i915/src/wire.rs`) are PLACEHOLDERS until the loader's
+endpoint table assigns them; (3) the readout's agreement with silicon is unproven until the Linux reconnaissance boot described
+in `i915-kbl-display-core`'s crate docs has been compared against it.
+
 ## 2026-10-11 — Architect (Astra), keyboard ruling
 
 **D7 — rt extended with capability-scoped port I/O and the physical key-event frame.** *Exposing an operation is not

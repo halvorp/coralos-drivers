@@ -63,6 +63,10 @@ depends on CoralOS.
 crates/
   <name>-core/   one Linux port per crate, standalone [workspace], no_std
                  (e.g. sdhci-core, r8169-core, xhci-ring-core, pinctrl-cherryview-core)
+devices/
+  i8042/         i8042.device: the PS/2 keyboard controller (the first public .device)
+  i915/          i915.device: the Intel GPU; today Kaby Lake identity + a read-only display readout (DECISIONS.md D8)
+rt/              coralos-rt: the ring-3 runtime a .device links (syscalls, port I/O, read-only MMIO windows)
 hal/             coralos-hal: the minimal MMIO + cooperative-wait trait surface
 tools/
   check-citations.sh    every cited constant names a file AND a line
@@ -74,5 +78,5 @@ values, and carries its own tests where hardware behavior can be modeled.
 
 ## Status
 
-Early. 45 port crates, host-tested. First fronts: SDHCI/eMMC error-recovery hardening,
+Early. 52 port crates, host-tested. First fronts: SDHCI/eMMC error-recovery hardening,
 r8169; next: the Intel Wireless 9260 (iwlwifi), which brings the `Dma` and `Irq` traits.
