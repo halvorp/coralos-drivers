@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux include/uapi/drm/i915_drm.h, drivers/gpu/drm/i915/{i915_getparam.c, i915_query.c, i915_user_extensions.c,
+# gem/i915_gem_execbuffer.c, gt/intel_engine_user.c, gt/intel_sseu.c} (v7.0-rc6). Original copyright: Intel Corporation.
+[package]
+name = "i915-uapi-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 uAPI over the FLATTENED i915.device wire form: i915_drm.h data types, GETPARAM / I915_QUERY answers for Gen9, and execbuffer2 validation (no execution)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-devinfo-core = { path = "../i915-devinfo-core" }
+i915-wire = { path = "../../wire/i915-wire" }
+
+[workspace]
