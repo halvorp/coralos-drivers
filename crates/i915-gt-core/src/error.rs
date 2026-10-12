@@ -53,6 +53,8 @@ pub enum GtError {
     ZeroBound { what: &'static str },
     /// A GT interrupt bank index outside 0..=3.
     BadIrqBank { bank: u32 },
+    /// A requested slice / subslice / EU count does not fit its RPCS field (`GEM_BUG_ON(val & ~mask)`, intel_sseu.c:731,741,751,757).
+    RpcsFieldOverflow { field: &'static str, value: u32 },
 }
 
 impl GtError {
@@ -77,6 +79,7 @@ impl GtError {
             GtError::NoEnabledSubslice { .. } => "NO-ENABLED-SUBSLICE",
             GtError::ZeroBound { .. } => "ZERO-BOUND",
             GtError::BadIrqBank { .. } => "BAD-IRQ-BANK",
+            GtError::RpcsFieldOverflow { .. } => "RPCS-FIELD-OVERFLOW",
         }
     }
 }

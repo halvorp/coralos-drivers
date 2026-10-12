@@ -30,8 +30,6 @@ pub enum SubmitError {
     LrcTableMalformed { table: &'static str, at: u32 },
     /// A register-state write fell outside the 4 KiB state page.
     LrcOverrun { index: u32, limit: u32 },
-    /// A requested slice / subslice / EU count does not fit its RPCS field (`GEM_BUG_ON(val & ~mask)`, intel_sseu.c:731,741,751,757).
-    RpcsFieldOverflow { field: &'static str, value: u32 },
     /// `i915_ggtt_offset(ce->state)` is not page aligned, so it cannot be an LRCA (`CTX_GTT_ADDRESS_MASK`).
     LrcaUnaligned { lrca: u32 },
     /// A ring / wa-batch GGTT address that must be page aligned is not.
@@ -92,7 +90,6 @@ impl SubmitError {
             SubmitError::RingTailInvalid { .. } => "RING-TAIL-INVALID",
             SubmitError::LrcTableMalformed { .. } => "LRC-TABLE-MALFORMED",
             SubmitError::LrcOverrun { .. } => "LRC-OVERRUN",
-            SubmitError::RpcsFieldOverflow { .. } => "RPCS-FIELD-OVERFLOW",
             SubmitError::LrcaUnaligned { .. } => "LRCA-UNALIGNED",
             SubmitError::GgttUnaligned { .. } => "GGTT-UNALIGNED",
             SubmitError::ScratchOverflow { .. } => "SCRATCH-OVERFLOW",

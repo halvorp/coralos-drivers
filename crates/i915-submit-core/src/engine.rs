@@ -44,7 +44,7 @@ pub struct ContextSpec<'a> {
     pub ring_ggtt: u32,
     /// The PML4's device address from `i915_memory_core::PpgttInit::pml4` (`px_dma(ppgtt->pd)`).
     pub pml4: u64,
-    /// `intel_sseu_make_rpcs(...)` for a render engine ([`crate::rpcs::make_rpcs_gen9`]); ignored on the others.
+    /// `intel_sseu_make_rpcs(...)` for a render engine (`i915_gt_core::sseu::make_rpcs_gen9`); ignored on the others.
     pub rpcs: u32,
     /// This context's timeline: GGTT address of its seqno dword, and whether it has an initial breadcrumb.
     pub hwsp_ggtt: u32,
