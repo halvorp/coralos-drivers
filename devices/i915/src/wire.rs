@@ -6,14 +6,14 @@
 //!   request  `[ REQ_MARKER 'I', version, op, payload… ]`
 //!   reply    `[ REP_MARKER 'i', version, op, status ]`      (the op is echoed so replies match requests)
 //!
-//! DRAFT: the endpoint numbers [`SERVICE_EP`] / [`REPLY_EP`] are placeholders. The loader's endpoint table assigns the
-//! real ones (D4: the public runtime lists every ABI fact it relies on); nothing but [`crate::service`] reads these two
-//! constants, so replacing them is a one-line change.
+//! The endpoint numbers [`SERVICE_EP`] / [`REPLY_EP`] are the CoralOS loader's registry entries `EP_I915_REQ` / `EP_I915_REPLY`
+//! (65 / 66; the 13 / 14 of the first draft were `EP_LAUNCH` / `EP_DRM_SURFACE`, already taken). Nothing but [`crate::service`]
+//! reads these two constants, so a renumbering is a two-line change.
 
-/// Placeholder request endpoint (the device RECVs here). See the module note: not yet assigned by the loader.
-pub const SERVICE_EP: u16 = 13;
-/// Placeholder reply endpoint (the device SENDs here).
-pub const REPLY_EP: u16 = 14;
+/// The request endpoint (the device RECVs here): the loader's `EP_I915_REQ`.
+pub const SERVICE_EP: u16 = 65;
+/// The reply endpoint (the device SENDs here): the loader's `EP_I915_REPLY`.
+pub const REPLY_EP: u16 = 66;
 
 pub const REQ_MARKER: u8 = b'I';
 pub const REP_MARKER: u8 = b'i';

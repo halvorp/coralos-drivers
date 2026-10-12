@@ -194,7 +194,7 @@ fn refusal_names_are_distinct_and_stable() {
 #[test]
 fn wire_answers_everything_and_supports_nothing_but_hello() {
     use i915_device::wire::*;
-    assert_eq!((SERVICE_EP, REPLY_EP, REQ_MARKER, REP_MARKER, VERSION, REPLY_LEN), (13, 14, 0x49, 0x69, 1, 4));
+    assert_eq!((SERVICE_EP, REPLY_EP, REQ_MARKER, REP_MARKER, VERSION, REPLY_LEN), (65, 66, 0x49, 0x69, 1, 4));
     // HELLO is OK; every other defined op is explicitly UNSUPPORTED, with its op echoed
     assert_eq!(answer(&[b'I', 1, op::HELLO]), [b'i', 1, 0, status::OK]);
     for (o, name) in [(op::GET_READOUT, 1u8), (op::SET_MODE, 2), (op::PAGE_FLIP, 3), (op::ALLOC_SCANOUT, 4), (op::SUBMIT_BATCH, 5)] {
