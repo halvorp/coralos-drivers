@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/display/{intel_display.c (hsw_crtc_enable and the helpers it calls), intel_ddi.c,
+# skl_universal_plane.c, skl_watermark.c, skl_prefill.c, intel_cursor.c, intel_display_power.c (gen9_dbuf_slice_set)} and
+# drivers/gpu/drm/i915/{intel_pcode.c, i915_reg.h} (v7.0-rc6): the ordered eDP pipe-enable transaction, the plane / watermark /
+# DDB effect plans, the memory-latency mailbox read, and the display adoption (first plane write) plan.
+# Original copyright: Intel Corporation and the i915 authors.
+
+[package]
+name = "i915-display-modeset-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "Kaby Lake (Gen9.5) eDP modeset as planners: ordered pipe-enable transaction composing clock/link/plane/watermark plans with readback and rollback, memory-latency mailbox read, firmware-scanout adoption"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+i915-gt-regs-core = { path = "../i915-gt-regs-core" }
+i915-kbl-display-core = { path = "../i915-kbl-display-core" }
+i915-display-clock-core = { path = "../i915-display-clock-core" }
+i915-display-link-core = { path = "../i915-display-link-core" }
+
+[dev-dependencies]
+coralos-hal = { path = "../../hal" }
+i915-vbt-core = { path = "../i915-vbt-core" }
+
+[workspace]
