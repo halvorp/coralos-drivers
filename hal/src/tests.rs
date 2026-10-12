@@ -58,3 +58,58 @@ fn a_level_line_stays_masked_until_acked_and_an_edge_line_does_not() {
     assert_eq!(e.wait(5), Ok(IrqWait::TimedOut), "an exhausted script times out");
     assert_eq!(e.waits_while_masked, 0);
 }
+
+// --- the GPU-grade `Dma::alloc` (DmaRequest -> DmaGrant) ---------------------------------------------------------------
+use crate::dma::{check_dma_width, DmaGrant, DmaRegion, DmaRequest};
+
+fn req(size: usize, width: u8, budget: usize) -> DmaRequest {
+    DmaRequest { size, align: 4096, addr_width: width, cache: Coherence::NonSnooped, budget }
+}
+
+#[test]
+fn alloc_keeps_cpu_mapping_and_device_addr_apart_and_never_assumes_identity() {
+    let mut d = FakeDma::new(0x20_0000);
+    let g = d.alloc(req(8192, 39, 1 << 20)).unwrap();
+    assert_eq!(g, DmaGrant { cpu_mapping: 0x20_0000 + FakeDma::VIRT_OFFSET, device_addr: 0x20_0000, len: 8192 });
+    assert_ne!(g.cpu_mapping, g.device_addr, "the fake maps CPU != device, so a caller that assumed identity fails");
+    assert_eq!(d.requests[0], (8192, 4096, Coherence::NonSnooped), "the cache rule reaches the host");
+}
+
+#[test]
+fn alloc_refuses_over_budget_bad_width_and_a_grant_beyond_the_width_by_name() {
+    let mut d = FakeDma::new(0x1000);
+    assert_eq!(d.alloc(req(4097, 39, 4096)), Err(DmaRefusal::OverQuota { len: 4097 }), "budget counts whole pages");
+    assert_eq!(d.alloc(req(4096, 39, 4096)).map(|g| g.len), Ok(4096), "exactly the budget is allowed");
+    for w in [0u8, 11, 65, 255] {
+        assert_eq!(d.alloc(req(4096, w, 1 << 20)), Err(DmaRefusal::BadAddrWidth { width: w }));
+    }
+    assert_eq!(d.alloc(req(0, 39, 1 << 20)), Err(DmaRefusal::ZeroLength));
+    let held = d.pages_held();
+    // The next page is at 0x2000; a 13-bit device reaches 0x1fff only.
+    assert_eq!(
+        d.alloc(req(4096, 13, 1 << 20)),
+        Err(DmaRefusal::BeyondAddrWidth { device_addr: 0x2000, len: 4096, width: 13 })
+    );
+    assert_eq!(d.pages_held(), held, "the fake refuses BEFORE taking memory");
+}
+
+#[test]
+fn width_check_is_exact_at_the_boundary_and_the_default_alloc_applies_it_after_the_host() {
+    let r = |phys, len| DmaRegion { virt: 0, phys, len };
+    assert_eq!(check_dma_width(&r((1 << 39) - 4096, 4096), 39), Ok(()), "last byte is 2^39 - 1");
+    assert!(check_dma_width(&r((1 << 39) - 4096, 4097), 39).is_err(), "one byte over");
+    assert!(check_dma_width(&r(1 << 39, 1), 39).is_err());
+    assert_eq!(check_dma_width(&r(u64::MAX - 4095, 4096), 64), Ok(()));
+    assert!(check_dma_width(&r(u64::MAX - 10, 100), 64).is_err(), "address wrap is refused");
+    // A host that only implements alloc_coherent still gets the width check from the default `alloc`.
+    struct High;
+    impl Dma for High {
+        fn alloc_coherent(&mut self, len: usize, _a: usize, _c: Coherence) -> Result<DmaRegion, DmaRefusal> {
+            Ok(DmaRegion { virt: 0x1000, phys: 1 << 40, len })
+        }
+    }
+    assert_eq!(
+        High.alloc(req(4096, 39, 4096)),
+        Err(DmaRefusal::BeyondAddrWidth { device_addr: 1 << 40, len: 4096, width: 39 })
+    );
+}
