@@ -14,7 +14,6 @@
 //! | [`lrc_offsets`] | intel_lrc.c:49-770 | the Gen8/Gen9 RCS and XCS register-state tables as data, `set_offsets`, slot locators |
 //! | [`lrc_state`] | intel_lrc.c:772-1042, :1521-1574 | `init_regs`, `update_regs`, `descriptor` over a 4 KiB [`lrc_state::RegState`] |
 //! | [`wa_bb`] | intel_lrc.c:1636-1930 | the Gen8/Gen9 indirect-context workaround batch |
-//! | [`rpcs`] | intel_sseu.c:654-760 | `intel_sseu_make_rpcs` for Gen9 (the render context's RPCS dword) |
 //! | [`ring`] | intel_ring.[ch] | `Ring`: space, wrap, tail, `begin` with wrap fill, refusing where Linux would wait |
 //! | [`request`] | i915_request.h, intel_timeline.c | `seqno_passed`, `Timeline`, `Request`, the context-tag allocator |
 //! | [`execlists`] | intel_execlists_submission.c | `Execlists` port/CSB tracker, ELSP write order, CSB reset and resume plans |
@@ -35,7 +34,6 @@ pub mod lrc_reg;
 pub mod lrc_state;
 pub mod request;
 pub mod ring;
-pub mod rpcs;
 pub mod submit;
 pub mod wa_bb;
 

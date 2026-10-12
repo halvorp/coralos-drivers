@@ -4,11 +4,9 @@
 //! intel_lrc_reg.h supply every constant), the ELSP descriptor against `lrc_descriptor`, and RPCS against the real
 //! `intel_sseu_make_rpcs`. Each list is every dword the Linux evaluation changed, `(index, value)`: from a zeroed page for the
 //! `inhibit` cases, from a page poisoned with 0xa5a5a5a5 otherwise (so a dword the init must NOT touch is visible).
-use i915_devinfo_core::sseu::SseuInfo;
 use i915_submit_core::lrc_reg::*;
 use i915_submit_core::lrc_state::*;
 use i915_submit_core::ring::Ring;
-use i915_submit_core::rpcs::*;
 use i915_submit_core::wa_bb::{WaBb, WaCtx};
 use i915_submit_core::SubmitError;
 
@@ -251,89 +249,4 @@ fn update_regs_refuses_an_unaligned_ring_or_head() {
     assert_eq!(update_regs(&mut regs, &p, 0x12345000, &ring, 4096).unwrap_err(), SubmitError::RingOffsetInvalid { pos: 4096, size: 4096 });
     p.ring_ggtt = 0x10_0800;
     assert_eq!(update_regs(&mut regs, &p, 0x12345000, &ring, 0).unwrap_err(), SubmitError::GgttUnaligned { what: "ring", addr: 0x10_0800 });
-}
-
-fn sseu(slice_pg: bool, subslice_pg: bool, eu_pg: bool) -> SseuInfo {
-    SseuInfo {
-        slice_mask: 1,
-        max_slices: 1,
-        max_subslices: 3,
-        max_eus_per_subslice: 8,
-        subslice_mask: [0xf, 0, 0],
-        eu_mask: [[0; 4]; 3],
-        subslice_7eu: [0; 3],
-        eu_total: 24,
-        eu_per_subslice: 8,
-        has_slice_pg: slice_pg,
-        has_subslice_pg: subslice_pg,
-        has_eu_pg: eu_pg,
-    }
-}
-
-/// ((has_slice_pg, has_subslice_pg, has_eu_pg), (slice_mask, subslice_mask, min_eus, max_eus), rpcs): the real
-/// `intel_sseu_make_rpcs` (intel_sseu.c:654-760) for graphics version 9, GCC-evaluated.
-const RPCS: [((bool, bool, bool), (u32, u32, u32, u32), u32); 32] = [
-((false, false, false), (1, 0x7, 2, 8), 0x00000000),
-    ((false, false, false), (7, 0xf, 2, 8), 0x00000000),
-    ((false, false, false), (1, 0x1, 8, 8), 0x00000000),
-    ((false, false, false), (3, 0x3, 0, 1), 0x00000000),
-    ((true, false, false), (1, 0x7, 2, 8), 0x80048000),
-    ((true, false, false), (7, 0xf, 2, 8), 0x80058000),
-    ((true, false, false), (1, 0x1, 8, 8), 0x80048000),
-    ((true, false, false), (3, 0x3, 0, 1), 0x80050000),
-    ((false, true, false), (1, 0x7, 2, 8), 0x80000b00),
-    ((false, true, false), (7, 0xf, 2, 8), 0x80000c00),
-    ((false, true, false), (1, 0x1, 8, 8), 0x80000900),
-    ((false, true, false), (3, 0x3, 0, 1), 0x80000a00),
-    ((true, true, false), (1, 0x7, 2, 8), 0x80048b00),
-    ((true, true, false), (7, 0xf, 2, 8), 0x80058c00),
-    ((true, true, false), (1, 0x1, 8, 8), 0x80048900),
-    ((true, true, false), (3, 0x3, 0, 1), 0x80050a00),
-    ((false, false, true), (1, 0x7, 2, 8), 0x80000082),
-    ((false, false, true), (7, 0xf, 2, 8), 0x80000082),
-    ((false, false, true), (1, 0x1, 8, 8), 0x80000088),
-    ((false, false, true), (3, 0x3, 0, 1), 0x80000010),
-    ((true, false, true), (1, 0x7, 2, 8), 0x80048082),
-    ((true, false, true), (7, 0xf, 2, 8), 0x80058082),
-    ((true, false, true), (1, 0x1, 8, 8), 0x80048088),
-    ((true, false, true), (3, 0x3, 0, 1), 0x80050010),
-    ((false, true, true), (1, 0x7, 2, 8), 0x80000b82),
-    ((false, true, true), (7, 0xf, 2, 8), 0x80000c82),
-    ((false, true, true), (1, 0x1, 8, 8), 0x80000988),
-    ((false, true, true), (3, 0x3, 0, 1), 0x80000a10),
-    ((true, true, true), (1, 0x7, 2, 8), 0x80048b82),
-    ((true, true, true), (7, 0xf, 2, 8), 0x80058c82),
-    ((true, true, true), (1, 0x1, 8, 8), 0x80048988),
-    ((true, true, true), (3, 0x3, 0, 1), 0x80050a10),
-];
-
-#[test]
-fn rpcs_equals_intel_sseu_make_rpcs() {
-    for ((s, ss, eu), (slice, subslice, emin, emax), want) in RPCS {
-        let req = SseuRequest { slice_mask: slice as u8, subslice_mask: subslice as u8, min_eus_per_subslice: emin as u8, max_eus_per_subslice: emax as u8 };
-        assert_eq!(make_rpcs_gen9(&sseu(s, ss, eu), &req).unwrap(), want, "pg=({s},{ss},{eu}) req=({slice},{subslice:#x},{emin},{emax})");
-    }
-}
-
-#[test]
-fn a_request_wider_than_the_rpcs_field_is_refused_by_name() {
-    // 8 slices do not fit the 3-bit S_CNT field (GEM_BUG_ON(val & ~mask), intel_sseu.c:731)
-    let req = SseuRequest { slice_mask: 0xff, subslice_mask: 1, min_eus_per_subslice: 1, max_eus_per_subslice: 1 };
-    let e = make_rpcs_gen9(&sseu(true, false, false), &req).unwrap_err();
-    assert_eq!(e, SubmitError::RpcsFieldOverflow { field: "slice count", value: 8 });
-    assert_eq!(e.name(), "RPCS-FIELD-OVERFLOW");
-    // 8 subslices do not fit the 3-bit SS_CNT field
-    let req = SseuRequest { slice_mask: 1, subslice_mask: 0xff, min_eus_per_subslice: 1, max_eus_per_subslice: 1 };
-    assert_eq!(make_rpcs_gen9(&sseu(false, true, false), &req).unwrap_err().name(), "RPCS-FIELD-OVERFLOW");
-    // 16 EUs do not fit the 4-bit field
-    let req = SseuRequest { slice_mask: 1, subslice_mask: 1, min_eus_per_subslice: 1, max_eus_per_subslice: 16 };
-    assert_eq!(make_rpcs_gen9(&sseu(false, false, true), &req).unwrap_err().name(), "RPCS-FIELD-OVERFLOW");
-}
-
-#[test]
-fn the_default_request_is_the_whole_device() {
-    let s = sseu(true, true, true);
-    let r = sseu_from_device_info(&s);
-    // intel_sseu_from_device_info sets BOTH eu bounds to max_eus_per_subslice (intel_sseu.h:113-114)
-    assert_eq!(r, SseuRequest { slice_mask: 1, subslice_mask: 0xf, min_eus_per_subslice: 8, max_eus_per_subslice: 8 });
 }
