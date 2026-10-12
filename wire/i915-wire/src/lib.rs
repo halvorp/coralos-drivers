@@ -19,15 +19,25 @@
 //! ```
 //! A REPLY has the request's opcode, request_id and incarnation, and its payload begins with a `u32` [`Status`].
 //!
+//! ABI 1.1 adds the uAPI messages ([`msg`]): one opcode per i915 call, a request payload and a reply payload for each, every field
+//! fixed-endian and explicitly decoded, every bound a VALIDATION limit (Linux's own) and never a storage size. A reply payload is
+//! `status: u32`, `errno: i32` (`0` or `-errno`, exactly what the ioctl returned), then a body of fixed size per opcode (zeroes when
+//! `errno != 0`), except the variable replies the message modules name.
+//!
 //! This crate is MIT OR Apache-2.0 because the closed CoralOS shim compiles against it; it holds no Linux-derived code.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
+pub mod codec;
+pub mod errno;
+pub mod msg;
+
 /// `b"I915"` as a little-endian u32.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"I915");
 pub const ABI_MAJOR: u16 = 1;
-pub const ABI_MINOR: u16 = 0;
+/// 1: the uAPI messages (opcodes `0x100..`). Every opcode records the minor that introduced it ([`Opcode::since_minor`]).
+pub const ABI_MINOR: u16 = 1;
 pub const HEADER_BYTES: usize = 40;
 /// The largest payload a frame may declare (64 KiB): a submit carries object and dependency tables, never GPU data.
 pub const MAX_PAYLOAD: u32 = 64 * 1024;
@@ -36,31 +46,92 @@ pub const FLAG_REPLY: u32 = 1 << 0;
 /// Every flag bit this ABI defines.
 pub const FLAGS_KNOWN: u32 = FLAG_REPLY;
 
-/// Operations, as the first-generation skeleton named them (`devices/i915` wire v1). Everything past `Hello` is answered
-/// `Unsupported` until the increment that implements it lands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
-pub enum Opcode {
-    Hello = 0,
-    GetReadout = 1,
-    SetMode = 2,
-    PageFlip = 3,
-    AllocScanout = 4,
-    SubmitBatch = 5,
+macro_rules! opcodes {
+    ($($(#[$m:meta])* $name:ident = $val:expr, $since:expr, $text:expr;)*) => {
+        /// Operations. The first six are the skeleton's (minor 0; everything past `Hello` was `Unsupported` until the increment that
+        /// implements it landed); the rest are the uAPI messages of minor 1 (see [`msg`]).
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[repr(u32)]
+        pub enum Opcode { $($(#[$m])* $name = $val,)* }
+
+        impl Opcode {
+            /// Every opcode, in numeric order.
+            pub const ALL: &'static [Opcode] = &[$(Opcode::$name,)*];
+            pub const fn from_u32(v: u32) -> Result<Opcode, WireError> {
+                match v { $($val => Ok(Opcode::$name),)* _ => Err(WireError::UnknownOpcode { got: v }) }
+            }
+            /// The ABI minor that introduced this opcode: a frame that uses it under an older minor is refused.
+            pub const fn since_minor(self) -> u16 {
+                match self { $(Opcode::$name => $since,)* }
+            }
+            pub const fn name(self) -> &'static str {
+                match self { $(Opcode::$name => $text,)* }
+            }
+        }
+    };
 }
 
-impl Opcode {
-    pub const fn from_u32(v: u32) -> Result<Opcode, WireError> {
-        match v {
-            0 => Ok(Opcode::Hello),
-            1 => Ok(Opcode::GetReadout),
-            2 => Ok(Opcode::SetMode),
-            3 => Ok(Opcode::PageFlip),
-            4 => Ok(Opcode::AllocScanout),
-            5 => Ok(Opcode::SubmitBatch),
-            _ => Err(WireError::UnknownOpcode { got: v }),
-        }
-    }
+opcodes! {
+    Hello = 0, 0, "HELLO";
+    GetReadout = 1, 0, "GET-READOUT";
+    SetMode = 2, 0, "SET-MODE";
+    PageFlip = 3, 0, "PAGE-FLIP";
+    AllocScanout = 4, 0, "ALLOC-SCANOUT";
+    SubmitBatch = 5, 0, "SUBMIT-BATCH";
+    // ---- sessions (msg::session)
+    SessionOpen = 0x100, 1, "SESSION-OPEN";
+    SessionClose = 0x101, 1, "SESSION-CLOSE";
+    // ---- device queries (msg::device)
+    GetParam = 0x110, 1, "GETPARAM";
+    Query = 0x111, 1, "QUERY";
+    RegRead = 0x112, 1, "REG-READ";
+    // ---- GEM objects (msg::gem)
+    GemCreate = 0x120, 1, "GEM-CREATE";
+    GemCreateExt = 0x121, 1, "GEM-CREATE-EXT";
+    GemClose = 0x122, 1, "GEM-CLOSE";
+    GemMmapOffset = 0x123, 1, "GEM-MMAP-OFFSET";
+    GemMmapOpen = 0x124, 1, "GEM-MMAP-OPEN";
+    GemMmapLegacy = 0x125, 1, "GEM-MMAP-LEGACY";
+    GemMmapClose = 0x126, 1, "GEM-MMAP-CLOSE";
+    GemSetDomain = 0x127, 1, "GEM-SET-DOMAIN";
+    GemSetTiling = 0x128, 1, "GEM-SET-TILING";
+    GemGetTiling = 0x129, 1, "GEM-GET-TILING";
+    GemBusy = 0x12a, 1, "GEM-BUSY";
+    GemWait = 0x12b, 1, "GEM-WAIT";
+    GemMadvise = 0x12c, 1, "GEM-MADVISE";
+    GemSetCaching = 0x12d, 1, "GEM-SET-CACHING";
+    GemGetCaching = 0x12e, 1, "GEM-GET-CACHING";
+    // ---- contexts and address spaces (msg::ctx)
+    ContextCreate = 0x130, 1, "CONTEXT-CREATE";
+    ContextCreateExt = 0x131, 1, "CONTEXT-CREATE-EXT";
+    ContextDestroy = 0x132, 1, "CONTEXT-DESTROY";
+    ContextGetParam = 0x133, 1, "CONTEXT-GETPARAM";
+    ContextSetParam = 0x134, 1, "CONTEXT-SETPARAM";
+    VmCreate = 0x135, 1, "VM-CREATE";
+    VmDestroy = 0x136, 1, "VM-DESTROY";
+    GetResetStats = 0x137, 1, "GET-RESET-STATS";
+    // ---- execution (msg::exec)
+    Execbuffer2 = 0x140, 1, "EXECBUFFER2";
+    // ---- syncobj, timeline, sync_file (msg::sync)
+    SyncobjCreate = 0x150, 1, "SYNCOBJ-CREATE";
+    SyncobjDestroy = 0x151, 1, "SYNCOBJ-DESTROY";
+    SyncobjWait = 0x152, 1, "SYNCOBJ-WAIT";
+    SyncobjTimelineWait = 0x153, 1, "SYNCOBJ-TIMELINE-WAIT";
+    SyncobjSignal = 0x154, 1, "SYNCOBJ-SIGNAL";
+    SyncobjReset = 0x155, 1, "SYNCOBJ-RESET";
+    SyncobjTimelineSignal = 0x156, 1, "SYNCOBJ-TIMELINE-SIGNAL";
+    SyncobjQuery = 0x157, 1, "SYNCOBJ-QUERY";
+    SyncobjTransfer = 0x158, 1, "SYNCOBJ-TRANSFER";
+    SyncobjHandleToFd = 0x159, 1, "SYNCOBJ-HANDLE-TO-FD";
+    SyncobjFdToHandle = 0x15a, 1, "SYNCOBJ-FD-TO-HANDLE";
+    FdClose = 0x15b, 1, "FD-CLOSE";
+    SyncFileMerge = 0x15c, 1, "SYNC-FILE-MERGE";
+    SyncFileWait = 0x15d, 1, "SYNC-FILE-WAIT";
+    // ---- PRIME and dma-buf sync (msg::prime)
+    PrimeHandleToFd = 0x160, 1, "PRIME-HANDLE-TO-FD";
+    PrimeFdToHandle = 0x161, 1, "PRIME-FD-TO-HANDLE";
+    DmabufExportSyncFile = 0x162, 1, "DMABUF-EXPORT-SYNC-FILE";
+    DmabufImportSyncFile = 0x163, 1, "DMABUF-IMPORT-SYNC-FILE";
 }
 
 /// The status word that opens a reply payload.
@@ -103,6 +174,23 @@ pub enum WireError {
     PayloadTooLarge { got: u32, max: u32 },
     /// The bytes after the header are not exactly `payload_bytes` long.
     PayloadLengthMismatch { declared: u32, actual: usize },
+    /// The opcode exists, but a later minor than the frame declares introduced it.
+    OpcodeNewerThanMinor { opcode: u32, since: u16, got: u16 },
+    // ---- payload decode (the msg modules)
+    /// A payload field ran past the end of the payload.
+    Truncated { what: &'static str, need: usize, have: usize },
+    /// Bytes remain after the last field.
+    TrailingBytes { extra: usize },
+    /// A padding / reserved field is not zero.
+    FieldReservedNonZero { what: &'static str, got: u64 },
+    /// A declared count disagrees with what the payload carries.
+    CountMismatch { what: &'static str, declared: u64, actual: u64 },
+    /// A VALIDATION limit (Linux's own; never a storage size).
+    LimitExceeded { what: &'static str, got: u64, max: u64 },
+    /// A field holds a value the message does not define.
+    BadValue { what: &'static str, got: u64 },
+    /// The output buffer cannot hold the encoding.
+    OutputTooSmall { need: usize, have: usize },
 }
 
 impl WireError {
@@ -116,6 +204,24 @@ impl WireError {
             WireError::ReservedNonZero { .. } => "WIRE-RESERVED-NONZERO",
             WireError::PayloadTooLarge { .. } => "WIRE-PAYLOAD-TOO-LARGE",
             WireError::PayloadLengthMismatch { .. } => "WIRE-PAYLOAD-LENGTH-MISMATCH",
+            WireError::OpcodeNewerThanMinor { .. } => "WIRE-OPCODE-NEWER-THAN-MINOR",
+            WireError::Truncated { .. } => "WIRE-TRUNCATED",
+            WireError::TrailingBytes { .. } => "WIRE-TRAILING-BYTES",
+            WireError::FieldReservedNonZero { .. } => "WIRE-FIELD-RESERVED-NONZERO",
+            WireError::CountMismatch { .. } => "WIRE-COUNT-MISMATCH",
+            WireError::LimitExceeded { .. } => "WIRE-LIMIT-EXCEEDED",
+            WireError::BadValue { .. } => "WIRE-BAD-VALUE",
+            WireError::OutputTooSmall { .. } => "WIRE-OUTPUT-TOO-SMALL",
+        }
+    }
+    /// The Linux errno (positive) the reply carries for this refusal: what the ioctl would have returned for the same malformed
+    /// argument. A frame too short or too long for its fields is `EFAULT` (the `copy_from_user` that would have faulted); a bad
+    /// count or value `EINVAL`; a limit `E2BIG`/`ENOMEM` as the call names it (`ENOMEM`, like Linux's allocation of an oversize array).
+    pub const fn errno(&self) -> i32 {
+        match self {
+            WireError::ShortBuffer { .. } | WireError::PayloadLengthMismatch { .. } | WireError::Truncated { .. } | WireError::OutputTooSmall { .. } => errno::EFAULT,
+            WireError::LimitExceeded { .. } | WireError::PayloadTooLarge { .. } => errno::ENOMEM,
+            _ => errno::EINVAL,
         }
     }
     /// The reply [`Status`] a device answers this refusal with.
@@ -200,6 +306,10 @@ impl Header {
             return Err(WireError::UnsupportedMajor { got: major });
         }
         let opcode = Opcode::from_u32(u32_at(buf, 8))?;
+        let minor = u16_at(buf, 6);
+        if minor < opcode.since_minor() {
+            return Err(WireError::OpcodeNewerThanMinor { opcode: opcode as u32, since: opcode.since_minor(), got: minor });
+        }
         let flags = u32_at(buf, 12);
         if flags & !FLAGS_KNOWN != 0 {
             return Err(WireError::UnknownFlags { got: flags });
@@ -212,7 +322,7 @@ impl Header {
         if reserved != 0 {
             return Err(WireError::ReservedNonZero { got: reserved });
         }
-        Ok(Header { major, minor: u16_at(buf, 6), opcode, flags, request_id: u64_at(buf, 16), session_incarnation: u64_at(buf, 24), payload_bytes })
+        Ok(Header { major, minor, opcode, flags, request_id: u64_at(buf, 16), session_incarnation: u64_at(buf, 24), payload_bytes })
     }
 
     /// Decode a whole frame: the header, then exactly `payload_bytes` bytes (neither more nor fewer).
@@ -224,4 +334,19 @@ impl Header {
         }
         Ok((h, payload))
     }
+}
+
+/// Write a whole frame: the header (its `payload_bytes` is set from `payload`) then the payload. Returns the frame length.
+pub fn encode_frame(mut h: Header, payload: &[u8], out: &mut [u8]) -> Result<usize, WireError> {
+    if payload.len() > MAX_PAYLOAD as usize {
+        return Err(WireError::PayloadTooLarge { got: payload.len().min(u32::MAX as usize) as u32, max: MAX_PAYLOAD });
+    }
+    h.payload_bytes = payload.len() as u32;
+    let total = HEADER_BYTES + payload.len();
+    if out.len() < total {
+        return Err(WireError::OutputTooSmall { need: total, have: out.len() });
+    }
+    h.encode(out)?;
+    out[HEADER_BYTES..total].copy_from_slice(payload);
+    Ok(total)
 }

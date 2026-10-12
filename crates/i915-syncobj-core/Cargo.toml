@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/drm_syncobj.c and drivers/dma-buf/dma-fence-chain.c (v7.0-rc6). Original copyright: Intel Corporation,
+# Red Hat, Linaro and the DRM authors.
+[package]
+name = "i915-syncobj-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "drm_syncobj semantics (binary + timeline points, wait, signal, reset, query, transfer, sync_file import/export) as a pure, session-scoped, growable-table module; no clock, no blocking"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[workspace]
