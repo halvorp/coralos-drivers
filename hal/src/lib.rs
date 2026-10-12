@@ -21,7 +21,7 @@ pub mod fake;
 #[cfg(test)]
 mod tests;
 
-pub use dma::{Coherence, Dma, DmaRefusal, DmaRegion};
+pub use dma::{Coherence, Dma, DmaGrant, DmaRefusal, DmaRegion, DmaRequest};
 pub use irq::{Irq, IrqRefusal, IrqWait};
 
 /// Byte/16/32-bit MMIO access to a device register file. `&mut self` because some reads are

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# Ported from Linux drivers/gpu/drm/i915/gt/{intel_gtt.c, intel_gtt.h, intel_ggtt.c, gen8_ppgtt.c, intel_ppgtt.c, intel_ggtt_fencing.c},
+# i915_vma.c / i915_gem_gtt.c (placement and eviction policy only) and gem/i915_gem_stolen.c (v7.0-rc6). Original copyright: Intel Corporation.
+[package]
+name = "i915-memory-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 memory: Gen9 GGTT (8-byte PTEs), 4-level 48-bit PPGTT, PTE/PAT encoding, VMA placement and eviction, fences - as pure BindPlan effect lists"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+i915-common-core = { path = "../i915-common-core" }
+i915-devinfo-core = { path = "../i915-devinfo-core" }
+
+[dev-dependencies]
+coralos-hal = { path = "../../hal", features = ["fake"] }
+
+[workspace]

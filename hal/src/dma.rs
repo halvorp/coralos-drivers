@@ -52,6 +52,11 @@ pub enum DmaRefusal {
     OutOfMemory { len: usize },
     /// [`Coherence::NonSnooped`] on a CPU the host cannot map write-combining.
     CacheTypeUnavailable,
+    /// A [`DmaRequest`] named an `addr_width` outside `12..=64` bits.
+    BadAddrWidth { width: u8 },
+    /// The host granted memory whose device address does not fit the request's `addr_width` (named, never used; a host
+    /// that cannot place below the width must refuse instead).
+    BeyondAddrWidth { device_addr: u64, len: usize, width: u8 },
     /// Any other refusal word the host returned, as itself.
     Host(u64),
 }
@@ -61,6 +66,70 @@ pub trait Dma {
     /// `len` bytes (the host rounds up to whole pages), zeroed and physically contiguous, its physical address a
     /// multiple of `align`, mapped for the CPU as `coherence` requires. Nothing is held on a refusal.
     fn alloc_coherent(&mut self, len: usize, align: usize, coherence: Coherence) -> Result<DmaRegion, DmaRefusal>;
+
+    /// The GPU-grade form (additive; the iwlwifi-era call above is unchanged): a [`DmaRequest`] that also bounds the
+    /// device's address width and the caller's byte budget, answered with a [`DmaGrant`] whose CPU mapping and device
+    /// address are SEPARATE fields - a caller never derives one from the other (no identity assumption).
+    /// The default implementation applies the shared request rules, refuses over-budget BEFORE asking the host, calls
+    /// [`Dma::alloc_coherent`], and refuses a grant that does not fit `addr_width`. A host that can place below a width
+    /// overrides it so the check happens before memory is taken (`fake::FakeDma` does).
+    fn alloc(&mut self, req: DmaRequest) -> Result<DmaGrant, DmaRefusal> {
+        check_dma_request(&req)?;
+        let region = self.alloc_coherent(req.size, req.align, req.cache)?;
+        check_dma_width(&region, req.addr_width)?;
+        Ok(DmaGrant { cpu_mapping: region.virt, device_addr: region.phys, len: region.len })
+    }
+}
+
+/// A request for device memory with its address-width limit and byte budget (the plan's
+/// `DmaRequest{size,align,addr_width,cache,budget}`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaRequest {
+    /// Bytes wanted (the host rounds up to whole pages).
+    pub size: usize,
+    /// Power of two, at most [`DMA_MAX_ALIGN`].
+    pub align: usize,
+    /// The device's DMA address width in bits (`12..=64`); the whole grant must lie below `1 << addr_width`.
+    /// (Linux `dma_set_mask`; KBL i915: 39 bits, `dma_mask_size` in i915_pci.c.)
+    pub addr_width: u8,
+    pub cache: Coherence,
+    /// The most bytes (rounded up to whole pages) this request may take; more is [`DmaRefusal::OverQuota`].
+    pub budget: usize,
+}
+
+/// A granted region with the two addresses kept apart: what the CPU uses and what the DEVICE is programmed with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaGrant {
+    pub cpu_mapping: u64,
+    pub device_addr: u64,
+    pub len: usize,
+}
+
+/// The pure checks of [`Dma::alloc`]: [`check_request`], a sane width, and the budget.
+pub fn check_dma_request(req: &DmaRequest) -> Result<(), DmaRefusal> {
+    check_request(req.size, req.align)?;
+    if !(12..=64).contains(&req.addr_width) {
+        return Err(DmaRefusal::BadAddrWidth { width: req.addr_width });
+    }
+    let pages_bytes = req.size.div_ceil(4096).saturating_mul(4096);
+    if pages_bytes > req.budget {
+        return Err(DmaRefusal::OverQuota { len: req.size });
+    }
+    Ok(())
+}
+
+/// The check on a grant: its last byte lies below `1 << width`.
+pub fn check_dma_width(region: &DmaRegion, width: u8) -> Result<(), DmaRefusal> {
+    let last = region.phys.checked_add(region.len.max(1) as u64 - 1);
+    let fits = match last {
+        Some(l) => width >= 64 || l >> width == 0,
+        None => false,
+    };
+    if fits {
+        Ok(())
+    } else {
+        Err(DmaRefusal::BeyondAddrWidth { device_addr: region.phys, len: region.len, width })
+    }
 }
 
 /// The request checks every host makes before it asks for memory: a non-zero length and a power-of-two alignment no

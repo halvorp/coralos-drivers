@@ -7,7 +7,7 @@ extern crate std;
 use std::collections::VecDeque;
 use std::vec::Vec;
 
-use crate::dma::{check_grant, check_request, Coherence, Dma, DmaRefusal, DmaRegion};
+use crate::dma::{check_dma_request, check_dma_width, check_grant, check_request, Coherence, Dma, DmaGrant, DmaRefusal, DmaRegion, DmaRequest};
 use crate::irq::{Irq, IrqRefusal, IrqWait};
 
 const PAGE: u64 = 4096;
@@ -49,6 +49,15 @@ impl Dma for FakeDma {
         let region = DmaRegion { virt: phys + Self::VIRT_OFFSET, phys, len };
         self.granted.push(region);
         Ok(region)
+    }
+
+    /// Checks the width BEFORE taking memory: a request the fake cannot place below `addr_width` holds nothing.
+    fn alloc(&mut self, req: DmaRequest) -> Result<DmaGrant, DmaRefusal> {
+        check_dma_request(&req)?;
+        let probe = DmaRegion { virt: 0, phys: self.next_phys, len: req.size.div_ceil(PAGE as usize) * PAGE as usize };
+        check_dma_width(&probe, req.addr_width)?;
+        let r = self.alloc_coherent(req.size, req.align, req.cache)?;
+        Ok(DmaGrant { cpu_mapping: r.virt, device_addr: r.phys, len: r.len })
     }
 }
 
