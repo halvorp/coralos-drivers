@@ -100,3 +100,16 @@ no `collect`, no `vec!` on a request path); exhaustion is a NAMED refusal (`GEM-
 exists, with nothing half-created. This is the justification PORT_CONVENTIONS section 7 asks for ("No `alloc` unless unavoidable and
 justified in a comment"); the comment sits at the top of the crate's `lib.rs`. What stays fixed is fixed by HARDWARE (engines on the part,
 context tags, fence registers) or by an ABI width, and says so where it is declared.
+
+**D11 — Atlas audio wave 2: the codec, the controller and the boot are PLANS; the speakers are unreachable by construction (2026-10-13).**
+`da7219-core` builds only transactions to the DA7219 (0x1A); the single place a wire message is made (`bus::check_target`) refuses the MAX98373
+amplifiers (0x31/0x32) by name, and a test runs every plan builder through a fake codec asserting it. The codec's SAFE STATE (outputs driven
+off, amplifier then DAC muted, stages powered down) is proven by register readback, and `avs-boot-core` asks for that proof (`Action::AskCodecSafe`)
+BEFORE the host DMA starts or any pipeline leaves RESET: the I2S clocks cannot start on a codec of unknown state. DAPM power-up leaves every
+mute bit set (a checked precondition and postcondition) and the jack output enable is the accessory detect's, as in Linux; unmute is a separate
+plan, DAC before amplifier. The headphone-impedance test (a 0 dB tone through the jack) is NOT ported; a 3-pole jack is reported as headphones
+and says so. A peakvol module's `target_volume` in the topology is its ceiling: the module is initialised SILENT (Linux: unity) and a request above
+the ceiling is refused by name; a path without peakvol (da7219) reports none and the codec gain ceiling (`hp::GainPolicy`) is the limit.
+`avs-fw-core::effect::Width` gained `W16`: a 16-bit register is never written through a 32-bit access. Plans are fixed-capacity sequences
+(`PLAN_CAP`, `PROGRAM_CAP`: a power sequence this code writes down, not a table a client drives); everything a file or the hardware sizes
+(multi-link list, BDL entries, the message script, IPC payload copies) is a fallibly-grown `Vec` or a hardware-defined count with its reason (D10).

@@ -138,12 +138,19 @@ fn unmute_refuses_an_unpowered_path_by_name() {
     let e = f.run(unmute_plan().unwrap()).unwrap_err();
     assert_eq!(e.step, "dac-l-powered");
     assert!(f.writes.is_empty());
-    // a powered path whose headphone amplifier still has its minimum gain on is not ready either
-    let mut g = powered_up();
-    g.regs[HP_R as usize] |= 0x04;
-    let e = g.run(unmute_plan().unwrap()).unwrap_err();
-    assert_eq!(e.step, "hp-r-powered");
-    assert_eq!(g.reg(DAC_L) & MUTE, MUTE, "nothing was unmuted");
+    // a powered path whose headphone amplifier still has its minimum gain on is not ready either, on either channel
+    for (reg, step) in [(HP_L, "hp-l-powered"), (HP_R, "hp-r-powered")] {
+        let mut g = powered_up();
+        g.regs[reg as usize] |= 0x04;
+        let e = g.run(unmute_plan().unwrap()).unwrap_err();
+        assert_eq!(e.step, step);
+        assert_eq!(g.reg(DAC_L) & MUTE, MUTE, "nothing was unmuted");
+    }
+    for (reg, step) in [(DAC_L, "dac-l-powered"), (DAC_R, "dac-r-powered"), (HP_L, "hp-l-powered"), (HP_R, "hp-r-powered")] {
+        let mut g = powered_up();
+        g.regs[reg as usize] &= !0x80; // the stage is not enabled
+        assert_eq!(g.run(unmute_plan().unwrap()).unwrap_err().step, step);
+    }
 }
 
 #[test]
