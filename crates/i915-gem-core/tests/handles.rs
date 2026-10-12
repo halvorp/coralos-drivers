@@ -9,7 +9,7 @@ use i915_gem_core::*;
 const MASK: u32 = (1 << HANDLE_IDX_BITS) - 1;
 const MAX_GEN: u32 = (1 << (32 - HANDLE_IDX_BITS)) - 1;
 
-type R = Rig<8, 8>;
+type R = Rig;
 
 #[test]
 fn create_rounds_up_to_pages_and_hands_out_nonzero_generation_tagged_handles() {

@@ -23,6 +23,7 @@
 use crate::dpcd::{DpcdFail, DpcdOk, DpcdRequest};
 use crate::dpdefs::*;
 
+/// KEPT FIXED (D10): the eDP 1.4 rate table is 8 entries x 2 bytes in the sink's DPCD - a protocol fact.
 /// `DP_MAX_SUPPORTED_RATES` — drm_dp.h:181. Capacity of the sink and common rate arrays.
 pub const MAX_RATES: usize = DP_MAX_SUPPORTED_RATES;
 

@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use i915_memory_core::*;
 
-type P = Gtt<128, 1024>;
+type P = Gtt;
 
 fn init() -> (P, UnbindPlan) {
     P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap()
@@ -286,7 +286,6 @@ fn a_refusing_source_leaves_the_model_unchanged_and_parks_the_pages_it_did_give(
     assert_eq!(e, Some(MemError::TablePageRefused { level: 0 }));
     assert_eq!((g.live_nodes(), g.table_count()), (nodes, 1), "no node, no table survives a failed plan");
     assert_eq!(g.spare_pages(), 2, "the two granted pages are parked, not dropped");
-    assert_eq!(g.leaked_pages(), 0);
     let mut good = Pool::new(0x900000);
     let plan = g.plan_bind(&mut good, &fixed(&[0x1000], 0x4000_0000)).unwrap();
     assert_eq!(good.asked.len(), 1, "the spare pool is consumed first; only the third page is asked for");

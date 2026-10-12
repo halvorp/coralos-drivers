@@ -16,6 +16,7 @@ use i915_common_core::Reg;
 use i915_gt_core::{Effect, FixedVec, WritePlan};
 use i915_gt_regs_core as r;
 
+/// KEPT FIXED (D10): the ELSP has exactly two submit ports - hardware.
 /// `execlists_num_ports` on a legacy-ELSP part: two submit ports.
 pub const NUM_PORTS: usize = 2;
 

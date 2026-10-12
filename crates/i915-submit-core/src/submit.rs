@@ -65,7 +65,7 @@ pub fn forces_restore(ring: &Ring, tail: u32, prev: u32) -> bool {
     ring.direction(tail, prev) <= 0
 }
 
-impl<const C: usize, const R: usize> Engine<C, R> {
+impl Engine {
     /// `completed(rq)` for a port: the context's timeline has reached the port's seqno.
     fn port_completed(&self, p: &Port) -> bool {
         match self.ctx(p.ctx) {

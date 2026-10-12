@@ -108,7 +108,7 @@ impl<B: Mmio> Executor<B> {
 
 /// `true` if the planner's model denies an access to `va`: an unbound, unbound-then-reused or guard address
 /// (`Gtt::check_access`, the device-side denial the GPU's page walker would give with scratch).
-pub fn stale_access_denied<const V: usize, const T: usize>(gtt: &Gtt<V, T>, va: u64, len: u64) -> bool {
+pub fn stale_access_denied(gtt: &Gtt, va: u64, len: u64) -> bool {
     use i915_memory_core::MemError::{Beyond48Bit, BeyondSpace, GuardPageAccess, StaleMapping};
     matches!(gtt.check_access(va, len), Err(StaleMapping { .. } | GuardPageAccess { .. } | Beyond48Bit { .. } | BeyondSpace { .. }))
 }

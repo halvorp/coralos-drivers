@@ -113,7 +113,7 @@ mod planner_write_sets {
         let mut writes: Vec<Reg> = vec![];
         // P2: the GGTT bind's flush
         let geom = GgttGeometry::probe(1 << 6, 16 << 20, 256 << 20).unwrap();
-        let (_, plan) = Gtt::<8, 4>::new_ggtt(&d, &geom, 0x9000).unwrap();
+        let (_, plan) = Gtt::new_ggtt(&d, &geom, 0x9000).unwrap();
         for f in plan.flushes() {
             if let Flush::GgttInvalidate(w) = f {
                 writes.push(w.reg);

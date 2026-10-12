@@ -13,11 +13,16 @@
 //! 64K/2M huge pages, local memory, vGPU ballooning, GuC GGTT regions and the "bind via a blitter context" GGTT path are CUT
 //! (each is a different platform row or a feature Gen9 lacks); see docs/I915-CONTRACTS.md.
 //!
-//! BOUNDS (each enforced and tested): VMAs per space (`V`), page tables per space (`T`), ops per plan ([`MAX_OPS`]), victims per
-//! plan ([`MAX_EVICT`]), spare table pages ([`MAX_SPARE`]), fences (32).
+//! NO COMPILE-TIME CAP ON A POPULATION CLIENTS DRIVE (owner 2026-10-12, RUNTIME-TABLES-HAVE-NO-CAP; DECISIONS.md D10): the VMA
+//! table, the page-table table, the spare table-page pool, a plan's op list and its victim list are `alloc` collections that
+//! grow with memory. Every growth is fallible (`try_reserve`) and refuses with the named [`MemError::OutOfMemory`] BEFORE the
+//! space or the plan has changed, so a refused bind leaves no half-created node or table. FIXED, because the hardware defines
+//! it: 32 fence registers ([`fence`]), the 5-step fence sequence, the 4 PPGTT levels and 512 entries per table page.
 
 #![no_std]
 #![forbid(unsafe_code)]
+
+extern crate alloc;
 
 pub mod fence;
 mod gtt;
@@ -29,7 +34,7 @@ pub mod regs;
 
 pub use gtt::{BindRequest, Gtt, GttKind, NoTablePages, PpgttInit, TablePage, TablePageRequest, TablePageSource, Walk};
 pub use nodes::{Mode, Placement, VmaId};
-pub use plan::{BindPlan, Flush, Op, RegWrite, Target, UnbindPlan, Write, MAX_EVICT, MAX_OPS};
+pub use plan::{BindPlan, Flush, Op, RegWrite, Target, UnbindPlan, Write};
 pub use pte::CacheLevel;
 
 use i915_common_core::I915Error;
@@ -40,8 +45,6 @@ pub const GTT_PAGE: u64 = 4096;
 pub const PPGTT_BITS: u32 = 48;
 /// Entries per table page: `GEN8_PDES` = 4096 / 8 (gen8_ppgtt.c:139).
 pub const ENTRIES_PER_TABLE: u64 = 512;
-/// Spare table pages the space keeps when a plan is rolled back (a granted page is never silently dropped).
-pub const MAX_SPARE: usize = 64;
 
 /// Why a memory operation refused. Every variant carries the values; [`MemError::name`] is the stable marker token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,12 +84,9 @@ pub enum MemError {
     NotBound { id: u32 },
     /// The node is pinned (in use by a request) or a driver reservation; it cannot be unbound or evicted.
     Pinned { id: u32 },
-    /// The VMA table is full (`V`).
-    VmaTableFull { cap: usize },
-    /// The page-table table is full (`T`).
-    TableTableFull { cap: usize },
-    /// A plan would exceed its fixed op or victim buffer; split the bind.
-    PlanTooLarge { what: &'static str, cap: usize },
+    /// Memory for a growing table or plan list (`what`: "vma table", "page-table table", "spare pool", "plan ops", "victims",
+    /// "scratch") could not be had. Refused before anything changed: the space is exactly as it was.
+    OutOfMemory { what: &'static str },
     /// The caller's [`TablePageSource`] refused, or gave an unusable page.
     TablePageRefused { level: u8 },
     /// A fence parameter outside what the registers can encode.
@@ -121,9 +121,7 @@ impl MemError {
             MemError::GuardPageAccess { .. } => "GUARD-PAGE-ACCESS",
             MemError::NotBound { .. } => "VMA-NOT-BOUND",
             MemError::Pinned { .. } => "VMA-PINNED",
-            MemError::VmaTableFull { .. } => "VMA-TABLE-FULL",
-            MemError::TableTableFull { .. } => "TABLE-TABLE-FULL",
-            MemError::PlanTooLarge { .. } => "PLAN-TOO-LARGE",
+            MemError::OutOfMemory { .. } => "OUT-OF-MEMORY",
             MemError::TablePageRefused { .. } => "TABLE-PAGE-REFUSED",
             MemError::BadFence { .. } => "BAD-FENCE",
             MemError::UnsupportedFlag { .. } => "UNSUPPORTED-FLAG",

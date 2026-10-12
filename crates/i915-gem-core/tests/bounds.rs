@@ -6,7 +6,7 @@ use common::*;
 use i915_gem_core::limits::*;
 use i915_gem_core::*;
 
-type R = Rig<16, 16>;
+type R = Rig;
 
 #[test]
 fn what_stays_fixed_is_hardware_abi_or_policy_and_has_these_values() {

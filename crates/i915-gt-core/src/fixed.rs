@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
+//! KEPT FIXED (audited for RUNTIME-TABLES-HAVE-NO-CAP, D10): every `FixedVec` in this crate holds a HARDWARE-defined or Linux-table-defined
+//! sequence - the engines a part fuses (<= 5), a workaround list (a static Linux table per platform), an interrupt-bank reset/postinstall
+//! write sequence, a clock-gating row set - whose maximum length is known when the plan is written. None holds a population that
+//! clients create. A population that clients drive must NOT use this type: use an `alloc` collection with fallible growth.
+//!
 //! A tiny fixed-capacity vector: the crate allocates nothing, so every list is bounded by construction and a push past the
 //! bound is a NAMED refusal, never a silent clamp.
 use crate::error::GtError;

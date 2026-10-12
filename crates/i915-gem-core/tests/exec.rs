@@ -10,9 +10,9 @@ use i915_submit_core::execlists::Port;
 use i915_uapi_core::consts::{exec as ef, exec_fence as xf, exec_object as eo};
 use i915_uapi_core::types::{ExecFence, ExecObject2, RelocationEntry};
 
-type R = Rig<16, 16>;
+type R = Rig;
 /// A rig whose address space has page-table room for a full 4 GiB zone (2048 PTs + PDs).
-type Big = Rig<32, 2400>;
+type Big = Rig;
 
 /// `gen8_pte_encode(addr, I915_CACHE_LLC, 0)`: PRESENT | RW | PPAT_CACHED, with `PPAT_CACHED = _PAGE_PAT = bit 7`
 /// (gt/gen8_ppgtt.c:32-60, gt/intel_gtt.h:137, arch/x86 pgtable_types.h:63).
@@ -460,7 +460,7 @@ fn a_context_without_an_engine_context_for_the_engine_is_refused_by_name() {
 
 #[test]
 fn the_same_object_twice_is_refused_and_a_huge_submission_is_not() {
-    let mut r = Rig::<600, 64>::new();
+    let mut r = Rig::new();
     let a = r.create(4096);
     let err = r.exec(&Exec::new(0, vec![pinned(a, 0x10_0000), pinned(a, 0x10_0000)]), 0).unwrap_err();
     assert_eq!(err, GemError::ExecObjectDuplicate { handle: a });
@@ -580,7 +580,7 @@ fn a_cpu_dirty_object_on_a_part_without_llc_is_flushed_once_before_the_gpu_reads
     // KBL is coherent, so the clflush path is dead there; exercise it on a device with HAS_LLC cleared (gem/i915_gem_execbuffer.c:2117-2120).
     let mut d = dev();
     d.desc.info.has_llc = false;
-    let mut gem: Gem<16, 16> = Gem::new(d, GemConfig { pat_enabled: true });
+    let mut gem: Gem = Gem::new(d, GemConfig { pat_enabled: true });
     let mut pool = Pool::new();
     let mut sink = Sink::default();
     let s = gem.open_session(SessionCaps::default(), pool.init(), &mut sink).unwrap();

@@ -212,6 +212,7 @@ struct Slot {
 
 /// The shared-PLL bookkeeping (`dpll_state[]` `pipe_mask` / `hw_state`): who holds each PLL and with what state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// KEPT FIXED (D10): Gen9 has exactly four shared DPLLs (DPLL0..3) - hardware.
 pub struct DpllAllocator {
     slots: [Slot; 4],
 }

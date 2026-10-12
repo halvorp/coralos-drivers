@@ -33,6 +33,7 @@ pub const GEN9_CTX_RCS_INDIRECT_CTX_OFFSET_DEFAULT: u32 = 0x26; // intel_lrc_reg
 
 /// `GEN8_EXECLISTS_STATUS_BUF` (intel_lrc_reg.h:53): the MMIO mirror of the CSB entries, `mmio_base + 0x370 + 8 * entry`.
 pub const GEN8_EXECLISTS_STATUS_BUF: u32 = 0x370; // intel_lrc_reg.h:53
+/// KEPT FIXED (D10): the CSB is a hardware ring of six entries.
 /// `GEN8_CSB_ENTRIES` (intel_lrc_reg.h:64): the Gen8..Gen10 context status buffer holds six qword entries.
 pub const GEN8_CSB_ENTRIES: u32 = 6; // intel_lrc_reg.h:64
 pub const GEN8_CSB_PTR_MASK: u32 = 0x7; // intel_lrc_reg.h:65

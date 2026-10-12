@@ -29,6 +29,7 @@ use i915_common_core::Reg;
 use i915_vbt_core::child::AuxCh;
 
 /// "Only 5 data registers!" — intel_dp_aux.c:337-341. Max packet in either direction.
+// KEPT FIXED (D10): one AUX transaction carries at most 16 data bytes plus a 4-byte header on the wire - hardware/protocol.
 pub const AUX_MAX_BYTES: usize = 20;
 /// `BARE_ADDRESS_SIZE` — intel_dp_aux.c:457.
 pub const BARE_ADDRESS_SIZE: usize = 3;

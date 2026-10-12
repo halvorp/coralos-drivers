@@ -22,9 +22,17 @@
 //!
 //! Registers live in `i915-gt-regs-core` (intel_engine_regs.h, intel_gt_regs.h); command encodings in `i915-gpu-commands-core`;
 //! the emitters and `Effect`/`WritePlan` in `i915-gt-core`; the PML4 comes from `i915-memory-core`. Nothing is re-typed here.
+//!
+//! TABLES: the context table and the request table hold what clients create, so they have no compile-time cap
+//! (RUNTIME-TABLES-HAVE-NO-CAP, owner 2026-10-12; DECISIONS.md D10): `Vec`s that grow fallibly and refuse with
+//! `OUT-OF-MEMORY` before the context or request exists. FIXED, because the hardware or the protocol defines it, each with its
+//! reason at the definition: the 63 hardware context tags, the 2 ELSP ports, the 32-bit seqno, the 4 KiB context-state page and
+//! the 8-entry CSB window.
 
 #![no_std]
 #![forbid(unsafe_code)]
+
+extern crate alloc;
 
 pub mod engine;
 pub mod error;

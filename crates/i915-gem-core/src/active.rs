@@ -123,7 +123,7 @@ pub fn wait_finish(timeout_ns: i64, elapsed_ns: u64, still_busy: bool, jiffy_ns:
     (out, ret)
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// The executor read the HWSP seqno dword of `engine_ctx`'s timeline on engine `engine` (index in the device's engine order).
     pub fn observe_seqno(&mut self, engine: usize, engine_ctx: u32, value: u32) -> Result<(), GemError> {
         if engine >= self.dev.engines().len() {

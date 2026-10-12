@@ -3,6 +3,7 @@
 //! timeline seqno advance (gt/intel_timeline.c:300-338), and the hardware context-tag bitmap
 //! (`engine->context_tag`, gt/intel_execlists_submission.c:3579, :494-514, :619-625).
 use crate::error::SubmitError;
+use alloc::vec::Vec;
 use crate::lrc_reg::GEN11_SW_CTX_ID_SHIFT;
 
 /// `i915_seqno_passed` (i915_request.h:480-483): has `seq1` reached `seq2`, modulo 2^32.
@@ -57,6 +58,8 @@ impl Timeline {
         }
     }
     /// Take the next seqno.
+    // FIXED BY PROTOCOL: the timeline seqno is the 32-bit dword the hardware writes to the HWSP and compares with `seqno_passed`, so it
+    // has 2^32 values. Linux rotates the HWSP slot at the wrap (`__intel_timeline_get_seqno`); this port refuses by name (`SEQNO-WRAP`).
     pub fn advance(&mut self) -> Result<u32, SubmitError> {
         let next = self.peek_next()?;
         self.seqno = next;
@@ -85,53 +88,53 @@ pub struct Request {
     pub submitted: bool,
 }
 
-/// A fixed-capacity ordered table with removal, so the crate allocates nothing and a full table is a named refusal.
-#[derive(Clone, Copy, Debug)]
-pub struct Table<T: Copy, const N: usize> {
-    items: [T; N],
-    len: usize,
+/// An ordered table with removal that GROWS with memory: how many requests clients have outstanding is theirs to choose, so
+/// there is no compile-time capacity (RUNTIME-TABLES-HAVE-NO-CAP). Growth is fallible; a refusal is `OUT-OF-MEMORY` naming the
+/// table, returned before the entry exists.
+#[derive(Clone, Debug)]
+pub struct Table<T: Copy> {
+    items: Vec<T>,
+    what: &'static str,
 }
 
-impl<T: Copy, const N: usize> Table<T, N> {
-    pub const fn new(fill: T) -> Self {
-        Table { items: [fill; N], len: 0 }
+impl<T: Copy> Table<T> {
+    pub const fn new(what: &'static str) -> Self {
+        Table { items: Vec::new(), what }
     }
-    pub const fn len(&self) -> usize {
-        self.len
+    pub fn len(&self) -> usize {
+        self.items.len()
     }
-    pub const fn is_empty(&self) -> bool {
-        self.len == 0
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+    /// Make room for one more entry, so a later [`Table::push`] cannot fail. Call before any state is committed.
+    pub fn reserve_one(&mut self) -> Result<(), SubmitError> {
+        self.items.try_reserve(1).map_err(|_| SubmitError::OutOfMemory { what: self.what })
     }
     pub fn push(&mut self, v: T) -> Result<(), SubmitError> {
-        if self.len == N {
-            return Err(SubmitError::RequestTableFull { capacity: N as u32 });
-        }
-        self.items[self.len] = v;
-        self.len += 1;
+        self.reserve_one()?;
+        self.items.push(v);
         Ok(())
     }
     pub fn as_slice(&self) -> &[T] {
-        &self.items[..self.len]
+        &self.items
     }
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        &mut self.items[..self.len]
+        &mut self.items
     }
     /// Remove index `i`, keeping the order of the rest.
     pub fn remove(&mut self, i: usize) -> T {
-        let v = self.items[i];
-        let mut j = i;
-        while j + 1 < self.len {
-            self.items[j] = self.items[j + 1];
-            j += 1;
-        }
-        self.len -= 1;
-        v
+        self.items.remove(i)
     }
 }
 
 /// `engine->context_tag` (gt/intel_execlists_submission.c:3579): 63 usable tags, `GENMASK(BITS_PER_LONG - 2, 0)`; a context
 /// takes the lowest free tag when it first goes in flight and returns it when it last leaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// FIXED BY HARDWARE: a context's tag lives in the 11-bit SW context id of the descriptor and Gen8/9 use a 64-bit free mask of which
+// bit 63 is never offered (`GENMASK(BITS_PER_LONG - 2, 0)`, intel_execlists_submission.c:3579). This is not a table of clients'
+// things: only contexts IN FLIGHT hold a tag, so any number of contexts exist; at most 63 run at once. Exhaustion is the named
+// `CONTEXT-TAGS-EXHAUSTED` refusal.
 pub struct TagAllocator {
     free: u64,
 }

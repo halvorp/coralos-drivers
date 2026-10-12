@@ -18,6 +18,7 @@
 //!
 //! EVERY risky sequence is a `[I915-STEP begun ...]` step (plan section 5). The ELSP writes and the reset are the two the device
 //! cannot take back.
+use alloc::vec::Vec;
 use super::core::{Executor, DEFAULT_MAX_POLLS};
 use super::dma::{CpuMem, GpuMem, Grant};
 use super::journal::StepId;
@@ -81,11 +82,12 @@ pub struct ExecProof {
 }
 
 /// One engine and the memory it runs in.
-pub struct EngineRig<const C: usize, const R: usize> {
-    pub engine: Engine<C, R>,
+pub struct EngineRig {
+    pub engine: Engine,
     hwsp: Grant,
     hwsp_ggtt: u32,
-    objs: [Option<CtxObjects>; C],
+    /// Context objects by context id; grows with the engine's context table (no compile-time cap, D10), fallibly.
+    objs: Vec<Option<CtxObjects>>,
     /// Resets executed (engine or full).
     pub epoch: u32,
     pub proof: ExecProof,
@@ -111,13 +113,13 @@ impl<D: Dma, M: CpuMem> HwspSink for Hwsp<'_, D, M> {
     }
 }
 
-impl<const C: usize, const R: usize> EngineRig<C, R> {
+impl EngineRig {
     /// `hwsp` is the engine's status page object and `hwsp_ggtt` its GGTT offset; `cfg.status_page_ggtt` must be that offset.
     pub fn new(info: &EngineInfo, gen: u8, cfg: EngineConfig, hwsp: Grant, hwsp_ggtt: u32) -> Result<Self, ExecError> {
         if cfg.status_page_ggtt != hwsp_ggtt || hwsp.len < 4096 {
             return Err(ExecError::Layout { what: "status page object vs EngineConfig::status_page_ggtt" });
         }
-        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: [None; C], epoch: 0, proof: ExecProof::default() })
+        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), epoch: 0, proof: ExecProof::default() })
     }
 
     fn hwsp_sink<'a, D: Dma, M: CpuMem>(&self, gm: &'a mut GpuMem<D, M>) -> Hwsp<'a, D, M> {
@@ -166,7 +168,12 @@ impl<const C: usize, const R: usize> EngineRig<C, R> {
         }
         self.seqno_dword(timeline_ggtt)?; // the slot must be in the status page
         let spec = ContextSpec { lrca: objs.image_ggtt, ring_size: RING_BYTES, ring_ggtt: objs.ring_ggtt, pml4, rpcs, hwsp_ggtt: timeline_ggtt, initial_breadcrumb, default_state: None };
+        // room for this context's record BEFORE the engine creates it (a context with no record would be unreachable)
+        self.objs.try_reserve(1).map_err(|_| i915_submit_core::SubmitError::OutOfMemory { what: "context objects" })?;
         let id = self.engine.create_context(&spec)?;
+        if self.objs.len() <= id as usize {
+            self.objs.resize(id as usize + 1, None); // ids are dense (slot reuse), so this is at most one push: reserved above
+        }
         self.objs[id as usize] = Some(objs);
         self.store_state(gm, id)?;
         Ok(id)
@@ -277,7 +284,7 @@ impl<const C: usize, const R: usize> EngineRig<C, R> {
         if rep.csb_events != 0 {
             gm.flush(page, 4096)?;
         }
-        for ctx in 0..C as u32 {
+        for ctx in 0..self.objs.len() as u32 {
             if self.objs[ctx as usize].is_none() {
                 continue;
             }
@@ -339,7 +346,7 @@ impl<const C: usize, const R: usize> EngineRig<C, R> {
                 ex.awake(d, |ex| ex.run_csb_steps(csb.steps.as_slice(), &mut sink))?;
             }
             // execlists_reset_cancel: whatever was outstanding is lost; mark it complete on its timeline and retire it, then scrub.
-            for ctx in 0..C as u32 {
+            for ctx in 0..self.objs.len() as u32 {
                 if self.objs[ctx as usize].is_none() {
                     continue;
                 }
