@@ -14,6 +14,8 @@
 //!  * `WAIT_DONE_POLLED`: Linux sleeps on `display->gmbus.wait_queue` for up to 10 ms, woken by the AUX interrupt
 //!    (:66-77). With no interrupt here, the wait is a [`PollPlan`] on `SEND_BUSY` clear: 10 ms, read every 50 us, and
 //!    the executor returns the LAST status read, exactly as `intel_dp_aux_wait_done()` returns its last `status`.
+//!    The executor sleeps/yields between reads, never spins (`PollPlan` carries the NO-POLL-BLOCK-ON-WAKE exception and its
+//!    *delete-when*: the AUX interrupt reaching `i915.device`).
 //!  * `NO_POWER_DOMAIN_NO_PPS_NO_QOS`: the AUX power domain, the PPS lock/VDD (`intel_pps_vdd_on_unlocked`), the PM-QoS request and
 //!    the `intel_digital_port_connected_locked` early-out are the CALLER's job (the device owns power; eDP skips the
 //!    connected check, :267). The caller must hold VDD/panel power first (`pps::Pps::vdd_on`).

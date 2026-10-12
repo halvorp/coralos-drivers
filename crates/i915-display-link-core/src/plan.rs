@@ -16,6 +16,12 @@
 use alloc::vec::Vec;
 use i915_common_core::Reg;
 
+/// EXCEPTION to NO-POLL-BLOCK-ON-WAKE (named, bounded): these are register waits for which the hardware raises NO wakeup the
+/// task could `recv` on (panel power sequencing: Linux's `intel_de_wait_*` / `poll_timeout_us` sleeps and re-reads; AUX
+/// SEND_BUSY: Linux's interrupt is not wired here). The executor MUST sleep or `yield_now()` between reads and MUST NEVER
+/// `spin_loop()` -- `delay_us` is that sleep -- and every wait is capped by `max_polls`. *delete-when:* the AUX/GMBUS
+/// interrupt is routed to `i915.device` (IRQ contract), at which point the AUX wait becomes a block on that wakeup.
+///
 /// One bounded register wait: read `reg` until `value & mask == want`, at most `max_polls` reads, `interval_us` apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PollPlan {
@@ -74,7 +80,7 @@ impl PollPlan {
 
 impl PollPlan {
     /// The reference executor loop: read until [`PollPlan::judge`] says stop. `read` returns the register, `delay_us`
-    /// sleeps. Returns the satisfying value, or the timeout. Reads are capped at `max_polls` whatever `delay_us` does.
+    /// sleeps or yields (never spins). Returns the satisfying value, or the timeout. Reads are capped at `max_polls` whatever `delay_us` does.
     pub fn run(&self, mut read: impl FnMut() -> u32, mut delay_us: impl FnMut(u32)) -> Result<u32, PollTimeout> {
         let mut polls = 0u32;
         loop {

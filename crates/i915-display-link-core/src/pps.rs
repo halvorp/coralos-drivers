@@ -333,6 +333,8 @@ pub struct PpsRun {
     scheduled: Option<u32>,
 }
 
+/// Linux waits on PP_STATUS by sleeping and re-reading (`intel_de_wait_for_{set,clear}_ms`): the panel sequencer raises no
+/// interrupt. A bounded `PollPlan` (see its exception note), not a spin.
 fn status_poll(mask: u32, value: u32, what: &'static str) -> Effect {
     Effect::Poll(PollPlan::with_timeout(pp_status(0), mask, value, PPS_WAIT_INTERVAL_US, PPS_WAIT_TIMEOUT_US, what))
 }
