@@ -5,7 +5,7 @@
 use crate::error::FwError;
 use crate::regs::AVS_LIB_NAME_SIZE;
 
-/// `lib_id` is a 4-bit field of LOAD_LIBRARY (messages.h `load_lib.lib_id:4`), so at most 16 slots can ever be addressed.
+/// FIXED BY AN ABI WIDTH (DECISIONS.md D10): `lib_id` is a 4-bit field of LOAD_LIBRARY (messages.h `load_lib.lib_id:4`), so at most 16 slots can ever be addressed.
 pub const MAX_LIB_SLOTS: usize = 16; // messages.h:82
 
 /// `AVS_ROOT_DIR` (loader.c:36).

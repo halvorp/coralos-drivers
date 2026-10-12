@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Path templates: template -> paths -> pipelines -> modules (+ bindings and config ids), topology.c:1221-1578.
 mod common;
-use avs_topology_core::blocks::*;
 use avs_topology_core::error::TplgError;
 use avs_topology_core::tokens::*;
 use avs_topology_core::topology::*;
@@ -40,7 +39,7 @@ fn a_template_with_two_paths_each_with_pipelines_and_modules_keeps_its_order() {
     let p0 = t.pipelines_of(&paths[0]);
     assert_eq!(p0.len(), 2);
     assert_eq!((p0[0].id, p0[0].cfg, p0[0].num_bindings, p0[0].nbindings), (10, Some(0), 1, 1));
-    assert_eq!(p0[0].bindings[0], 1);
+    assert_eq!(t.binding_ids_of(&p0[0]), &[1]);
     let m00 = t.modules_of(&p0[0]);
     assert_eq!(m00.len(), 2);
     assert_eq!((m00[0].id, m00[0].cfg_base, m00[0].in_fmt, m00[0].cfg_ext), (0, Some(0), Some(0), Some(0)));
@@ -112,14 +111,13 @@ fn pipeline_bindings_must_match_their_header_and_the_manifest() {
     let t = load_widget(&ppl(2, vec![binding_ref(1), binding_ref(0)])).unwrap();
     let tm = t.templates.as_slice()[0];
     let p = t.pipelines_of(&t.paths_of(&tm)[0])[0];
-    assert_eq!(&p.bindings[..2], &[1, 0]);
+    assert_eq!(t.binding_ids_of(&p), &[1, 0]);
     assert_eq!(p.nbindings, 2);
     // binding section present but the header says 0: ignored like Linux (`kcalloc(0)`)
     let t = load_widget(&ppl(0, vec![binding_ref(0)])).unwrap();
     assert_eq!(t.pipelines.as_slice()[0].nbindings, 0);
-    // more than the fixed storage
-    let refs: Vec<Vec<u8>> = (0..9).map(|_| binding_ref(0)).collect();
-    assert_eq!(load_widget(&ppl(9, refs)).err(), Some(TplgError::TooMany { what: "pipeline bindings", count: 9, max: 8 }));
+    // a header count the section cannot hold is refused before anything is reserved for it
+    assert_eq!(load_widget(&ppl(9, vec![binding_ref(0)])).err(), Some(TplgError::DictionaryTooShort { token: AVS_TKN_PPL_BINDING_ID_U32, entry: 1 }));
 }
 
 #[test]
@@ -129,15 +127,15 @@ fn module_init_config_ids_follow_the_module_tokens() {
     let t = load_widget(&p).unwrap();
     let md = t.modules.as_slice()[0];
     assert_eq!((md.num_config_ids, md.nconfig_ids), (2, 2));
-    assert_eq!(&md.config_ids[..2], &[11, 22]);
+    assert_eq!(t.config_ids_of(&md), &[11, 22]);
     // config-id arrays but no count
     let m = cat(&[words(&[(AVS_TKN_MOD_ID_U32, 0)]), words(&[(AVS_TKN_MOD_INIT_CONFIG_ID_U32, 11)])]);
     let p = cat(&[tmpl_hdr(0, "w"), path_hdr(0, 0, 0), pipeline_hdr(0, 0, 0), m]);
     assert_eq!(load_widget(&p).err(), Some(TplgError::ConfigIdsWithoutCount));
-    // count larger than the storage
+    // a count the section cannot hold
     let m = cat(&[words(&[(AVS_TKN_MOD_ID_U32, 0), (AVS_TKN_MOD_INIT_CONFIG_NUM_IDS_U32, 9)]), words(&[(AVS_TKN_MOD_INIT_CONFIG_ID_U32, 11)])]);
     let p = cat(&[tmpl_hdr(0, "w"), path_hdr(0, 0, 0), pipeline_hdr(0, 0, 0), m]);
-    assert_eq!(load_widget(&p).err(), Some(TplgError::TooMany { what: "module config ids", count: 9, max: 8 }));
+    assert_eq!(load_widget(&p).err(), Some(TplgError::DictionaryTooShort { token: AVS_TKN_MOD_INIT_CONFIG_ID_U32, entry: 1 }));
     // count larger than the ids present
     let m = cat(&[words(&[(AVS_TKN_MOD_ID_U32, 0), (AVS_TKN_MOD_INIT_CONFIG_NUM_IDS_U32, 3)]), words(&[(AVS_TKN_MOD_INIT_CONFIG_ID_U32, 11)])]);
     let p = cat(&[tmpl_hdr(0, "w"), path_hdr(0, 0, 0), pipeline_hdr(0, 0, 0), m]);
@@ -173,30 +171,6 @@ fn module_scalars() {
     let m = t.modules.as_slice()[0];
     assert_eq!((m.id, m.core_id, m.domain, m.ctl_id), (5, 1, 1, 200));
     assert_eq!((m.cfg_base, m.in_fmt, m.cfg_ext, m.nhlt_config), (None, None, None, None), "unset pointers are NULL");
-}
-
-#[test]
-fn storage_limits_are_named() {
-    // 65 modules in one pipeline: the module pool holds 64
-    let mut parts = vec![tmpl_hdr(0, "w"), path_hdr(0, 0, 0), pipeline_hdr(0, 0, 0)];
-    for i in 0..65 {
-        parts.push(module(i, 0, 0, 0));
-    }
-    assert_eq!(load_widget(&cat(&parts)).err(), Some(TplgError::TooMany { what: "modules", count: 65, max: 64 }));
-    // 17 widget templates
-    let w: Vec<u8> = (0..17).map(|i| widget(&format!("w{i}"), &cat(&[tmpl_hdr(i, "x"), path_hdr(0, 0, 0)]), &[])).flatten().collect();
-    let f: &'static [u8] = Box::leak(cat(&[manifest_block(&small_manifest()), block(5, 17, &w)]).into_boxed_slice());
-    assert_eq!(Topology::parse(f, None).err(), Some(TplgError::TooMany { what: "path templates", count: 17, max: 16 }));
-    // 65 routes
-    let r: Vec<(&str, &str, &str)> = (0..65).map(|_| ("a", "", "b")).collect();
-    let f: &'static [u8] = Box::leak(cat(&[manifest_block(&small_manifest()), block(4, 65, &graph(&r))]).into_boxed_slice());
-    assert_eq!(Topology::parse(f, None).err(), Some(TplgError::TooMany { what: "routes", count: 65, max: 64 }));
-    let _ = SND_SOC_TPLG_TYPE_DAPM_GRAPH;
-}
-
-#[test]
-fn the_topology_is_a_bounded_size() {
-    assert!(core::mem::size_of::<Topology<'static>>() <= Topology::SIZE_BOUND, "{} bytes", core::mem::size_of::<Topology<'static>>());
 }
 
 #[test]

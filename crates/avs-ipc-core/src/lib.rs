@@ -20,6 +20,11 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+// `alloc` for ONE table: the I2S controller list of the hardware config, whose length the firmware states (DECISIONS.md D10, doctrine
+// RUNTIME-TABLES-HAVE-NO-CAP). Everything else here is a fixed ABI shape (headers, the 3-segment module entry, the 8-byte inline
+// payload) or borrows the caller's buffer.
+extern crate alloc;
+
 pub mod error;
 pub mod header;
 pub mod isr;

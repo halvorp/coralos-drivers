@@ -8,6 +8,7 @@
 //! lies inside the payload the firmware returned; here every step is bounds-checked and a cut-short payload is a named
 //! [`IpcError::Truncated`].
 use crate::error::IpcError;
+use alloc::vec::Vec;
 
 pub const TLV_HEADER_SIZE: usize = 8; // messages.h:103: sizeof(struct avs_tlv) == 8
 
@@ -187,20 +188,19 @@ pub const AVS_I2S_VER_15_BROXTON: u32 = 0x10000; // messages.h:511
 pub const AVS_I2S_VER_15_BROXTON_P: u32 = 0x20000; // messages.h:512
 pub const AVS_I2S_VER_18_KBL_CNL: u32 = 0x30000; // messages.h:513
 
-/// The most I2S controllers a configuration may list. Linux `devm_kmemdup`s however many the firmware states; this port has
-/// fixed storage and refuses more (cAVS has at most six SSP ports).
-pub const MAX_I2S_CTRL: usize = 16;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The I2S controllers the firmware lists. Their number is the firmware's to state, so it is a growable table (DECISIONS.md D10,
+/// RUNTIME-TABLES-HAVE-NO-CAP): Linux `devm_kmemdup`s however many the firmware states; here a count the TLV cannot hold is
+/// refused first, then the table grows fallibly.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct I2sCaps {
     pub i2s_version: u32,
     pub ctrl_count: u32,
     /// `ctrl_base_addr[0..ctrl_count]`.
-    pub ctrl_base_addr: [u32; MAX_I2S_CTRL],
+    pub ctrl_base_addr: Vec<u32>,
 }
 
 /// `struct avs_hw_cfg` (messages.h:522-532).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HwCfg {
     pub avs_version: u32,
     pub dsp_cores: u32,
@@ -231,11 +231,16 @@ pub fn parse_hw_config(payload: &[u8]) -> Result<HwCfg, IpcError> {
                 c.i2s_caps.i2s_version = t.dword(0)?;
                 let n = t.dword(1)? as usize;
                 c.i2s_caps.ctrl_count = n as u32;
-                if n > MAX_I2S_CTRL {
-                    return Err(IpcError::TooMany { what: "i2s controllers", count: n, max: MAX_I2S_CTRL });
+                // a count the TLV cannot hold is refused BEFORE anything is reserved for it
+                let need = n.checked_mul(4).and_then(|x| x.checked_add(8)).unwrap_or(usize::MAX);
+                if need > t.value.len() {
+                    return Err(IpcError::TlvValueTooShort { tlv_type: t.ty, need, have: t.value.len() });
                 }
+                let v = &mut c.i2s_caps.ctrl_base_addr;
+                v.clear();
+                v.try_reserve_exact(n).map_err(|_| IpcError::OutOfMemory { what: "i2s controllers" })?;
                 for i in 0..n {
-                    c.i2s_caps.ctrl_base_addr[i] = t.dword(2 + i)?; // refused when the TLV is shorter than it claims
+                    v.push(t.dword(2 + i)?); // within the reservation
                 }
             }
             AVS_HW_CFG_GATEWAY_COUNT => c.gateway_count = t.dword(0)?,
@@ -308,6 +313,7 @@ pub struct ModuleEntry {
     pub affinity_mask: u32,
     pub instance_max_count: u16,
     pub instance_bss_size: u16,
+    /// Exactly three: `struct avs_segment_desc segments[3]` of the firmware ABI (messages.h:588, 116-byte entry, static_assert :589).
     pub segments: [SegmentDesc; 3],
 }
 

@@ -33,7 +33,8 @@ impl BdlEntry {
     }
 }
 
-/// Where the code loader's DMA lives and how the controller is told about it.
+/// Where the code loader's DMA lives (the entry count is fixed by HARDWARE: the BDL is one 4 KiB page of 16-byte entries, `regs::BDL_SIZE`,
+/// hda_register.h:144-145; DECISIONS.md D10 keeps hardware-defined counts fixed) and how the controller is told about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClDmaLayout {
     entries: [BdlEntry; AZX_MAX_BDL_ENTRIES as usize],

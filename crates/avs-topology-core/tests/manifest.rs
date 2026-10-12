@@ -142,28 +142,16 @@ fn count_value_at(m: &[u8], token: u32) -> usize {
 }
 
 #[test]
-fn dictionaries_larger_than_the_fixed_storage_are_refused_by_name() {
-    for (token, name, max) in [
-        (AVS_TKN_MANIFEST_NUM_LIBRARIES_U32, "libraries", MAX_LIBS),
-        (AVS_TKN_MANIFEST_NUM_AFMTS_U32, "audio formats", MAX_FMTS),
-        (AVS_TKN_MANIFEST_NUM_MODCFGS_BASE_U32, "module configs (base)", MAX_MODCFGS_BASE),
-        (AVS_TKN_MANIFEST_NUM_MODCFGS_EXT_U32, "module configs (ext)", MAX_MODCFGS_EXT),
-        (AVS_TKN_MANIFEST_NUM_PPLCFGS_U32, "pipeline configs", MAX_PPLCFGS),
-        (AVS_TKN_MANIFEST_NUM_BINDINGS_U32, "bindings", MAX_BINDINGS),
-    ] {
-        let mut m = small_manifest();
-        let pos = count_value_at(&m, token);
-        m[pos..pos + 4].copy_from_slice(&dw(max as u32 + 1));
-        assert_eq!(load(&m).err(), Some(TplgError::TooMany { what: name, count: max as u32 + 1, max: max as u32 }), "{name}");
-    }
-}
-
-#[test]
-fn a_huge_count_does_not_allocate_or_loop() {
+fn a_dictionary_count_the_block_cannot_hold_is_refused_before_anything_is_reserved() {
+    // every entry needs at least one 12-byte tuple array; a count of four billion must not become a reservation
     let mut m = small_manifest();
     let pos = count_value_at(&m, AVS_TKN_MANIFEST_NUM_AFMTS_U32);
     m[pos..pos + 4].copy_from_slice(&dw(u32::MAX));
-    assert!(matches!(load(&m).err(), Some(TplgError::TooMany { .. })));
+    assert!(matches!(load(&m).err(), Some(TplgError::DictionaryTooShort { token: AVS_TKN_AFMT_ID_U32, .. })));
+    // the same for a count that is only a little too big: 3 formats promised by a block that can hold at most 7 arrays
+    let mut m = small_manifest();
+    m[pos..pos + 4].copy_from_slice(&dw(100));
+    assert!(matches!(load(&m).err(), Some(TplgError::DictionaryTooShort { .. })));
 }
 
 #[test]
@@ -199,9 +187,10 @@ fn modcfg_ext_pin_formats_follow_the_entry_input_pins_first() {
     let e = &t.modcfgs_ext.as_slice()[2];
     assert_eq!(e.type_uuid, [0x11; 16]);
     assert_eq!((e.num_input_pins, e.num_output_pins, e.npins), (1, 2, 3));
-    assert_eq!((e.pins[0].pin_index, e.pins[0].iobs, e.pins[0].fmt), (0, 768, Some(1)));
-    assert_eq!((e.pins[1].pin_index, e.pins[1].iobs, e.pins[1].fmt), (0, 960, Some(0)));
-    assert_eq!((e.pins[2].pin_index, e.pins[2].iobs, e.pins[2].fmt), (1, 1920, Some(1)));
+    let pins = t.pins_of(e);
+    assert_eq!((pins[0].pin_index, pins[0].iobs, pins[0].fmt), (0, 768, Some(1)));
+    assert_eq!((pins[1].pin_index, pins[1].iobs, pins[1].fmt), (0, 960, Some(0)));
+    assert_eq!((pins[2].pin_index, pins[2].iobs, pins[2].fmt), (1, 1920, Some(1)));
     assert_eq!(t.kind_of_ext(2), ModuleKind::Other);
 }
 
@@ -234,9 +223,14 @@ fn modcfg_ext_pin_refusals() {
     assert_eq!(load(&base_ext(1, 1, vec![pin(0, 1, 0)])).err(), Some(TplgError::DictionaryTooShort { token: AVS_TKN_PIN_FMT_INDEX_U32, entry: 1 }));
     // a pin naming a missing format
     assert_eq!(load(&base_ext(1, 0, vec![pin(0, 1, 5)])).err(), Some(TplgError::IndexOutOfRange { what: "audio format", index: 5, count: 2 }));
-    // too many pins for the fixed storage
-    let many: Vec<Vec<u8>> = (0..9).map(|i| pin(i, 1, 0)).collect();
-    assert_eq!(load(&base_ext(9, 0, many)).err(), Some(TplgError::TooMany { what: "pin formats", count: 9, max: 8 }));
+    // no cap on pins (D10): 9 and 500 parse
+    for n in [9u32, 500] {
+        let many: Vec<Vec<u8>> = (0..n).map(|i| pin(i, 1, 0)).collect();
+        let bytes = base_ext(n, 0, many);
+        let t = load(&bytes).unwrap();
+        assert_eq!(t.modcfgs_ext.as_slice()[2].npins, n);
+        assert_eq!(t.pins_of(&t.modcfgs_ext.as_slice()[2]).len(), n as usize);
+    }
     // no pins and no pin arrays at all: fine (a copier)
     assert!(load(&base_ext(0, 0, vec![])).is_ok());
 }
@@ -316,10 +310,10 @@ fn initial_config_refusals() {
     let mut m = small_manifest();
     m.extend(cat(&[count(AVS_TKN_MANIFEST_NUM_INIT_CONFIGS_U32, 1), words(&[(AVS_TKN_INIT_CONFIG_ID_U32, 5)])]));
     assert!(load(&m).is_err());
-    // too many
+    // a count nothing could hold
     let mut m = small_manifest();
     m.extend(count(AVS_TKN_MANIFEST_NUM_INIT_CONFIGS_U32, 9));
-    assert_eq!(load(&m).err(), Some(TplgError::TooMany { what: "initial configs", count: 9, max: 8 }));
+    assert!(matches!(load(&m).err(), Some(TplgError::DictionaryTooShort { token: AVS_TKN_INIT_CONFIG_ID_U32, .. })));
 }
 
 #[test]

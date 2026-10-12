@@ -187,7 +187,7 @@ fn hw_config_parses_scalars_and_the_i2s_caps() {
     assert_eq!(c.total_phys_mem_pages, 0x40);
     assert_eq!(c.i2s_caps.i2s_version, 0x30000);
     assert_eq!(c.i2s_caps.ctrl_count, 3);
-    assert_eq!(&c.i2s_caps.ctrl_base_addr[..4], &[0x1000, 0x2000, 0x3000, 0]);
+    assert_eq!(&c.i2s_caps.ctrl_base_addr[..], &[0x1000, 0x2000, 0x3000]);
     assert_eq!((c.gateway_count, c.hp_ebb_count, c.lp_ebb_count, c.ebb_size_bytes), (8, 9, 10, 11));
     assert_eq!(c.unrecognized, 1);
 }
@@ -228,12 +228,19 @@ fn hw_config_i2s_caps_refusals() {
     s.extend_from_slice(&dw(1));
     s.extend_from_slice(&dw(2));
     assert_eq!(parse_hw_config(&tlv(AVS_HW_CFG_I2S_CAPS, &s)), Err(IpcError::TlvValueTooShort { tlv_type: 4, need: 20, have: 16 }));
-    // more controllers than the fixed storage: refused by name (the TLV itself would be long enough)
+    // no cap on the controller list (D10): 100 000 controllers parse, the table grows with the firmware's statement
     let mut b = Vec::new();
     b.extend_from_slice(&dw(0x30000));
-    b.extend_from_slice(&dw(17));
-    b.extend_from_slice(&[0u8; 17 * 4]);
-    assert_eq!(parse_hw_config(&tlv(AVS_HW_CFG_I2S_CAPS, &b)), Err(IpcError::TooMany { what: "i2s controllers", count: 17, max: MAX_I2S_CTRL }));
+    b.extend_from_slice(&dw(100_000));
+    b.extend((0..100_000u32).flat_map(|i| i.to_le_bytes()));
+    let c = parse_hw_config(&tlv(AVS_HW_CFG_I2S_CAPS, &b)).unwrap();
+    assert_eq!((c.i2s_caps.ctrl_count, c.i2s_caps.ctrl_base_addr.len(), c.i2s_caps.ctrl_base_addr[99_999]), (100_000, 100_000, 99_999));
+    // a count the TLV cannot hold is refused BEFORE anything is reserved for it
+    let mut lie = Vec::new();
+    lie.extend_from_slice(&dw(0x30000));
+    lie.extend_from_slice(&dw(u32::MAX));
+    lie.extend_from_slice(&[0u8; 16]);
+    assert_eq!(parse_hw_config(&tlv(AVS_HW_CFG_I2S_CAPS, &lie)), Err(IpcError::TlvValueTooShort { tlv_type: 4, need: 4 * u32::MAX as usize + 8, have: 24 }));
     // exactly 16 is fine
     let mut e = Vec::new();
     e.extend_from_slice(&dw(0x30000));

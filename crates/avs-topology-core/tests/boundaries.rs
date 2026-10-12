@@ -6,7 +6,7 @@ use avs_ipc_core::modcfg::AVS_DMA_I2S_LINK_OUTPUT;
 use avs_topology_core::blocks::*;
 use avs_topology_core::error::TplgError;
 use avs_topology_core::model::*;
-use avs_topology_core::pool::Pool;
+use avs_topology_core::grow::{try_fill_default, try_push};
 use avs_topology_core::tokens::*;
 use avs_topology_core::topology::*;
 use avs_topology_core::vendor::*;
@@ -56,34 +56,9 @@ fn load(m: Vec<u8>) -> Result<Topology<'static>, TplgError> {
 }
 
 #[test]
-fn capacities_are_what_the_docs_say() {
-    // this crate's own choices (the file's counts are checked against them), pinned so they cannot drift unseen
-    assert_eq!(
-        (MAX_LIBS, MAX_FMTS, MAX_MODCFGS_BASE, MAX_MODCFGS_EXT, MAX_PINS, MAX_PPLCFGS, MAX_BINDINGS, MAX_CONDPATH_TMPLS),
-        (8, 32, 32, 32, 8, 16, 32, 8)
-    );
-    assert_eq!(
-        (MAX_INIT_CONFIGS, MAX_NHLT_CONFIGS, MAX_TEMPLATES, MAX_PATHS, MAX_PIPELINES, MAX_MODULES, MAX_CONFIG_IDS, MAX_PPL_BINDINGS, MAX_ROUTES, MAX_CONTROLS, MAX_PCMS),
-        (8, 8, 16, 32, 32, 64, 8, 8, 64, 16, 8)
-    );
-    assert_eq!(Topology::SIZE_BOUND, 80 * 1024);
-}
-
-#[test]
-fn every_dictionary_accepts_exactly_its_capacity_and_refuses_one_more() {
-    let ok = load(sized(8, 32, 32, 32, 16, 32)).expect("every dictionary at capacity");
-    assert_eq!((ok.libs.len(), ok.fmts.len(), ok.modcfgs_base.len(), ok.modcfgs_ext.len(), ok.pplcfgs.len(), ok.bindings.len()), (8, 32, 32, 32, 16, 32));
-    // one more in each, in turn (with the other dictionaries kept minimal but valid)
-    let over = |libs, fmts, bases, exts, ppls, binds, what: &'static str, count: u32, max: u32| {
-        let r = load(sized(libs, fmts, bases, exts, ppls, binds));
-        assert_eq!(r.err(), Some(TplgError::TooMany { what, count, max }), "{what}");
-    };
-    over(9, 1, 0, 0, 0, 0, "libraries", 9, 8);
-    over(0, 33, 0, 0, 0, 0, "audio formats", 33, 32);
-    over(0, 1, 33, 0, 0, 0, "module configs (base)", 33, 32);
-    over(0, 1, 0, 33, 0, 0, "module configs (ext)", 33, 32);
-    over(0, 1, 0, 0, 17, 0, "pipeline configs", 17, 16);
-    over(0, 1, 0, 0, 0, 33, "bindings", 33, 32);
+fn no_dictionary_has_a_cap() {
+    let ok = load(sized(80, 320, 320, 320, 160, 320)).expect("ten times the old caps");
+    assert_eq!((ok.libs.len(), ok.fmts.len(), ok.modcfgs_base.len(), ok.modcfgs_ext.len(), ok.pplcfgs.len(), ok.bindings.len()), (80, 320, 320, 320, 160, 320));
 }
 
 #[test]
@@ -91,8 +66,13 @@ fn a_count_uses_all_four_bytes() {
     let mut m = sized(0, 1, 0, 0, 0, 0);
     let pat = [dw(20), dw(WORD), dw(1), dw(AVS_TKN_MANIFEST_NUM_AFMTS_U32)].concat();
     let at = m.windows(pat.len()).position(|w| w == pat).unwrap() + pat.len();
-    m[at..at + 4].copy_from_slice(&dw(0x0A0B_0C0D));
-    assert_eq!(load(m).err(), Some(TplgError::TooMany { what: "audio formats", count: 0x0A0B_0C0D, max: 32 }));
+    for bytes in [dw(0x0000_0100), dw(0x0001_0000), dw(0x0100_0000), dw(0x0A0B_0C0D)] {
+        let mut x = m.clone();
+        x[at..at + 4].copy_from_slice(&bytes);
+        assert!(matches!(load(x).err(), Some(TplgError::DictionaryTooShort { token: AVS_TKN_AFMT_ID_U32, .. })), "{bytes:?}");
+    }
+    m[at..at + 4].copy_from_slice(&dw(1));
+    assert!(load(m).is_ok());
 }
 
 #[test]
@@ -163,7 +143,7 @@ fn init_config_and_nhlt_entry_cuts_have_exact_errors() {
     e[0..4].copy_from_slice(&dw(500));
     assert_eq!(nhlt(e), Some(TplgError::ArrayPastBlock { at: 0, size: 500, block: 28 }));
     // an entry cut inside its header
-    assert!(matches!(nhlt(vec![0; 8]), Some(TplgError::Truncated { .. }) | Some(TplgError::ArrayTooSmall { .. })));
+    assert!(matches!(nhlt(vec![0; 8]), Some(TplgError::DictionaryTooShort { .. }) | Some(TplgError::Truncated { .. }) | Some(TplgError::ArrayTooSmall { .. })));
     // zero-length blobs fill the dictionary and the next entry starts right after
     let mut m = sized(0, 1, 1, 1, 1, 1);
     m.extend(cat(&[
@@ -281,7 +261,7 @@ fn the_pcm_compress_flag_is_read_from_its_own_field() {
 // ---- path -------------------------------------------------------------------------------------------------------------------------
 
 #[test]
-fn config_ids_and_pipeline_bindings_accept_exactly_their_capacity() {
+fn config_ids_and_pipeline_bindings_have_no_cap() {
     let ids = |n: u32| {
         let mut parts = vec![words(&[(AVS_TKN_MOD_ID_U32, 0), (AVS_TKN_MOD_INIT_CONFIG_NUM_IDS_U32, n)])];
         for i in 0..n {
@@ -290,10 +270,14 @@ fn config_ids_and_pipeline_bindings_accept_exactly_their_capacity() {
         let p = cat(&[tmpl_hdr(0, "w"), path_hdr(0, 0, 0), pipeline_hdr(0, 0, 0), cat(&parts)]);
         parse(cat(&[manifest_block(&small_manifest()), block(5, 1, &widget("w", &p, &[]))]))
     };
-    let t = ids(8).unwrap();
-    assert_eq!(t.modules.as_slice()[0].nconfig_ids, 8);
-    assert_eq!(&t.modules.as_slice()[0].config_ids, &[100, 101, 102, 103, 104, 105, 106, 107]);
-    assert_eq!(ids(9).err(), Some(TplgError::TooMany { what: "module config ids", count: 9, max: 8 }));
+    for n in [8u32, 9, 255] {
+        let t = ids(n).unwrap();
+        let m = t.modules.as_slice()[0];
+        assert_eq!(m.nconfig_ids, n);
+        assert_eq!(t.config_ids_of(&m), (100..100 + n).collect::<Vec<_>>().as_slice());
+    }
+    // the count token is a byte (`AVS_TKN_MOD_INIT_CONFIG_NUM_IDS_U32` is parsed by `avs_parse_byte_token`): 256 is refused
+    assert!(matches!(ids(256).err(), Some(TplgError::ValueTooWide { bits: 8, .. })));
     let binds = |n: u32| {
         let mut parts = vec![tmpl_hdr(0, "w"), path_hdr(0, 0, 0), pipeline_hdr(0, 0, n), module(0, 0, 0, 0)];
         for _ in 0..n {
@@ -301,9 +285,11 @@ fn config_ids_and_pipeline_bindings_accept_exactly_their_capacity() {
         }
         parse(cat(&[manifest_block(&small_manifest()), block(5, 1, &widget("w", &cat(&parts), &[]))]))
     };
-    let t = binds(8).unwrap();
-    assert_eq!(t.pipelines.as_slice()[0].nbindings, 8);
-    assert_eq!(binds(9).err(), Some(TplgError::TooMany { what: "pipeline bindings", count: 9, max: 8 }));
+    for n in [8u32, 9, 1000] {
+        let t = binds(n).unwrap();
+        assert_eq!(t.pipelines.as_slice()[0].nbindings, n);
+        assert_eq!(t.binding_ids_of(&t.pipelines.as_slice()[0]).len(), n as usize);
+    }
 }
 
 #[test]
@@ -320,26 +306,15 @@ fn a_pipeline_after_an_unmatched_module_section_starts_cleanly() {
 // ---- pool -------------------------------------------------------------------------------------------------------------------------
 
 #[test]
-fn pool_semantics() {
-    let mut p: Pool<u32, 3> = Pool::new();
-    assert!(p.is_empty());
-    assert_eq!(p.len(), 0);
-    assert_eq!(p.push("x", 10), Ok(0));
-    assert_eq!(p.push("x", 11), Ok(1));
-    assert!(!p.is_empty());
-    assert_eq!(p.as_slice(), &[10, 11]);
-    assert_eq!(p.get(1), Some(&11));
-    assert_eq!(p.get(2), None);
-    assert!(p.get_mut(1).is_some());
-    assert!(p.get_mut(2).is_none(), "an index equal to len is not a slot");
-    assert_eq!(p.push("x", 12), Ok(2));
-    assert_eq!(p.push("things", 13), Err(TplgError::TooMany { what: "things", count: 4, max: 3 }));
-    let mut q: Pool<u32, 3> = Pool::new();
-    assert_eq!(q.reserve_default("q", 3), Ok(()));
-    assert_eq!(q.as_slice(), &[0, 0, 0]);
-    assert_eq!(q.reserve_default("q", 4), Err(TplgError::TooMany { what: "q", count: 4, max: 3 }));
-    q.reserve_default("q", 0).unwrap();
-    assert!(q.is_empty());
+fn growth_helpers() {
+    let mut v: Vec<u32> = Vec::new();
+    assert_eq!(try_push(&mut v, "x", 10), Ok(0));
+    assert_eq!(try_push(&mut v, "x", 11), Ok(1));
+    assert_eq!(v, [10, 11]);
+    try_fill_default(&mut v, "x", 4).unwrap();
+    assert_eq!(v, [0, 0, 0, 0]);
+    try_fill_default(&mut v, "x", 0).unwrap();
+    assert!(v.is_empty());
 }
 
 // ---- vendor -----------------------------------------------------------------------------------------------------------------------

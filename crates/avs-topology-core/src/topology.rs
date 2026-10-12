@@ -6,7 +6,7 @@
 use crate::blocks::{self, Control, Pcm, Route};
 use crate::error::TplgError;
 use crate::model::*;
-use crate::pool::Pool;
+use alloc::vec::Vec;
 use crate::vendor::Name;
 use avs_ipc_core::modcfg::{
     AudioFormat, AVS_AEC_MOD_UUID, AVS_ASRC_MOD_UUID, AVS_COPIER_MOD_UUID, AVS_GAIN_MOD_UUID, AVS_INTELWOV_MOD_UUID, AVS_KPBUFF_MOD_UUID, AVS_MICSEL_MOD_UUID,
@@ -72,26 +72,32 @@ pub fn module_kind(uuid: &[u8; 16]) -> ModuleKind {
     }
 }
 
-/// A parsed AVS topology. It is large (about 60 KiB, see `Topology::SIZE_BOUND`); construct it where the caller has room.
+/// A parsed AVS topology. Every table grows with the file (see the crate docs); nothing is allocated until a file is loaded.
 pub struct Topology<'a> {
     pub header: Header,
-    pub libs: Pool<Library, MAX_LIBS>,
-    pub fmts: Pool<AudioFormat, MAX_FMTS>,
-    pub modcfgs_base: Pool<ModCfgBase, MAX_MODCFGS_BASE>,
-    pub modcfgs_ext: Pool<ModCfgExt, MAX_MODCFGS_EXT>,
-    pub pplcfgs: Pool<PplCfg, MAX_PPLCFGS>,
-    pub bindings: Pool<Binding, MAX_BINDINGS>,
-    pub condpath_tmpls: Pool<PathTemplate, MAX_CONDPATH_TMPLS>,
-    pub init_configs: Pool<InitConfig<'a>, MAX_INIT_CONFIGS>,
-    pub nhlt_configs: Pool<NhltConfig<'a>, MAX_NHLT_CONFIGS>,
+    pub libs: Vec<Library>,
+    pub fmts: Vec<AudioFormat>,
+    pub modcfgs_base: Vec<ModCfgBase>,
+    pub modcfgs_ext: Vec<ModCfgExt>,
+    pub pplcfgs: Vec<PplCfg>,
+    pub bindings: Vec<Binding>,
+    pub condpath_tmpls: Vec<PathTemplate>,
+    pub init_configs: Vec<InitConfig<'a>>,
+    pub nhlt_configs: Vec<NhltConfig<'a>>,
     /// The path templates of the widgets, in file order (`tplg->path_tmpl_list`).
-    pub templates: Pool<PathTemplate, MAX_TEMPLATES>,
-    pub paths: Pool<Path, MAX_PATHS>,
-    pub pipelines: Pool<Pipeline, MAX_PIPELINES>,
-    pub modules: Pool<Module, MAX_MODULES>,
-    pub routes: Pool<Route, MAX_ROUTES>,
-    pub controls: Pool<Control, MAX_CONTROLS>,
-    pub pcms: Pool<Pcm, MAX_PCMS>,
+    pub templates: Vec<PathTemplate>,
+    pub paths: Vec<Path>,
+    pub pipelines: Vec<Pipeline>,
+    pub modules: Vec<Module>,
+    pub routes: Vec<Route>,
+    pub controls: Vec<Control>,
+    pub pcms: Vec<Pcm>,
+    /// Pin formats of all module configs, in order (`ModCfgExt::first_pin`).
+    pub pins: Vec<PinFormat>,
+    /// Init-config ids of all modules (`Module::first_config_id`).
+    pub config_ids: Vec<u32>,
+    /// Binding ids of all pipelines (`Pipeline::first_binding`).
+    pub pipeline_bindings: Vec<u16>,
     /// DAPM widgets in the file, with or without private data.
     pub widgets_seen: u32,
     pub(crate) counts: Counts,
@@ -99,28 +105,28 @@ pub struct Topology<'a> {
 }
 
 impl<'a> Topology<'a> {
-    /// A generous bound on `size_of::<Topology>()`, pinned by a test so storage cannot grow unnoticed.
-    pub const SIZE_BOUND: usize = 80 * 1024;
-
     pub fn new() -> Self {
         Self {
             header: Header::default(),
-            libs: Pool::new(),
-            fmts: Pool::new(),
-            modcfgs_base: Pool::new(),
-            modcfgs_ext: Pool::new(),
-            pplcfgs: Pool::new(),
-            bindings: Pool::new(),
-            condpath_tmpls: Pool::new(),
-            init_configs: Pool::new(),
-            nhlt_configs: Pool::new(),
-            templates: Pool::new(),
-            paths: Pool::new(),
-            pipelines: Pool::new(),
-            modules: Pool::new(),
-            routes: Pool::new(),
-            controls: Pool::new(),
-            pcms: Pool::new(),
+            libs: Vec::new(),
+            fmts: Vec::new(),
+            modcfgs_base: Vec::new(),
+            modcfgs_ext: Vec::new(),
+            pplcfgs: Vec::new(),
+            bindings: Vec::new(),
+            condpath_tmpls: Vec::new(),
+            init_configs: Vec::new(),
+            nhlt_configs: Vec::new(),
+            templates: Vec::new(),
+            paths: Vec::new(),
+            pipelines: Vec::new(),
+            modules: Vec::new(),
+            routes: Vec::new(),
+            controls: Vec::new(),
+            pcms: Vec::new(),
+            pins: Vec::new(),
+            config_ids: Vec::new(),
+            pipeline_bindings: Vec::new(),
             widgets_seen: 0,
             counts: Counts::default(),
             have_manifest: false,
@@ -173,7 +179,22 @@ impl<'a> Topology<'a> {
     }
     /// The bindings a pipeline lists (`pipeline->bindings`), resolved.
     pub fn bindings_of<'t>(&'t self, p: &'t Pipeline) -> impl Iterator<Item = &'t Binding> + 't {
-        p.bindings[..p.nbindings as usize].iter().filter_map(move |&i| self.bindings.get(i as usize))
+        self.binding_ids_of(p).iter().filter_map(move |&i| self.bindings.get(i as usize))
+    }
+    /// The pins of a module config (input pins first).
+    pub fn pins_of(&self, e: &ModCfgExt) -> &[PinFormat] {
+        let a = e.first_pin as usize;
+        self.pins.get(a..a + e.npins as usize).unwrap_or(&[])
+    }
+    /// The init-config ids of a module.
+    pub fn config_ids_of(&self, m: &Module) -> &[u32] {
+        let a = m.first_config_id as usize;
+        self.config_ids.get(a..a + m.nconfig_ids as usize).unwrap_or(&[])
+    }
+    /// The binding ids a pipeline lists, unresolved.
+    pub fn binding_ids_of(&self, p: &Pipeline) -> &[u16] {
+        let a = p.first_binding as usize;
+        self.pipeline_bindings.get(a..a + p.nbindings as usize).unwrap_or(&[])
     }
     /// What kind of module a module instance of the topology is: the UUID of its `cfg_ext`.
     pub fn kind_of(&self, m: &Module) -> Option<ModuleKind> {

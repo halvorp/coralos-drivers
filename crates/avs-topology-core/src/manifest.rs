@@ -9,6 +9,7 @@
 //! longer than what is left, and, in the NHLT dictionary, the remaining-size
 //! bookkeeping (Linux forgets to subtract the offset of the NHLT header, topology.c:2118-2121).
 use crate::error::TplgError;
+use crate::grow::{try_fill_default, try_push};
 use crate::model::*;
 use crate::tokens::*;
 use crate::topology::{InitConfig, NhltConfig, Topology};
@@ -64,9 +65,12 @@ where
     Ok(())
 }
 
-fn cap(what: &'static str, n: u32, max: usize) -> Result<(), TplgError> {
-    if n as usize > max {
-        return Err(TplgError::TooMany { what, count: n, max: max as u32 });
+/// A dictionary of `n` entries needs at least one 12-byte tuple array each: a count the block cannot possibly hold is refused
+/// before anything is reserved for it (a lying `n` of four billion must not become a four-billion-entry reservation).
+pub(crate) fn check_count(n: u32, block: u32, entry_token: u32) -> Result<(), TplgError> {
+    let most = block / ARRAY_HEADER_SIZE as u32;
+    if n > most {
+        return Err(TplgError::DictionaryTooShort { token: entry_token, entry: most });
     }
     Ok(())
 }
@@ -110,12 +114,17 @@ impl<'a> Topology<'a> {
             if npins == 0 {
                 return Err(TplgError::NoPins);
             }
-            cap("pin formats", npins, MAX_PINS)?;
-            let pins = &mut cfg.pins;
-            for_entries(tail(e, esize)?, rest, npins, AVS_TKN_PIN_FMT_INDEX_U32, |k, pe| {
-                parse_tokens(&mut PinSink { pin: &mut pins[k as usize], counts }, pe)
+            check_count(npins, rest, AVS_TKN_PIN_FMT_INDEX_U32)?;
+            let first = self.pins.len();
+            self.pins.try_reserve(npins as usize).map_err(|_| TplgError::OutOfMemory { what: "pin formats" })?;
+            let pins = &mut self.pins;
+            for_entries(tail(e, esize)?, rest, npins, AVS_TKN_PIN_FMT_INDEX_U32, |_, pe| {
+                let mut pin = PinFormat::default();
+                parse_tokens(&mut PinSink { pin: &mut pin, counts }, pe)?;
+                try_push(pins, "pin formats", pin).map(|_| ())
             })?;
-            cfg.npins = npins as u8;
+            cfg.first_pin = first as u32;
+            cfg.npins = npins;
         }
         Ok(())
     }
@@ -138,8 +147,8 @@ impl<'a> Topology<'a> {
         // libraries
         let off = find(tuples, remaining, AVS_TKN_MANIFEST_NUM_AFMTS_U32)?;
         let (n, hs) = dict_header(tuples, off, AVS_TKN_MANIFEST_NUM_LIBRARIES_U32)?;
-        cap("libraries", n, MAX_LIBS)?;
-        self.libs.reserve_default("libraries", n)?;
+        check_count(n, sub(off, hs)?, AVS_TKN_LIBRARY_ID_U32)?;
+        try_fill_default(&mut self.libs, "libraries", n)?;
         let libs = &mut self.libs;
         for_entries(tail(tuples, hs)?, sub(off, hs)?, n, AVS_TKN_LIBRARY_ID_U32, |i, e| parse_tokens(libs.get_mut(i as usize).ok_or(TplgError::Truncated { what: "library", need: 0, have: 0 })?, e))?;
         remaining = sub(remaining, off)?;
@@ -148,8 +157,8 @@ impl<'a> Topology<'a> {
         // audio formats
         let off = find(tuples, remaining, AVS_TKN_MANIFEST_NUM_MODCFGS_BASE_U32)?;
         let (n, hs) = dict_header(tuples, off, AVS_TKN_MANIFEST_NUM_AFMTS_U32)?;
-        cap("audio formats", n, MAX_FMTS)?;
-        self.fmts.reserve_default("audio formats", n)?;
+        check_count(n, sub(off, hs)?, AVS_TKN_AFMT_ID_U32)?;
+        try_fill_default(&mut self.fmts, "audio formats", n)?;
         self.counts.fmts = n;
         let fmts = &mut self.fmts;
         for_entries(tail(tuples, hs)?, sub(off, hs)?, n, AVS_TKN_AFMT_ID_U32, |i, e| {
@@ -162,8 +171,8 @@ impl<'a> Topology<'a> {
         // module configs, base
         let off = find(tuples, remaining, AVS_TKN_MANIFEST_NUM_MODCFGS_EXT_U32)?;
         let (n, hs) = dict_header(tuples, off, AVS_TKN_MANIFEST_NUM_MODCFGS_BASE_U32)?;
-        cap("module configs (base)", n, MAX_MODCFGS_BASE)?;
-        self.modcfgs_base.reserve_default("module configs (base)", n)?;
+        check_count(n, sub(off, hs)?, AVS_TKN_MODCFG_BASE_ID_U32)?;
+        try_fill_default(&mut self.modcfgs_base, "module configs (base)", n)?;
         self.counts.modcfgs_base = n;
         let base = &mut self.modcfgs_base;
         for_entries(tail(tuples, hs)?, sub(off, hs)?, n, AVS_TKN_MODCFG_BASE_ID_U32, |i, e| parse_tokens(base.get_mut(i as usize).ok_or(TplgError::Truncated { what: "modcfg base", need: 0, have: 0 })?, e))?;
@@ -173,8 +182,8 @@ impl<'a> Topology<'a> {
         // module configs, ext
         let off = find(tuples, remaining, AVS_TKN_MANIFEST_NUM_PPLCFGS_U32)?;
         let (n, hs) = dict_header(tuples, off, AVS_TKN_MANIFEST_NUM_MODCFGS_EXT_U32)?;
-        cap("module configs (ext)", n, MAX_MODCFGS_EXT)?;
-        self.modcfgs_ext.reserve_default("module configs (ext)", n)?;
+        check_count(n, sub(off, hs)?, AVS_TKN_MODCFG_EXT_ID_U32)?;
+        try_fill_default(&mut self.modcfgs_ext, "module configs (ext)", n)?;
         self.counts.modcfgs_ext = n;
         let mut block = sub(off, hs)?;
         let mut cur = tail(tuples, hs)?;
@@ -193,8 +202,8 @@ impl<'a> Topology<'a> {
         // pipeline configs
         let off = find(tuples, remaining, AVS_TKN_MANIFEST_NUM_BINDINGS_U32)?;
         let (n, hs) = dict_header(tuples, off, AVS_TKN_MANIFEST_NUM_PPLCFGS_U32)?;
-        cap("pipeline configs", n, MAX_PPLCFGS)?;
-        self.pplcfgs.reserve_default("pipeline configs", n)?;
+        check_count(n, sub(off, hs)?, AVS_TKN_PPLCFG_ID_U32)?;
+        try_fill_default(&mut self.pplcfgs, "pipeline configs", n)?;
         self.counts.pplcfgs = n;
         let ppl = &mut self.pplcfgs;
         for_entries(tail(tuples, hs)?, sub(off, hs)?, n, AVS_TKN_PPLCFG_ID_U32, |i, e| parse_tokens(ppl.get_mut(i as usize).ok_or(TplgError::Truncated { what: "pplcfg", need: 0, have: 0 })?, e))?;
@@ -204,8 +213,8 @@ impl<'a> Topology<'a> {
         // bindings
         let off = find(tuples, remaining, AVS_TKN_MANIFEST_NUM_CONDPATH_TMPLS_U32)?;
         let (n, hs) = dict_header(tuples, off, AVS_TKN_MANIFEST_NUM_BINDINGS_U32)?;
-        cap("bindings", n, MAX_BINDINGS)?;
-        self.bindings.reserve_default("bindings", n)?;
+        check_count(n, sub(off, hs)?, AVS_TKN_BINDING_ID_U32)?;
+        try_fill_default(&mut self.bindings, "bindings", n)?;
         self.counts.bindings = n;
         let bindings = &mut self.bindings;
         for_entries(tail(tuples, hs)?, sub(off, hs)?, n, AVS_TKN_BINDING_ID_U32, |i, e| {
@@ -238,8 +247,8 @@ impl<'a> Topology<'a> {
     /// `avs_tplg_parse_condpath_templates` (topology.c:1604-1652).
     fn load_condpaths(&mut self, tuples: &'a [u8], block: u32) -> Result<(), TplgError> {
         let (n, hs) = dict_header(tuples, block, AVS_TKN_MANIFEST_NUM_CONDPATH_TMPLS_U32)?;
-        cap("conditional path templates", n, MAX_CONDPATH_TMPLS)?;
-        self.condpath_tmpls.reserve_default("conditional path templates", n)?;
+        check_count(n, sub(block, hs)?, AVS_TKN_CONDPATH_TMPL_ID_U32)?;
+        try_fill_default(&mut self.condpath_tmpls, "conditional path templates", n)?;
         let mut left = sub(block, hs)?;
         let mut cur = tail(tuples, hs)?;
         for i in 0..n {
@@ -262,8 +271,8 @@ impl<'a> Topology<'a> {
     /// Returns how many bytes of the manifest it consumed.
     fn load_init_configs(&mut self, tuples: &'a [u8], block: u32) -> Result<u32, TplgError> {
         let (n, hs) = dict_header(tuples, block, AVS_TKN_MANIFEST_NUM_INIT_CONFIGS_U32)?;
-        cap("initial configs", n, MAX_INIT_CONFIGS)?;
-        self.init_configs.reserve_default("initial configs", n)?;
+        check_count(n, sub(block, hs)?, AVS_TKN_INIT_CONFIG_ID_U32)?;
+        try_fill_default(&mut self.init_configs, "initial configs", n)?;
         let mut offset = hs;
         let mut left = sub(block, hs)?;
         let mut cur: &'a [u8] = tail(tuples, hs)?;
@@ -307,8 +316,8 @@ impl<'a> Topology<'a> {
     /// capabilities.
     fn load_nhlt_configs(&mut self, tuples: &'a [u8], block: u32) -> Result<(), TplgError> {
         let (n, hs) = dict_header(tuples, block, AVS_TKN_MANIFEST_NUM_NHLT_CONFIGS_U32)?;
-        cap("NHLT configs", n, MAX_NHLT_CONFIGS)?;
-        self.nhlt_configs.reserve_default("NHLT configs", n)?;
+        check_count(n, sub(block, hs)?, AVS_TKN_NHLT_CONFIG_ID_U32)?;
+        try_fill_default(&mut self.nhlt_configs, "NHLT configs", n)?;
         self.counts.nhlt_configs = n;
         let mut left = sub(block, hs)?;
         let mut cur: &'a [u8] = tail(tuples, hs)?;

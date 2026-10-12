@@ -22,8 +22,8 @@ pub enum IpcError {
     EmptyPayload { what: &'static str },
     /// A TLV value is shorter than the scalar it carries.
     TlvValueTooShort { tlv_type: u32, need: usize, have: usize },
-    /// A count in a payload is larger than this port's fixed storage.
-    TooMany { what: &'static str, count: usize, max: usize },
+    /// A table could not grow (DECISIONS.md D10); raised before anything is half-built.
+    OutOfMemory { what: &'static str },
     /// A large-config total does not fit the 20-bit `data_off_size`.
     LargeConfigTooBig { total: usize },
     /// The ROM-message path could not un-stall the main core (ipc.c:515).
@@ -44,7 +44,7 @@ impl IpcError {
             IpcError::Truncated { .. } => "truncated",
             IpcError::EmptyPayload { .. } => "empty-payload",
             IpcError::TlvValueTooShort { .. } => "tlv-value-too-short",
-            IpcError::TooMany { .. } => "too-many",
+            IpcError::OutOfMemory { .. } => "out-of-memory",
             IpcError::LargeConfigTooBig { .. } => "large-config-too-big",
             IpcError::UnstallFailed => "unstall-failed",
             IpcError::NotifyPayloadTooBig { .. } => "notify-payload-too-big",

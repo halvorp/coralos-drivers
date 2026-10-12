@@ -1,35 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The typed topology: `struct avs_tplg` and everything it owns (topology.h:17-197), in fixed storage.
 //!
-//! Linux allocates each object and links them with pointers and lists. Here every collection is a fixed array with a NAMED
-//! capacity ([`TplgError::TooMany`] when a file exceeds it), pointers are indices (`Option<u16>`: `None` is a NULL pointer),
-//! and the list hierarchy (template -> path -> pipeline -> module) is flattened into pools with `first`/`count` ranges that
-//! preserve list order. The tokens of each object are applied by its [`Sink`] impl, which is the port of that object's
+//! Linux allocates each object and links them with pointers and lists. Here every collection is a growable `Vec` (no capacity: the
+//! file decides, [`crate::grow`]), pointers are indices (`Option<u16>`: `None` is a NULL pointer; an index names a table the
+//! file declared, so a file with more than 65535 of one kind is refused), and the list hierarchy (template -> path -> pipeline ->
+//! module, plus pins, config ids and binding ids) is flattened into tables with `first`/`count` ranges that preserve list order. The tokens of each object are applied by its [`Sink`] impl, which is the port of that object's
 //! `avs_tplg_token_parser[]` table.
 use crate::error::TplgError;
 use crate::tokens::*;
 use crate::vendor::{Name, Sink};
 use avs_ipc_core::modcfg::{AudioFormat, AVS_COEFF_CHANNELS_MAX};
-
-pub const MAX_LIBS: usize = 8;
-pub const MAX_FMTS: usize = 32;
-pub const MAX_MODCFGS_BASE: usize = 32;
-pub const MAX_MODCFGS_EXT: usize = 32;
-pub const MAX_PINS: usize = 8;
-pub const MAX_PPLCFGS: usize = 16;
-pub const MAX_BINDINGS: usize = 32;
-pub const MAX_CONDPATH_TMPLS: usize = 8;
-pub const MAX_INIT_CONFIGS: usize = 8;
-pub const MAX_NHLT_CONFIGS: usize = 8;
-pub const MAX_TEMPLATES: usize = 16;
-pub const MAX_PATHS: usize = 32;
-pub const MAX_PIPELINES: usize = 32;
-pub const MAX_MODULES: usize = 64;
-pub const MAX_CONFIG_IDS: usize = 8;
-pub const MAX_PPL_BINDINGS: usize = 8;
-pub const MAX_ROUTES: usize = 64;
-pub const MAX_CONTROLS: usize = 16;
-pub const MAX_PCMS: usize = 8;
 
 /// An index into one of the topology's arrays; `None` is Linux's NULL pointer.
 pub type Idx = Option<u16>;
@@ -54,7 +34,8 @@ pub struct Counts {
 }
 
 fn index(what: &'static str, value: u32, count: u32) -> Result<Idx, TplgError> {
-    if value >= count {
+    // `Idx` is 16 bits wide: an index the width cannot carry names nothing (the dictionaries themselves are unbounded)
+    if value >= count || value > u16::MAX as u32 {
         return Err(TplgError::IndexOutOfRange { what, index: value, count });
     }
     Ok(Some(value as u16))
@@ -292,8 +273,9 @@ pub struct ModCfgExt {
     pub type_uuid: [u8; 16],
     pub num_input_pins: u16,
     pub num_output_pins: u16,
-    pub pins: [PinFormat; MAX_PINS],
-    pub npins: u8,
+    /// This config's pins are `Topology::pins[first_pin .. first_pin + npins]`, input pins first.
+    pub first_pin: u32,
+    pub npins: u32,
     pub copier: CopierExt,
     pub whm: WhmExt,
     pub updown_mix: UpdownMixExt,
@@ -482,8 +464,9 @@ pub struct Module {
     pub cfg_ext: Idx,
     pub ctl_id: u32,
     pub num_config_ids: u32,
-    pub config_ids: [u32; MAX_CONFIG_IDS],
-    pub nconfig_ids: u8,
+    /// This module's init-config ids are `Topology::config_ids[first_config_id .. first_config_id + nconfig_ids]`.
+    pub first_config_id: u32,
+    pub nconfig_ids: u32,
     pub nhlt_config: Idx,
 }
 
@@ -518,10 +501,11 @@ pub struct Pipeline {
     pub cfg: Idx,
     /// `num_bindings` as the pipeline header states it.
     pub num_bindings: u32,
-    pub bindings: [u16; MAX_PPL_BINDINGS],
-    pub nbindings: u8,
-    pub first_module: u16,
-    pub nmodules: u16,
+    /// This pipeline's binding ids are `Topology::pipeline_bindings[first_binding .. first_binding + nbindings]`.
+    pub first_binding: u32,
+    pub nbindings: u32,
+    pub first_module: u32,
+    pub nmodules: u32,
 }
 
 pub struct PipelineSink<'a> {
@@ -548,8 +532,8 @@ pub struct Path {
     pub be_fmt: Idx,
     pub source_path_id: u32,
     pub sink_path_id: u32,
-    pub first_pipeline: u16,
-    pub npipelines: u16,
+    pub first_pipeline: u32,
+    pub npipelines: u32,
 }
 
 /// Which token table a path is parsed with: `path_parsers` (widget templates) or `condpath_parsers` (conditional paths).
@@ -594,8 +578,8 @@ pub struct PathTemplate {
     pub widget_name: Name,
     pub source: PathTemplateId,
     pub sink: PathTemplateId,
-    pub first_path: u16,
-    pub npaths: u16,
+    pub first_path: u32,
+    pub npaths: u32,
 }
 
 pub struct TemplateSink<'a> {

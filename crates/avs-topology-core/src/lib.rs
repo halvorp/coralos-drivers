@@ -15,19 +15,26 @@
 //! `GPL-2.0-only`; this port is distributed under GPL-2.0-only.
 //!
 //! The crate parses bytes the caller already holds. It owns no buffer, allocates nothing, performs no I/O. Every count in a file is
-//! checked against a NAMED capacity ([`model`]), every offset against its block, and every refusal has a name ([`error`]).
+//! checked against what its block can hold, every offset against its block, and every refusal has a name ([`error`]).
 //! A failed load leaves the [`topology::Topology`] unusable.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
+// NO COMPILE-TIME CAP ON WHAT A FILE DECIDES (owner 2026-10-12, RUNTIME-TABLES-HAVE-NO-CAP; DECISIONS.md D10): every table a topology file
+// populates - libraries, formats, module configs, pins, pipeline configs, bindings, templates, paths, pipelines, modules, config ids,
+// routes, controls, PCMs, initial/NHLT configs - is an `alloc` Vec grown with `try_reserve` ([`grow`]); exhaustion is the named
+// refusal `TplgError::OutOfMemory`. What stays fixed is fixed by the ABI and says so where it is declared (`vendor::NAME_LEN`, the
+// tuple element sizes). Hence `alloc` here, as PORT_CONVENTIONS section 7 asks to be justified.
+extern crate alloc;
+
 pub mod blocks;
 pub mod error;
+pub mod grow;
 pub mod manifest;
 pub mod model;
 pub mod nhlt;
 pub mod path;
-pub mod pool;
 pub mod tokens;
 pub mod topology;
 pub mod vendor;

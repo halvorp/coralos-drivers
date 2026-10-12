@@ -45,8 +45,8 @@ pub enum TplgError {
     DictionaryTooShort { token: u32, entry: u32 },
     /// An index token names an object that does not exist (`AVS_DEFINE_PTR_PARSER`, topology.c:340-342).
     IndexOutOfRange { what: &'static str, index: u32, count: u32 },
-    /// A count in the file is larger than this port's fixed storage.
-    TooMany { what: &'static str, count: u32, max: u32 },
+    /// A table could not grow (DECISIONS.md D10): raised before the entry exists, nothing half-built.
+    OutOfMemory { what: &'static str },
     /// A byte/short token carries a value that does not fit. Linux truncates (topology.c:152-172).
     ValueTooWide { token: u32, value: u32, bits: u32 },
     /// A module-config-ext with generic pins states zero pins but is followed by pin formats (topology.c:983-984).
@@ -93,7 +93,7 @@ impl TplgError {
             TplgError::BadDictionaryHeader { .. } => "bad-dictionary-header",
             TplgError::DictionaryTooShort { .. } => "dictionary-too-short",
             TplgError::IndexOutOfRange { .. } => "index-out-of-range",
-            TplgError::TooMany { .. } => "too-many",
+            TplgError::OutOfMemory { .. } => "out-of-memory",
             TplgError::ValueTooWide { .. } => "value-too-wide",
             TplgError::NoPins => "no-pins",
             TplgError::PipelineWithoutModule => "pipeline-without-module",

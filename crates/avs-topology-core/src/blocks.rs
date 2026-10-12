@@ -5,6 +5,7 @@
 //! A file is a sequence of blocks, each `snd_soc_tplg_hdr` + `payload_size` bytes. `snd_soc_tplg_component_load` walks the whole
 //! file once per pass, loading only the blocks of that pass, so the manifest (pass 0) is loaded before any widget (pass 3).
 use crate::error::TplgError;
+use crate::grow::try_push;
 use crate::model::{PathKind, PathTemplate, SspBinding};
 use crate::topology::Topology;
 use crate::vendor::*;
@@ -267,7 +268,7 @@ fn load_control_at(t: &mut Topology<'_>, body: &[u8], p: usize, widget: Option<u
     if priv_size > 0 {
         parse_tokens(&mut crate::model::ControlIdSink { id: &mut c.id }, &body[p + fixed..end])?;
     }
-    t.controls.push("controls", c)?;
+    try_push(&mut t.controls, "controls", c)?;
     Ok(end)
 }
 
@@ -302,7 +303,7 @@ fn load_widgets<'a>(t: &mut Topology<'a>, h: &BlockHeader, body: &'a [u8], ssp: 
         if priv_size > 0 {
             let mut tmpl = PathTemplate { widget_name: rename(ssp, name)?, ..PathTemplate::default() };
             t.parse_path_template(&body[p + WIDGET_SIZE..priv_end], &mut tmpl, PathKind::Plain)?;
-            t.templates.push("path templates", tmpl)?;
+            try_push(&mut t.templates, "path templates", tmpl)?;
         }
         p = priv_end;
         for _ in 0..num_kcontrols {
@@ -325,8 +326,7 @@ fn load_pcms(t: &mut Topology<'_>, h: &BlockHeader, body: &[u8]) -> Result<(), T
         }
         let priv_size = rd32(body, p + PCM_SIZE - 4) as usize;
         let end = (p + PCM_SIZE).checked_add(priv_size).filter(|&e| e <= body.len()).ok_or(TplgError::Truncated { what: "pcm private data", need: (p + PCM_SIZE).saturating_add(priv_size), have: body.len() })?;
-        t.pcms.push(
-            "pcms",
+        try_push(&mut t.pcms, "pcms",
             Pcm {
                 pcm_name: name_at(body, p + 4)?,
                 dai_name: name_at(body, p + 48)?,
@@ -359,7 +359,7 @@ fn load_graph(t: &mut Topology<'_>, h: &BlockHeader, body: &[u8], ssp: Option<Ss
             control: if control.is_empty() { control } else { rename(ssp, control)? },
             source: rename(ssp, source)?,
         };
-        t.routes.push("routes", r)?;
+        try_push(&mut t.routes, "routes", r)?;
     }
     Ok(())
 }

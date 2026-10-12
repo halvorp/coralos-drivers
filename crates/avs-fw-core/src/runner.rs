@@ -6,7 +6,9 @@ use crate::effect::*;
 use crate::error::FwError;
 use crate::programs;
 
-/// Steps one program can hold. Every builder in [`programs`] is tested to fit.
+/// Steps one program can hold. FIXED ON PURPOSE (DECISIONS.md D10 allows it): a [`Program`] is a boot SEQUENCE whose length this crate
+/// writes down (the longest, `basefw_pre`, is 24 steps), not a table that tracks a population clients or files drive. Every builder
+/// in [`programs`] is tested to fit and an overflowing one is refused at construction.
 pub const PROGRAM_CAP: usize = 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

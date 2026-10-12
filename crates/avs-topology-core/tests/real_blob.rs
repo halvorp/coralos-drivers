@@ -99,10 +99,10 @@ fn da7219_tplg_the_headset_codec_on_ssp1() {
     // front ends bind to back ends: ssp1c_fe -> binding 0 (template 1), ssp1p_fe -> binding 1 (template 3)
     let fe_c = t.template_by_widget(b"ssp1c_fe").unwrap();
     let ppl = t.pipelines_of(&t.paths_of(fe_c)[0])[0];
-    assert_eq!(&ppl.bindings[..1], &[0]);
+    assert_eq!(t.binding_ids_of(&ppl), &[0]);
     let fe_p = t.template_by_widget(b"ssp1p_fe").unwrap();
     let ppl = t.pipelines_of(&t.paths_of(fe_p)[0])[0];
-    assert_eq!(&ppl.bindings[..1], &[1]);
+    assert_eq!(t.binding_ids_of(&ppl), &[1]);
     // the headphone back end copier writes to SSP1 through the I2S output gateway at 32-bit container
     let be_p = t.template_by_widget(b"ssp1p_be").unwrap();
     let m = t.modules_of(&t.pipelines_of(&t.paths_of(be_p)[0])[0])[0];
