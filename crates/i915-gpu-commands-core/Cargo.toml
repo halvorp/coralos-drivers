@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# The ONE home of the GPU command-stream encodings of the Kaby Lake i915 port: drivers/gpu/drm/i915/gt/intel_gpu_commands.h
+# (MI_*, PIPE_CONTROL, the 3D/blitter headers a Gen9 ring uses). Original copyright: Intel Corporation.
+[package]
+name = "i915-gpu-commands-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "i915 GPU command opcodes (intel_gpu_commands.h): MI_*, PIPE_CONTROL, GFX_OP_*, blitter headers - one definition each"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[workspace]
