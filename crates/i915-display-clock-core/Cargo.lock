@@ -18,7 +18,15 @@ name = "i915-display-clock-core"
 version = "0.1.0"
 dependencies = [
  "i915-common-core",
+ "i915-gt-regs-core",
  "i915-kbl-display-core",
+]
+
+[[package]]
+name = "i915-gt-regs-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
 ]
 
 [[package]]

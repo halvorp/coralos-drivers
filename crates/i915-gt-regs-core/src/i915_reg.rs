@@ -71,3 +71,49 @@ pub const fn gen8_gt_iir(which: u32) -> Reg {
 pub const fn gen8_gt_ier(which: u32) -> Reg {
     Reg::new(0x4430c + 0x10 * which)
 }
+
+// ---- Fence registers and the stolen-memory reservation (moved from i915-memory-core, sentinel audit 2026-10-12) ----------
+
+/// Fence registers, Gen6+ layout (`i965_write_fence_reg`, intel_ggtt_fencing.c:61).
+pub const FENCE_REG_GEN6_BASE: u32 = 0x100000; // i915_reg.h:216
+pub const FENCE_REG_STRIDE: u32 = 8; // i915_reg.h:216
+pub const GEN6_FENCE_PITCH_SHIFT: u32 = 32; // i915_reg.h:218
+pub const I965_FENCE_TILING_Y_SHIFT: u32 = 1; // i915_reg.h:212
+pub const I965_FENCE_REG_VALID: u32 = bit(0); // i915_reg.h:213
+pub const GEN7_FENCE_MAX_PITCH_VAL: u32 = 0x0800; // i915_reg.h:219
+
+/// `FENCE_REG_GEN6_LO(i)` / `_HI(i)`.
+pub const fn fence_lo(i: u32) -> Reg {
+    Reg::new(FENCE_REG_GEN6_BASE + i * FENCE_REG_STRIDE) // i915_reg.h:216
+}
+pub const fn fence_hi(i: u32) -> Reg {
+    Reg::new(FENCE_REG_GEN6_BASE + i * FENCE_REG_STRIDE + 4) // i915_reg.h:217
+}
+
+/// Stolen-memory reservation register (Gen8/9 use the GEN6 name and mask: `bdw_get_stolen_reserved`, i915_gem_stolen.c:385).
+pub const GEN6_STOLEN_RESERVED: Reg = Reg::new(0x1082C0); // i915_reg.h:128
+pub const GEN6_STOLEN_RESERVED_ADDR_MASK: u32 = 0xFFF << 20; // i915_reg.h:129
+pub const GEN6_STOLEN_RESERVED_ENABLE: u32 = bit(0); // i915_reg.h:144
+
+// ---- the PCU mailbox (moved from i915-display-clock-core, sentinel audit 2026-10-12) ----------------------------------------
+// Plain u32 offsets, as the PCU-mailbox transaction code in i915-display-clock-core consumes them.
+
+/// The PCU mailbox: `GEN6_PCODE_MAILBOX` / `DATA` / `DATA1` (i915_reg.h:1079, :1179, :1182). Outside the forcewake domains
+/// (intel_pcode.c:65-67 uses the `_fw` accessors).
+pub const GEN6_PCODE_MAILBOX: u32 = 0x138124; // i915_reg.h:1079
+pub const GEN6_PCODE_DATA: u32 = 0x138128; // i915_reg.h:1179
+pub const GEN6_PCODE_DATA1: u32 = 0x13812c; // i915_reg.h:1182
+pub const GEN6_PCODE_READY: u32 = 1 << 31; // i915_reg.h:1080
+pub const GEN6_PCODE_ERROR_MASK: u32 = 0xff; // i915_reg.h:1084
+pub const GEN6_PCODE_SUCCESS: u32 = 0x0; // i915_reg.h:1085
+pub const GEN6_PCODE_ILLEGAL_CMD: u32 = 0x1; // i915_reg.h:1086
+pub const GEN7_PCODE_TIMEOUT: u32 = 0x2; // i915_reg.h:1090
+pub const GEN7_PCODE_ILLEGAL_DATA: u32 = 0x3; // i915_reg.h:1091
+pub const GEN11_PCODE_ILLEGAL_SUBCOMMAND: u32 = 0x4; // i915_reg.h:1092
+pub const GEN11_PCODE_LOCKED: u32 = 0x6; // i915_reg.h:1093
+pub const GEN11_PCODE_REJECTED: u32 = 0x11; // i915_reg.h:1094
+pub const GEN7_PCODE_MIN_FREQ_TABLE_GT_RATIO_OUT_OF_RANGE: u32 = 0x10; // i915_reg.h:1095
+/// `SKL_PCODE_CDCLK_CONTROL` and its two request/reply words (i915_reg.h:1107-1109).
+pub const SKL_PCODE_CDCLK_CONTROL: u32 = 0x7; // i915_reg.h:1107
+pub const SKL_CDCLK_PREPARE_FOR_CHANGE: u32 = 0x3; // i915_reg.h:1108
+pub const SKL_CDCLK_READY_FOR_CHANGE: u32 = 0x1; // i915_reg.h:1109

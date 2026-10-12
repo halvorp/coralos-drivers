@@ -126,6 +126,9 @@ pub fn plan_enable(id: u8, hw: &SklDpllHwState, snap: &DpllSnapshot) -> Result<T
         }
         rb.write(dpll_cfgcr1(id), snap.cfgcr1)?;
         rb.write(dpll_cfgcr2(id), snap.cfgcr2)?;
+        // Not in Linux (it has no rollback): a restore that a clock-gated display domain dropped must not report success.
+        rb.posting_read(dpll_cfgcr1(id))?;
+        rb.posting_read(dpll_cfgcr2(id))?;
     }
     restore_ctrl1(&mut rb, id, snap)?;
     Ok(Transaction { forward: fwd, rollback: rb })
@@ -162,9 +165,12 @@ pub fn plan_ddi_clock_enable(port: Ddi, pll: u8, ctrl2_snapshot: u32) -> Result<
     let sel_mask = 3 << ctrl2_clk_sel_shift(port);
     let mut fwd = WritePlan::new();
     fwd.rmw(DPLL_CTRL2, ctrl2_clk_off(port) | sel_mask, ((pll as u32) << ctrl2_clk_sel_shift(port)) | ctrl2_sel_override(port))?; // intel_ddi.c:1964-1968
+    // Linux does not post here; we do (REGISTER-WRITE-READBACK): a dropped CTRL2 write would otherwise report success.
+    fwd.posting_read(DPLL_CTRL2)?;
     let mut rb = WritePlan::new();
     let m = ctrl2_clk_off(port) | sel_mask | ctrl2_sel_override(port);
     rb.rmw(DPLL_CTRL2, m, ctrl2_snapshot & m)?;
+    rb.posting_read(DPLL_CTRL2)?;
     Ok(Transaction { forward: fwd, rollback: rb })
 }
 
@@ -172,8 +178,10 @@ pub fn plan_ddi_clock_enable(port: Ddi, pll: u8, ctrl2_snapshot: u32) -> Result<
 pub fn plan_ddi_clock_disable(port: Ddi, ctrl2_snapshot: u32) -> Result<Transaction, ClockError> {
     let mut fwd = WritePlan::new();
     fwd.rmw(DPLL_CTRL2, 0, ctrl2_clk_off(port))?; // intel_ddi.c:1980-1981
+    fwd.posting_read(DPLL_CTRL2)?; // not in Linux; see plan_ddi_clock_enable
     let mut rb = WritePlan::new();
     rb.rmw(DPLL_CTRL2, ctrl2_clk_off(port), ctrl2_snapshot & ctrl2_clk_off(port))?;
+    rb.posting_read(DPLL_CTRL2)?;
     Ok(Transaction { forward: fwd, rollback: rb })
 }
 

@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 i915-common-core = { path = "../i915-common-core" }
 i915-devinfo-core = { path = "../i915-devinfo-core" }
+i915-gt-regs-core = { path = "../i915-gt-regs-core" }
 
 [dev-dependencies]
 coralos-hal = { path = "../../hal", features = ["fake"] }

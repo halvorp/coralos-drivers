@@ -45,3 +45,22 @@ fn i915_reg_constants_equal_the_values_gcc_computes_from_the_linux_header() {
     assert_eq!(GEN8_CHICKEN_DCPR_1.offset(), 0x00046430, "GEN8_CHICKEN_DCPR_1");
     assert_eq!(MASK_WAKEMEM, 0x00002000, "MASK_WAKEMEM");
 }
+
+/// PCU mailbox words moved in from i915-display-clock-core (sentinel audit 2026-10-12), pinned to the Linux literals.
+#[test]
+fn pcu_mailbox_words_have_linux_values() {
+    assert_eq!(GEN6_PCODE_MAILBOX, 0x138124); // i915_reg.h:1079
+    assert_eq!(GEN6_PCODE_DATA, 0x138128); // :1179
+    assert_eq!(GEN6_PCODE_DATA1, 0x13812c); // :1182
+    assert_eq!(GEN6_PCODE_READY, 0x8000_0000); // :1080
+    assert_eq!(GEN6_PCODE_ERROR_MASK, 0xff); // :1084
+    assert_eq!(GEN6_PCODE_SUCCESS, 0x0); // :1085
+    assert_eq!(GEN6_PCODE_ILLEGAL_CMD, 0x1); // :1086
+    assert_eq!(GEN7_PCODE_TIMEOUT, 0x2); // :1090
+    assert_eq!(GEN7_PCODE_ILLEGAL_DATA, 0x3); // :1091
+    assert_eq!(GEN11_PCODE_ILLEGAL_SUBCOMMAND, 0x4); // :1092
+    assert_eq!(GEN11_PCODE_LOCKED, 0x6); // :1093
+    assert_eq!(GEN11_PCODE_REJECTED, 0x11); // :1094
+    assert_eq!(GEN7_PCODE_MIN_FREQ_TABLE_GT_RATIO_OUT_OF_RANGE, 0x10); // :1095
+    assert_eq!((SKL_PCODE_CDCLK_CONTROL, SKL_CDCLK_PREPARE_FOR_CHANGE, SKL_CDCLK_READY_FOR_CHANGE), (0x7, 0x3, 0x1)); // :1107-1109
+}

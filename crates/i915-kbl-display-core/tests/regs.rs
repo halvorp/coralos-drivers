@@ -191,3 +191,21 @@ fn enum_values_are_linux_enum_values() {
     assert_eq!(Transcoder::Edp.mask_bit(), 0x10);
     assert_eq!((Ddi::A as u8, Ddi::B as u8, Ddi::C as u8, Ddi::D as u8, Ddi::E as u8), (0, 1, 2, 3, 4));
 }
+
+/// Registers moved in from i915-display-clock-core (sentinel audit 2026-10-12), pinned to the Linux literals.
+#[test]
+fn clock_side_registers_have_linux_values() {
+    use i915_kbl_display_core::regs::*;
+    assert_eq!(DPLL_CFGCR1_FREQ_ENABLE, 0x8000_0000); // intel_display_regs.h:2587
+    assert_eq!(DPLL_CFGCR2_CENTRAL_FREQ_MASK, 3); // :2612
+    assert_eq!(CDCLK_DIVMUX_CD_OVERRIDE, 0x8_0000); // :2533
+    assert_eq!(SKL_DFSM, 0x51000); // :1539
+    assert_eq!(SKL_DFSM_CDCLK_LIMIT_MASK, 0x0180_0000); // :1542
+    assert_eq!(SKL_DFSM_CDCLK_LIMIT_675, 0); // :1543
+    assert_eq!(SKL_DFSM_CDCLK_LIMIT_540, 0x0080_0000); // :1544
+    assert_eq!(SKL_DFSM_CDCLK_LIMIT_450, 0x0100_0000); // :1545
+    assert_eq!(SKL_DFSM_CDCLK_LIMIT_337_5, 0x0180_0000); // :1546
+    assert_eq!((HSW_PWR_WELL_CTL3, HSW_PWR_WELL_CTL4), (0x45408, 0x4540c)); // :2127-2128
+    assert_eq!((SKL_PG0, SKL_PG1, SKL_PG2), (0, 1, 2)); // :2216-2218
+    assert_eq!(SWF_ILK_18, 0x4f060); // :1004 (SWF_ILK(0x18) = 0x4f000 + 0x18 * 4)
+}

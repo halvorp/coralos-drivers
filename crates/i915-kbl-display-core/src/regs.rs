@@ -268,3 +268,34 @@ pub const fn plane_reg(plane_1_a: u32, pipe: Pipe, plane_id: u32) -> u32 {
 pub const fn scaler_reg(ps_1a: u32, pipe: Pipe, id: u32) -> u32 {
     ps_1a + (pipe as u32) * PS_PIPE_STEP + id * PS_ID_STEP
 }
+
+// ---- registers the clock/power WRITE side needs (moved from i915-display-clock-core, sentinel audit 2026-10-12) -------------
+// Ported from Linux drivers/gpu/drm/i915/display/intel_display_regs.h at v7.0-rc6.
+
+/// `DPLL_CFGCR1_FREQ_ENABLE` (intel_display_regs.h:2587).
+pub const DPLL_CFGCR1_FREQ_ENABLE: u32 = 1 << 31; // intel_display_regs.h:2587
+/// `DPLL_CFGCR2_CENTRAL_FREQ_MASK` (intel_display_regs.h:2612).
+pub const DPLL_CFGCR2_CENTRAL_FREQ_MASK: u32 = 3; // intel_display_regs.h:2612
+/// `CDCLK_DIVMUX_CD_OVERRIDE` (intel_display_regs.h:2533).
+pub const CDCLK_DIVMUX_CD_OVERRIDE: u32 = 1 << 19; // intel_display_regs.h:2533
+
+/// `SKL_DFSM` (intel_display_regs.h:1539): the display fuse word whose bits 24:23 cap CDCLK.
+pub const SKL_DFSM: u32 = 0x51000; // intel_display_regs.h:1539
+pub const SKL_DFSM_CDCLK_LIMIT_MASK: u32 = 3 << 23; // intel_display_regs.h:1542
+pub const SKL_DFSM_CDCLK_LIMIT_675: u32 = 0 << 23; // intel_display_regs.h:1543
+pub const SKL_DFSM_CDCLK_LIMIT_540: u32 = 1 << 23; // intel_display_regs.h:1544
+pub const SKL_DFSM_CDCLK_LIMIT_450: u32 = 2 << 23; // intel_display_regs.h:1545
+pub const SKL_DFSM_CDCLK_LIMIT_337_5: u32 = 3 << 23; // intel_display_regs.h:1546
+
+/// `HSW_PWR_WELL_CTL3` / `CTL4`: the KVMR and DEBUG requester registers (intel_display_regs.h:2127-2128). Never written here.
+pub const HSW_PWR_WELL_CTL3: u32 = 0x45408; // intel_display_regs.h:2127
+pub const HSW_PWR_WELL_CTL4: u32 = 0x4540c; // intel_display_regs.h:2128
+
+/// `enum skl_power_gate` (intel_display_regs.h:2215-2221): the fuse-distribution gates SKL_FUSE_STATUS reports.
+pub const SKL_PG0: u32 = 0; // intel_display_regs.h:2216
+pub const SKL_PG1: u32 = 1; // intel_display_regs.h:2217
+pub const SKL_PG2: u32 = 2; // intel_display_regs.h:2218
+
+/// `SWF_ILK(0x18)`: the pre-OS "display initialised" scratch word `skl_sanitize_cdclk` reads (intel_display_regs.h:1004,
+/// intel_cdclk.c:1239).
+pub const SWF_ILK_18: u32 = 0x4f000 + 0x18 * 4; // intel_display_regs.h:1004

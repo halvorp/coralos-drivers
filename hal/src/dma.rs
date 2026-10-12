@@ -6,7 +6,7 @@
 //! test backs it with the scripted fake (`fake::FakeDma`). There is deliberately no `free`: CoralOS has no call that
 //! returns a DMA grant before the task ends (the grant lives in the task's DMA window and goes back with the task), so
 //! a `free` here would be a nominal call that frees nothing. A driver allocates its rings once at bring-up and reuses
-//! them, as Linux's iwlwifi does across firmware restarts. Add `free` when a host can honour it.
+//! them, as Linux's iwlwifi does across firmware restarts.
 //!
 //! THE CACHE RULE is [`Coherence`]: the driver says whether its DEVICE snoops CPU caches, and the host picks the CPU
 //! memory type from that — never the other way round.
