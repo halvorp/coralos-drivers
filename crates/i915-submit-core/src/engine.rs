@@ -13,6 +13,7 @@ use crate::lrc_state::{self, CtxParams, RegState};
 use crate::request::{Request, TagAllocator, Table, Timeline};
 use crate::ring::Ring;
 use crate::wa_bb::WaCtx;
+use alloc::vec::Vec;
 use i915_gt_core::emit::{
     emit_bb_start, emit_fini_breadcrumb_rcs, emit_fini_breadcrumb_xcs, emit_flush_rcs, emit_flush_xcs, emit_init_breadcrumb, fini_breadcrumb_len,
     flush_rcs_len, BreadcrumbEnds, CsBuf, FlushQuirks, EMIT_INVALIDATE,
@@ -92,20 +93,20 @@ pub(crate) struct Context {
 
 /// One engine of the GT.
 #[derive(Clone, Debug)]
-pub struct Engine<const C: usize, const R: usize> {
+pub struct Engine {
     pub(crate) info: EngineInfo,
     pub(crate) gen: u8,
     pub(crate) cfg: EngineConfig,
     pub(crate) execlists: Execlists,
-    pub(crate) ctxs: [Option<Context>; C],
-    pub(crate) reqs: Table<Request, R>,
+    /// Contexts by id (= slot index). Grows when every slot is live; a destroyed context's slot is reused. No compile-time cap.
+    pub(crate) ctxs: Vec<Option<Context>>,
+    /// Outstanding requests, oldest first. No compile-time cap.
+    pub(crate) reqs: Table<Request>,
     pub(crate) tags: TagAllocator,
     pub(crate) watch: crate::submit::Watch,
 }
 
-const NO_REQUEST: Request = Request { ctx: 0, seqno: 0, head: 0, infix: 0, postfix: 0, tail: 0, wa_tail: 0, submitted: false };
-
-impl<const C: usize, const R: usize> Engine<C, R> {
+impl Engine {
     /// A fresh engine with the CSB pointers at their post-reset position. `gen` is `GRAPHICS_VER` (9 for Kaby Lake).
     pub fn new(info: &EngineInfo, gen: u8, cfg: EngineConfig) -> Result<Self, SubmitError> {
         if gen != 8 && gen != 9 {
@@ -122,8 +123,8 @@ impl<const C: usize, const R: usize> Engine<C, R> {
             gen,
             cfg,
             execlists: Execlists::new(),
-            ctxs: core::array::from_fn(|_| None),
-            reqs: Table::new(NO_REQUEST),
+            ctxs: Vec::new(),
+            reqs: Table::new("request table"),
             tags: TagAllocator::new(),
             watch: crate::submit::Watch::new(),
         })
@@ -178,7 +179,14 @@ impl<const C: usize, const R: usize> Engine<C, R> {
     /// `lrc_alloc` + `lrc_pin` + `lrc_init_state` (gt/intel_lrc.c:1129-1179, :1210-1222, :1016-1042): create the ring, the
     /// timeline and the register-state image, and leave the context ready for its first request.
     pub fn create_context(&mut self, spec: &ContextSpec) -> Result<u32, SubmitError> {
-        let slot = self.ctxs.iter().position(|c| c.is_none()).ok_or(SubmitError::ContextTableFull { capacity: C as u32 })?;
+        // A free slot is reused; otherwise the table grows by one, and that growth is obtained NOW, before anything else is built.
+        let slot = match self.ctxs.iter().position(|c| c.is_none()) {
+            Some(s) => s,
+            None => {
+                self.ctxs.try_reserve(1).map_err(|_| SubmitError::OutOfMemory { what: "context table" })?;
+                self.ctxs.len()
+            }
+        };
         let ring = Ring::new(spec.ring_size)?;
         let tl = Timeline::new(spec.hwsp_ggtt, spec.initial_breadcrumb)?;
         let params = CtxParams {
@@ -197,7 +205,12 @@ impl<const C: usize, const R: usize> Engine<C, R> {
         };
         lrc_state::init_regs(&mut regs, &params, spec.default_state.is_none())?;
         let desc_lo = lrc_state::update_regs(&mut regs, &params, spec.lrca, &ring, ring.tail())?;
-        self.ctxs[slot] = Some(Context { params, lrca: spec.lrca, regs, ring, tl, desc_lo, ccid: 0, inflight: 0, hw_seqno: 0 });
+        let ctx = Context { params, lrca: spec.lrca, regs, ring, tl, desc_lo, ccid: 0, inflight: 0, hw_seqno: 0 };
+        if slot == self.ctxs.len() {
+            self.ctxs.push(Some(ctx)); // capacity reserved above: cannot allocate
+        } else {
+            self.ctxs[slot] = Some(ctx);
+        }
         Ok(slot as u32)
     }
 
@@ -241,9 +254,7 @@ impl<const C: usize, const R: usize> Engine<C, R> {
         let quirks = self.cfg.quirks;
         let fini_dw = self.fini_dw();
         let preempt_addr = self.cfg.status_page_ggtt + I915_GEM_HWS_PREEMPT * 4;
-        if self.reqs.len() >= R {
-            return Err(SubmitError::RequestTableFull { capacity: R as u32 });
-        }
+        self.reqs.reserve_one()?; // the request's slot, before the ring or the timeline is touched
         let c = self.ctx(ctx)?;
         let mut ring = c.ring;
         let mut tl = c.tl;

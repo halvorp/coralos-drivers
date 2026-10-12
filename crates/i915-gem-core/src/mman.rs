@@ -90,7 +90,7 @@ pub struct MappingLease {
     pub cache: CpuCache,
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// `i915_gem_mmap_offset_ioctl` (gem/i915_gem_mman.c:865-915) over `__assign_mmap_offset` (gem/i915_gem_mman.c:772-805): assign (or find) the
     /// fake offset for `(object, type)` and allow the session to use it. KBL policy:
     /// GTT needs the aperture (gem/i915_gem_mman.c:889-890); WC and UC need PAT (gem/i915_gem_mman.c:895-898, gem/i915_gem_mman.c:905-906); WB is always available; FIXED belongs to

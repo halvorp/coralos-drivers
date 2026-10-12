@@ -33,12 +33,17 @@ use crate::error::UapiError;
 use crate::types::{ExecFence, ExecObject2, ExtensionHeader, RelocationEntry};
 
 pub const EXEC_HEADER_BYTES: usize = 64;
+/// KEPT AS VALIDATION (D10 / RUNTIME-TABLES-HAVE-NO-CAP): Linux itself enforces this depth (the 513th extension is `-E2BIG`) to refuse a malformed chain; nothing is stored.
 /// `stackdepth = 512` (i915_user_extensions.c:21): the 513th extension of one chain is `-E2BIG`.
 pub const MAX_EXTENSIONS: u32 = 512; // i915_user_extensions.c:21
+/// KEPT AS VALIDATION (D10 / RUNTIME-TABLES-HAVE-NO-CAP): Linux's own per-object relocation-count validation limit; nothing is stored.
 /// `N_RELOC(INT_MAX)` = `INT_MAX / sizeof(struct drm_i915_gem_relocation_entry)` (i915_gem_execbuffer.c:1514,1520,1628).
 pub const MAX_RELOCS_PER_OBJECT_LINUX: u32 = (i32::MAX as u32) / (RelocationEntry::WIRE_BYTES as u32); // 67108863
 
 /// The bounds this port enforces on one request, on top of Linux's own. Every one is checked and tested.
+/// KEPT AS VALIDATION (D10 / RUNTIME-TABLES-HAVE-NO-CAP): each refuses an oversized or malformed ONE request (the decoder borrows the payload and allocates nothing); none is a table of
+/// objects the device keeps. Linux bounds the same quantities by `INT_MAX`/`kvmalloc` failure (`-ENOMEM`); these are the port's explicit
+/// form of that, and the per-device populations (objects, VMAs, requests) live in `i915-gem-core`, which grows them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExecLimits {
     /// Objects per submit (Linux allows up to `INT_MAX` and runs out of memory; the payload cap makes ~1365 the hard ceiling).

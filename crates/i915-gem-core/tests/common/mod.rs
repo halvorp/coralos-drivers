@@ -28,7 +28,7 @@ pub fn dev() -> UapiDevice {
     UapiDevice::new(desc, 0x09, sseu, hz, 8 * GIB).unwrap()
 }
 
-pub fn gem<const V: usize, const T: usize>() -> Gem<V, T> {
+pub fn gem() -> Gem {
     Gem::new(dev(), GemConfig { pat_enabled: true })
 }
 
@@ -163,7 +163,7 @@ impl SyncTables for Sync {
 
 /// The render and video engines of a KBL GT2 (`i915_submit_core::Engine` each), with one ring buffer per hardware context.
 pub struct Engines {
-    pub engines: Vec<(u16, u16, Engine<4, 32>)>,
+    pub engines: Vec<(u16, u16, Engine)>,
     pub rings: HashMap<(u16, u16, u32), Vec<u32>>,
     pub specs: u32,
     pub fail_build: bool,
@@ -185,16 +185,16 @@ impl Engines {
         Engines { engines, rings: HashMap::new(), specs: 0, fail_build: false, auto_retire: false }
     }
 
-    pub fn rcs(&mut self) -> &mut Engine<4, 32> {
+    pub fn rcs(&mut self) -> &mut Engine {
         &mut self.engines[0].2
     }
 
-    fn find(&mut self, class: u16, instance: u16) -> &mut Engine<4, 32> {
+    fn find(&mut self, class: u16, instance: u16) -> &mut Engine {
         &mut self.engines.iter_mut().find(|e| e.0 == class && e.1 == instance).expect("engine wired").2
     }
 
     /// Create the hardware context for GEM context `ctx_id` of `session` on engine `(class, 0)` over the PPGTT of its VM, and attach it.
-    pub fn attach_on<const V: usize, const T: usize>(&mut self, gem: &mut Gem<V, T>, session: SessionId, ctx_id: u32, class: u16) -> u32 {
+    pub fn attach_on(&mut self, gem: &mut Gem, session: SessionId, ctx_id: u32, class: u16) -> u32 {
         let vm = gem.context_vm(session, ctx_id).unwrap();
         let n = self.specs;
         self.specs += 1;
@@ -214,7 +214,7 @@ impl Engines {
         ectx
     }
 
-    pub fn attach<const V: usize, const T: usize>(&mut self, gem: &mut Gem<V, T>, session: SessionId, ctx_id: u32) -> u32 {
+    pub fn attach(&mut self, gem: &mut Gem, session: SessionId, ctx_id: u32) -> u32 {
         self.attach_on(gem, session, ctx_id, 0)
     }
 }
@@ -331,8 +331,8 @@ pub fn free_obj(handle: u32) -> ExecObject2 {
 }
 
 /// Everything a session test needs: the GEM, a session, its default VM pool, an engine with a context attached to context 0.
-pub struct Rig<const V: usize, const T: usize> {
-    pub gem: Gem<V, T>,
+pub struct Rig {
+    pub gem: Gem,
     pub s: SessionId,
     pub sink: Sink,
     pub pages: Pages,
@@ -341,9 +341,9 @@ pub struct Rig<const V: usize, const T: usize> {
     pub sync: Sync,
 }
 
-impl<const V: usize, const T: usize> Rig<V, T> {
-    pub fn new() -> Rig<V, T> {
-        let mut gem = gem::<V, T>();
+impl Rig {
+    pub fn new() -> Rig {
+        let mut gem = gem();
         let mut sink = Sink::default();
         let mut pool = Pool::new();
         let init = pool.init();

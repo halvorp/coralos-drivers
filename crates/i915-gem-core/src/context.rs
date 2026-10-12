@@ -117,7 +117,7 @@ fn validate_priority(sched_caps: u32, caps: SessionCaps, size: u32, value: u64) 
     Ok(priority as i32)
 }
 
-impl<const V: usize, const T: usize> Gem<V, T> {
+impl Gem {
     /// `set_proto_ctx_engines` (gem/i915_gem_context.c:733-810) for the engines of `PARAM_ENGINES`.
     fn parse_engines(&self, engines: &[(u16, u16)]) -> Result<([UserEngine; MAX_USER_ENGINES], u8), GemError> {
         if engines.len() > MAX_USER_ENGINES {

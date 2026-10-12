@@ -7,15 +7,15 @@ use crate::seam::SyncTables;
 use i915_uapi_core::{ContextInfo, ExecEnv, ObjectInfo, SyncobjInfo};
 
 /// A read-only view of one session, bound to one submission's context and ring selector.
-pub struct ExecView<'a, const V: usize, const T: usize> {
-    pub(crate) gem: &'a Gem<V, T>,
+pub struct ExecView<'a> {
+    pub(crate) gem: &'a Gem,
     pub(crate) slot: usize,
     pub(crate) vm: Option<u32>,
     pub(crate) ring_slot: u32,
     pub(crate) sync: &'a dyn SyncTables,
 }
 
-impl<const V: usize, const T: usize> ExecEnv for ExecView<'_, V, T> {
+impl ExecEnv for ExecView<'_> {
     fn context(&self, id: u32) -> Option<ContextInfo> {
         self.gem.context_info(self.slot, id, self.ring_slot)
     }

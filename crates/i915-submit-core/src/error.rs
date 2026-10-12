@@ -46,10 +46,9 @@ pub enum SubmitError {
     CsbCompleteWithoutActive,
     /// `execlists_dequeue_irq` is only entered with nothing pending; a submission is still waiting for its ack.
     ElspPendingUnacked,
-    /// A second context table slot was asked for beyond the engine's capacity.
-    ContextTableFull { capacity: u32 },
-    /// A request table slot was asked for beyond the engine's capacity.
-    RequestTableFull { capacity: u32 },
+    /// Memory for a growing table (`what`: "context table", "request table") could not be had; refused before the context or
+    /// request existed, so the engine is unchanged.
+    OutOfMemory { what: &'static str },
     /// No such context.
     NoSuchContext { id: u32 },
     /// A port names a request the table no longer holds (an internal inconsistency, never silently skipped).
@@ -98,8 +97,7 @@ impl SubmitError {
             SubmitError::CsbPromoteWithoutPending => "CSB-PROMOTE-WITHOUT-PENDING",
             SubmitError::CsbCompleteWithoutActive => "CSB-COMPLETE-WITHOUT-ACTIVE",
             SubmitError::ElspPendingUnacked => "ELSP-PENDING-UNACKED",
-            SubmitError::ContextTableFull { .. } => "CONTEXT-TABLE-FULL",
-            SubmitError::RequestTableFull { .. } => "REQUEST-TABLE-FULL",
+            SubmitError::OutOfMemory { .. } => "OUT-OF-MEMORY",
             SubmitError::NoSuchContext { .. } => "NO-SUCH-CONTEXT",
             SubmitError::NoSuchRequest { .. } => "NO-SUCH-REQUEST",
             SubmitError::ContextBusy { .. } => "CONTEXT-BUSY",

@@ -35,7 +35,7 @@ mod p2 {
         let mut log = Lines::default();
         ex.set_ggtt_window(GgttWindow::for_table(geom().pte_base, geom().entries).unwrap()).unwrap();
         let scratch = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
-        let (mut gtt, create) = Gtt::<16, 4>::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
+        let (mut gtt, create) = Gtt::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
         let rep = ex.run_bind_step(&mut log, &mut gm, &create, true, &mut |_| true).unwrap();
         assert_eq!(rep.ggtt_entries as u64, ENTRIES);
         assert_eq!(rep.ggtt_invalidates, 1);
@@ -68,7 +68,7 @@ mod p2 {
         let mut log = Lines::default();
         ex.set_ggtt_window(GgttWindow { base: 0x80_0000, bytes: 0x1000 }).unwrap(); // 512 entries
         let scratch = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
-        let (_g, create) = Gtt::<16, 4>::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
+        let (_g, create) = Gtt::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
         let e = ex.run_bind_step(&mut log, &mut gm, &create, true, &mut |_| true).unwrap_err();
         assert_eq!(e, ExecError::GgttStoreRefused { offset: 0x80_1000 });
         assert_eq!(chip.0.borrow().ggtt_writes, 1024, "entries 0..512 only");
@@ -83,7 +83,7 @@ mod p2 {
         let mut log = Lines::default();
         let pml4 = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
         let scratch = [(); 4].map(|_| gm.alloc.alloc(ObjKind::Data, PAGE).unwrap());
-        let (mut gtt, create) = Gtt::<16, 32>::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: scratch.map(|g| g.device_addr) }).unwrap();
+        let (mut gtt, create) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: scratch.map(|g| g.device_addr) }).unwrap();
         let rep = ex.run_bind_step(&mut log, &mut gm, &create, false, &mut |_| true).unwrap();
         assert_eq!(rep.table_entries, 4 * 512);
         assert_eq!(rep.ggtt_entries, 0, "a PPGTT plan never touches BAR0");
@@ -122,7 +122,7 @@ mod p2 {
         let pml4 = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
         let s = [(); 4].map(|_| gm.alloc.alloc(ObjKind::Data, PAGE).unwrap());
         // a PPGTT planned over pages this device never was granted
-        let (_g, plan) = Gtt::<16, 4>::new_ppgtt(&kbl(), &PpgttInit { pml4: 0x5000_0000, scratch: [0x5000_1000, 0x5000_2000, 0x5000_3000, 0x5000_4000] }).unwrap();
+        let (_g, plan) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: 0x5000_0000, scratch: [0x5000_1000, 0x5000_2000, 0x5000_3000, 0x5000_4000] }).unwrap();
         let e = ex.run_bind(&mut gm, &plan, &mut |_| true).unwrap_err();
         assert_eq!(e, ExecError::OutsideGrant { device_addr: 0x5000_2000, len: 8 });
         assert_eq!(e.name(), "OUTSIDE-DMA-GRANT");
@@ -135,7 +135,7 @@ mod p2 {
         let mut log = Lines::default();
         ex.set_ggtt_window(GgttWindow::for_table(geom().pte_base, geom().entries).unwrap()).unwrap();
         let scratch = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
-        let (mut gtt, create) = Gtt::<16, 4>::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
+        let (mut gtt, create) = Gtt::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
         ex.run_bind(&mut gm, &create, &mut |_| true).unwrap();
         let bind = gtt.plan_bind(&mut NoTablePages, &req(&[0x10_0000], Placement::best())).unwrap();
         ex.run_bind(&mut gm, &bind, &mut |_| true).unwrap();
@@ -162,7 +162,7 @@ mod p2 {
         let (chip, _mem, mut ex, mut gm) = built();
         ex.set_ggtt_window(GgttWindow::for_table(geom().pte_base, geom().entries).unwrap()).unwrap();
         let scratch = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
-        let (mut gtt, create) = Gtt::<16, 4>::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
+        let (mut gtt, create) = Gtt::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
         ex.run_bind(&mut gm, &create, &mut |_| true).unwrap();
         let bind = gtt.plan_bind(&mut NoTablePages, &req(&[0x10_0000], Placement::best())).unwrap();
         ex.run_bind(&mut gm, &bind, &mut |_| true).unwrap();
@@ -185,7 +185,7 @@ mod p2 {
 #[test]
 fn stale_access_is_denied_by_the_planner_model_after_an_unbind() {
     let init = PpgttInit { pml4: 0x10000, scratch: [0x11000, 0x12000, 0x13000, 0x14000] };
-    let (mut g, _) = Gtt::<16, 32>::new_ppgtt(&kbl(), &init).unwrap();
+    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &init).unwrap();
     let mut next = 0x100000u64;
     let mut src = |_r: i915_memory_core::TablePageRequest| {
         next += 0x1000;
@@ -295,7 +295,7 @@ fn refused_without_the_feature_a_ggtt_bind_stores_nothing_and_says_why() {
     let mut ex = i915_device::exec::Executor::with_grant(chip.clone(), &kbl(), &FW, None).unwrap();
     let mut log = Lines::default();
     let scratch = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
-    let (_g, create) = Gtt::<16, 4>::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
+    let (_g, create) = Gtt::new_ggtt(&kbl(), &geom(), scratch.device_addr).unwrap();
     let e = ex.run_bind_step(&mut log, &mut gm, &create, true, &mut |_| true).unwrap_err();
     assert_eq!(e.name(), "GGTT-STORE-NOT-ALLOWED");
     assert_eq!(chip.0.borrow().ggtt_writes, 0);

@@ -30,7 +30,7 @@
 //! leases, hardware-seqno observations) is a growable collection with fallible growth and the named refusal `GEM-NOMEM`
 //! (`table.rs`); `Gem::set_table_budget` is the per-device quota and the failure injector. What is fixed is hardware- or ABI-defined
 //! (`limits.rs`): engines on the part, the 64-slot engine map, the 20-bit handle index, the two-slot hang history. The per-address-space
-//! VMA and page-table capacities (`Gtt<V, T>`) are `i915-memory-core`'s.
+//! The VMA and page-table tables of an address space (`Gtt`) grow in `i915-memory-core` (D10).
 
 #![no_std]
 #![forbid(unsafe_code)]

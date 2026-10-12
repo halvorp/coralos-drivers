@@ -6,7 +6,7 @@ use i915_gem_core::*;
 use i915_memory_core::CacheLevel;
 use i915_uapi_core::consts::misc as m;
 
-type R = Rig<16, 16>;
+type R = Rig;
 
 const WILLNEED: u32 = m::I915_MADV_WILLNEED;
 const DONTNEED: u32 = m::I915_MADV_DONTNEED;
@@ -259,7 +259,7 @@ fn a_scanout_buffer_cannot_change_tiling_and_a_gtt_mapping_is_revoked_when_it_do
 fn without_an_aperture_there_are_no_fences_and_tiling_is_unsupported() {
     let mut d = dev();
     d.ggtt_has_aperture = false; // gt/intel_ggtt_fencing.c:853-854
-    let mut gem: Gem<8, 8> = Gem::new(d, GemConfig { pat_enabled: true });
+    let mut gem: Gem = Gem::new(d, GemConfig { pat_enabled: true });
     let mut pool = Pool::new();
     let mut sink = Sink::default();
     let s = gem.open_session(SessionCaps::default(), pool.init(), &mut sink).unwrap();

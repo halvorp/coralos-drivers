@@ -29,6 +29,7 @@ pub const FUSE_WAIT_TIMEOUT_MS: u32 = 1; // intel_display_power_well.c:379
 /// `hsw_wait_for_power_well_disable`: `reqs ? 0 : 1` ms (intel_display_power_well.c:357-359).
 pub const WELL_DISABLE_TIMEOUT_MS: u32 = 1; // intel_display_power_well.c:359
 
+/// KEPT FIXED (D10): the SKL power wells the hardware has (and the per-well/per-domain counters indexed by them).
 const NWELLS: usize = 7;
 
 /// Software state of the SKL wells and domains.

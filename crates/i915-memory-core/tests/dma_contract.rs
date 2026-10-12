@@ -18,7 +18,7 @@ fn table_pages_are_requested_through_dma_alloc_and_targets_carry_device_addresse
     let pml4 = grab(1 << 20);
     let sc = [grab(1 << 20), grab(1 << 20), grab(1 << 20), grab(1 << 20)];
     let init = PpgttInit { pml4: pml4.device_addr, scratch: [sc[0].device_addr, sc[1].device_addr, sc[2].device_addr, sc[3].device_addr] };
-    let (mut g, init_plan) = Gtt::<16, 64>::new_ppgtt(&kbl(), &init).unwrap();
+    let (mut g, init_plan) = Gtt::new_ppgtt(&kbl(), &init).unwrap();
     assert!(init_plan.writes().all(|w| matches!(w.target, Target::Table { device_addr, .. } if device_addr < FakeDma::VIRT_OFFSET)));
 
     let mut granted = vec![];
@@ -53,7 +53,7 @@ fn table_pages_are_requested_through_dma_alloc_and_targets_carry_device_addresse
 #[test]
 fn a_dma_host_that_refuses_surfaces_as_a_named_table_page_refusal() {
     let mut dma = FakeDma::new(0x4000_0000);
-    let (mut g, _) = Gtt::<16, 64>::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap();
+    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap();
     dma.refuse.push_back(coralos_hal::DmaRefusal::OverQuota { len: 4096 });
     let mut src = |req: TablePageRequest| {
         dma.alloc(DmaRequest { size: 4096, align: 4096, addr_width: 39, cache: Coherence::NonSnooped, budget: 4096 })

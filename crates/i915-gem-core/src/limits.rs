@@ -9,10 +9,6 @@ pub const MAX_ENGINES: usize = 5;
 /// Slots of a context's engine map: `I915_EXEC_RING_MASK + 1` (gem/i915_gem_context.c:758-760). ABI-bounded: the ring selector of
 /// `execbuffer2.flags` is a 6-bit field (i915_drm.h:1431), so slot 64 cannot be named.
 pub const MAX_USER_ENGINES: usize = 64;
-/// Default capacities of an address space's VMA table and page-table table: the const generics of `i915_memory_core::Gtt`. Those
-/// arrays belong to `i915-memory-core`; this crate only chooses their size per VM.
-pub const DEFAULT_VMAS: usize = 128;
-pub const DEFAULT_TABLES: usize = 256;
 
 /// `ARRAY_SIZE(ctx->hang_timestamp)` (gem/i915_gem_context_types.h:388): a history of the last two hangs, a struct layout.
 pub const HANG_HISTORY: usize = 2;

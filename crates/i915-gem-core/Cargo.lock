@@ -60,6 +60,7 @@ version = "0.1.0"
 dependencies = [
  "i915-common-core",
  "i915-devinfo-core",
+ "i915-gt-regs-core",
 ]
 
 [[package]]

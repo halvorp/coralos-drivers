@@ -61,7 +61,7 @@ impl Tick {
 struct Ctx {
     id: u32,
     objs: CtxObjects,
-    gtt: Gtt<16, 32>,
+    gtt: Gtt,
     timeline_ggtt: u32,
     result_va: u64,
 }
@@ -72,8 +72,8 @@ struct World {
     ex: Executor<Chip>,
     gm: Gm,
     log: Lines,
-    ggtt: Gtt<16, 4>,
-    rig: EngineRig<2, 8>,
+    ggtt: Gtt,
+    rig: EngineRig,
     hwsp_ggtt: u32,
     ctxs: Vec<Ctx>,
 }
@@ -90,7 +90,7 @@ impl World {
     }
 }
 
-fn bind_ggtt(ex: &mut Executor<Chip>, gm: &mut Gm, log: &mut Lines, ggtt: &mut Gtt<16, 4>, g: &i915_device::exec::dma::Grant) -> u32 {
+fn bind_ggtt(ex: &mut Executor<Chip>, gm: &mut Gm, log: &mut Lines, ggtt: &mut Gtt, g: &i915_device::exec::dma::Grant) -> u32 {
     let pages: Vec<u64> = (0..g.pages()).map(|i| g.page(i)).collect();
     let plan = ggtt.plan_bind(&mut NoTablePages, &req(&pages, Placement::best())).unwrap();
     ex.run_bind_step(log, gm, &plan, true, &mut |_| true).unwrap();
@@ -106,12 +106,12 @@ fn world(contexts: usize) -> World {
     let geom = GgttGeometry::probe(1 << 6, 16 << 20, 256 << 20).unwrap();
     ex.set_ggtt_window(i915_device::exec::allow::GgttWindow::for_table(geom.pte_base, geom.entries).unwrap()).unwrap();
     let scratch = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
-    let (mut ggtt, create) = Gtt::<16, 4>::new_ggtt(&kbl(), &geom, scratch.device_addr).unwrap();
+    let (mut ggtt, create) = Gtt::new_ggtt(&kbl(), &geom, scratch.device_addr).unwrap();
     ex.run_bind_step(&mut log, &mut gm, &create, true, &mut |_| true).unwrap();
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
     let hwsp_ggtt = bind_ggtt(&mut ex, &mut gm, &mut log, &mut ggtt, &hwsp);
     assert_eq!(hwsp_ggtt % 4096, 0);
-    let mut rig = EngineRig::<2, 8>::new(&rcs(), 9, config(hwsp_ggtt), hwsp, hwsp_ggtt).unwrap();
+    let mut rig = EngineRig::new(&rcs(), 9, config(hwsp_ggtt), hwsp, hwsp_ggtt).unwrap();
     rig.bring_up(&mut ex, &mut gm, &mut log).unwrap();
     let mut ctxs = vec![];
     for n in 0..contexts {
@@ -122,7 +122,7 @@ fn world(contexts: usize) -> World {
         // this context's address space
         let pml4 = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
         let sc = [(); 4].map(|_| gm.alloc.alloc(ObjKind::Data, PAGE).unwrap());
-        let (mut ppgtt, init) = Gtt::<16, 32>::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: sc.map(|g| g.device_addr) }).unwrap();
+        let (mut ppgtt, init) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: sc.map(|g| g.device_addr) }).unwrap();
         ex.run_bind_step(&mut log, &mut gm, &init, false, &mut |_| true).unwrap();
         let batch = gm.alloc.alloc(ObjKind::Batch, PAGE).unwrap();
         let result = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
@@ -435,7 +435,7 @@ mod p3 {
         assert!(w.rig.emit_marker(&mut log));
         assert_eq!(log.0, ["[I915-EXEC seqno=2 csb=complete isolation=bothways reset_epoch=1 recovery=pass]"]);
         for mutate in [
-            (|r: &mut EngineRig<2, 8>| r.proof.seqno = 0) as fn(&mut EngineRig<2, 8>),
+            (|r: &mut EngineRig| r.proof.seqno = 0) as fn(&mut EngineRig),
             |r| r.proof.csb_complete = false,
             |r| r.epoch = 0,
             |r| r.proof.recovered = false,
@@ -455,13 +455,13 @@ mod p3 {
 
 /// An executor with the SHIPPED grant and an engine over unbound objects (no GGTT is open, so nothing is bound): enough to reach every
 /// register write the P3 paths make.
-fn shipped_world() -> (Chip, Executor<Chip>, Gm, Lines, EngineRig<2, 8>, u32, u32) {
+fn shipped_world() -> (Chip, Executor<Chip>, Gm, Lines, EngineRig, u32, u32) {
     static FW: [i915_common_core::Reg; 3] = i915_uncore_core::WRITE_ALLOWLIST;
     let chip = Chip::new();
     let (_mem, mut gm) = memory();
     let ex = Executor::with_grant(chip.clone(), &kbl(), &FW, None).unwrap();
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
-    let rig = EngineRig::<2, 8>::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
+    let rig = EngineRig::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
     let image = gm.alloc.alloc_context_image(rcs().context_size).unwrap();
     let ring = gm.alloc.alloc_ring(4096).unwrap();
     (chip, ex, gm, Lines::default(), rig, image.device_addr as u32, ring.device_addr as u32)
@@ -514,7 +514,7 @@ fn the_default_build_executor_refuses_the_p3_writes_with_no_override() {
         (chip, ex, gm, Lines::default())
     };
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
-    let mut rig = EngineRig::<2, 8>::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
+    let mut rig = EngineRig::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
     assert_eq!(ex.allow_list().len(), 3 + if cfg!(feature = "p2-memory") { 1 } else { 0 });
     assert_eq!(rig.bring_up(&mut ex, &mut gm, &mut log).unwrap_err().name(), "WRITE-NOT-ALLOWED");
     assert!(chip.all_writes().is_empty());

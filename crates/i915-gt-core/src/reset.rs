@@ -108,6 +108,7 @@ enum State {
 /// The reset state machine.
 #[derive(Clone, Debug)]
 pub struct ResetPlanner {
+    /// KEPT FIXED (D10): the engines a Gen9 part fuses (RCS0, BCS0, VCS0..1, VECS0) - hardware.
     engines: FixedVec<EngineInfo, 5>,
     scope: ResetScope,
     max_polls: u32,

@@ -28,6 +28,7 @@ pub enum FenceStep {
 /// The five steps of `i965_write_fence_reg` (:106-111): LO <- 0, read LO, HI, LO, read LO.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FencePlan {
+    /// KEPT FIXED (D10): the fence write sequence is 5 steps (`fence_write` bracket) - hardware.
     pub steps: [FenceStep; 5],
 }
 
