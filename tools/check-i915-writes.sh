@@ -9,6 +9,7 @@
 #   * a register write call (`.w8(` `.w16(` `.w32(` `write32(` `write_volatile`) may appear only in:
 #       crates/i915-uncore-core/src/forcewake.rs   (the forcewake protocol: the only register writer)
 #       crates/i915-common-core/src/guard.rs        (the guard forwards writes it has allow-listed)
+#       crates/i915-common-core/src/reg.rs          (RegIo::wr: typed-Reg forwarder; the runtime guard still filters)
 #       devices/i915/src/regio.rs                   (BarMmio forwards to the WriteWindow / latches refusals)
 #       devices/i915/src/gt.rs                      (ByRef forwards to the guard's inner Mmio)
 #       rt/src/mmio.rs                              (the WriteWindow itself)
@@ -16,7 +17,7 @@
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
-allowed_writers='^(crates/i915-uncore-core/src/forcewake\.rs|crates/i915-common-core/src/guard\.rs|devices/i915/src/regio\.rs|devices/i915/src/gt\.rs|rt/src/mmio\.rs)$'
+allowed_writers='^(crates/i915-uncore-core/src/forcewake\.rs|crates/i915-common-core/src/guard\.rs|crates/i915-common-core/src/reg\.rs|devices/i915/src/regio\.rs|devices/i915/src/gt\.rs|rt/src/mmio\.rs)$'
 cd "$root" || exit 2
 while IFS= read -r f; do
   rel="${f#./}"
