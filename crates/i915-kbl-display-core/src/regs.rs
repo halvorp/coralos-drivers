@@ -299,3 +299,71 @@ pub const SKL_PG2: u32 = 2; // intel_display_regs.h:2218
 /// `SWF_ILK(0x18)`: the pre-OS "display initialised" scratch word `skl_sanitize_cdclk` reads (intel_display_regs.h:1004,
 /// intel_cdclk.c:1239).
 pub const SWF_ILK_18: u32 = 0x4f000 + 0x18 * 4; // intel_display_regs.h:1004
+
+// ---- DDI DP transport, buffer translation, balance leg, PCH raw clock (re-homed from i915-display-link-core, 2026-10-12) ----
+// Ported from Linux drivers/gpu/drm/i915/display/intel_display_regs.h at v7.0-rc6.
+pub const DP_TP_CTL_A: u32 = 0x64040; // intel_display_regs.h:2302
+pub const DP_TP_CTL_B: u32 = 0x64140; // intel_display_regs.h:2303
+pub const DP_TP_STATUS_A: u32 = 0x64044; // intel_display_regs.h:2329
+pub const DP_TP_STATUS_B: u32 = 0x64144; // intel_display_regs.h:2330
+pub const DP_TP_CTL_ENABLE: u32 = 1 << 31; // intel_display_regs.h:2307
+pub const DP_TP_CTL_MODE_MASK: u32 = 1 << 27; // intel_display_regs.h:2309
+pub const DP_TP_CTL_MODE_SST: u32 = 0; // intel_display_regs.h:2310 REG_FIELD_PREP(MASK, 0)
+pub const DP_TP_CTL_MODE_MST: u32 = 1 << 27; // intel_display_regs.h:2311 REG_FIELD_PREP(MASK, 1)
+pub const DP_TP_CTL_ENHANCED_FRAME_ENABLE: u32 = 1 << 18; // intel_display_regs.h:2317
+pub const DP_TP_CTL_LINK_TRAIN_MASK: u32 = 7 << 8; // intel_display_regs.h:2319 REG_GENMASK(10, 8)
+pub const DP_TP_CTL_LINK_TRAIN_PAT1: u32 = 0 << 8; // intel_display_regs.h:2320
+pub const DP_TP_CTL_LINK_TRAIN_PAT2: u32 = 1 << 8; // intel_display_regs.h:2321
+pub const DP_TP_CTL_LINK_TRAIN_PAT3: u32 = 4 << 8; // intel_display_regs.h:2322
+pub const DP_TP_CTL_LINK_TRAIN_PAT4: u32 = 5 << 8; // intel_display_regs.h:2323
+pub const DP_TP_CTL_LINK_TRAIN_IDLE: u32 = 2 << 8; // intel_display_regs.h:2324
+pub const DP_TP_CTL_LINK_TRAIN_NORMAL: u32 = 3 << 8; // intel_display_regs.h:2325
+pub const DP_TP_STATUS_IDLE_DONE: u32 = 1 << 25; // intel_display_regs.h:2335
+/// `DP_TP_CTL(port)` = `_MMIO_PORT(port, _DP_TP_CTL_A, _DP_TP_CTL_B)` — intel_display_regs.h:2305.
+pub const fn dp_tp_ctl(port: Ddi) -> u32 {
+    DP_TP_CTL_A + (port as u32) * (DP_TP_CTL_B - DP_TP_CTL_A)
+}
+/// `DP_TP_STATUS(port)` — intel_display_regs.h:2332.
+pub const fn dp_tp_status(port: Ddi) -> u32 {
+    DP_TP_STATUS_A + (port as u32) * (DP_TP_STATUS_B - DP_TP_STATUS_A)
+}
+pub const DDI_BUF_TRANS_A: u32 = 0x64E00; // intel_display_regs.h:2379
+pub const DDI_BUF_TRANS_B: u32 = 0x64E60; // intel_display_regs.h:2380
+/// `DDI_BUF_BALANCE_LEG_ENABLE` (bit 31 of trans1) — intel_display_regs.h:2382.
+pub const DDI_BUF_BALANCE_LEG_ENABLE: u32 = 1 << 31; // intel_display_regs.h:2382
+/// `DDI_BUF_TRANS_LO(port, i)` — intel_display_regs.h:2381.
+pub const fn ddi_buf_trans_lo(port: Ddi, i: u32) -> u32 {
+    DDI_BUF_TRANS_A + (port as u32) * (DDI_BUF_TRANS_B - DDI_BUF_TRANS_A) + i * 8
+}
+/// `DDI_BUF_TRANS_HI(port, i)` — intel_display_regs.h:2383.
+pub const fn ddi_buf_trans_hi(port: Ddi, i: u32) -> u32 {
+    ddi_buf_trans_lo(port, i) + 4
+}
+/// `DISPIO_CR_TX_BMU_CR0` — intel_display_regs.h:45.
+pub const DISPIO_CR_TX_BMU_CR0: u32 = 0x6C00C; // intel_display_regs.h:45
+/// `BALANCE_LEG_SHIFT(port)` — intel_display_regs.h:47.
+pub const fn balance_leg_shift(port: Ddi) -> u32 {
+    8 + 3 * (port as u32)
+}
+/// `BALANCE_LEG_MASK(port)` — intel_display_regs.h:48.
+pub const fn balance_leg_mask(port: Ddi) -> u32 {
+    7 << (8 + 3 * (port as u32))
+}
+/// `BALANCE_LEG_DISABLE(port)` — intel_display_regs.h:51.
+pub const fn balance_leg_disable(port: Ddi) -> u32 {
+    1 << (23 + (port as u32))
+}
+/// `DDI_BUF_TRANS_SELECT(n)` = `REG_FIELD_PREP(DDI_BUF_EMP_MASK, n)` — intel_display_regs.h:2353.
+pub const fn ddi_buf_trans_select(n: u32) -> u32 {
+    (n << DDI_BUF_EMP_MASK.trailing_zeros()) & DDI_BUF_EMP_MASK
+}
+/// `DDI_PORT_WIDTH(width)` = `REG_FIELD_PREP(DDI_PORT_WIDTH_MASK, DDI_PORT_WIDTH_ENCODE(width))`; the encode maps 3 lanes to
+/// 4 and otherwise `width - 1` — intel_display_regs.h:2368-2371.
+pub const fn ddi_port_width(width: u32) -> u32 {
+    let enc = if width == 3 { 4 } else { width - 1 };
+    (enc << DDI_PORT_WIDTH_MASK.trailing_zeros()) & DDI_PORT_WIDTH_MASK
+}
+/// `PCH_RAWCLK_FREQ` — intel_display_regs.h:1807.
+pub const PCH_RAWCLK_FREQ: u32 = 0xc6204; // intel_display_regs.h:1807
+/// `RAWCLK_FREQ_MASK` — intel_display_regs.h:1812.
+pub const RAWCLK_FREQ_MASK: u32 = 0x3ff; // intel_display_regs.h:1812

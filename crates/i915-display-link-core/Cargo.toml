@@ -20,5 +20,6 @@ i915-common-core = { path = "../i915-common-core" }
 i915-devinfo-core = { path = "../i915-devinfo-core" }
 i915-vbt-core = { path = "../i915-vbt-core" }
 i915-kbl-display-core = { path = "../i915-kbl-display-core" }
+i915-gt-regs-core = { path = "../i915-gt-regs-core" }
 
 [workspace]

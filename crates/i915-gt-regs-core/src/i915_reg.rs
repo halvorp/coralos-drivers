@@ -117,3 +117,8 @@ pub const GEN7_PCODE_MIN_FREQ_TABLE_GT_RATIO_OUT_OF_RANGE: u32 = 0x10; // i915_r
 pub const SKL_PCODE_CDCLK_CONTROL: u32 = 0x7; // i915_reg.h:1107
 pub const SKL_CDCLK_PREPARE_FOR_CHANGE: u32 = 0x3; // i915_reg.h:1108
 pub const SKL_CDCLK_READY_FOR_CHANGE: u32 = 0x1; // i915_reg.h:1109
+
+/// `SOUTH_CHICKEN1` — i915_reg.h:1035 (re-homed from i915-display-link-core, 2026-10-12).
+pub const SOUTH_CHICKEN1: Reg = Reg::new(0xc2000); // i915_reg.h:1035
+/// `SPT_PWM_GRANULARITY` (SOUTH_CHICKEN1 bit 0) — i915_reg.h:1055.
+pub const SPT_PWM_GRANULARITY: u32 = bit(0); // i915_reg.h:1055

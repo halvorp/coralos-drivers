@@ -6,12 +6,10 @@
 //! WHERE THE REGISTERS LIVE (WAVE2-BRIEF: "one home per register"):
 //!  * `intel_dp_aux_regs.h`, `intel_pps_regs.h`, `intel_backlight_regs.h` are headers no existing crate owns, so they are
 //!    homed HERE.
-//!  * `DDI_BUF_CTL` and its fields are `intel_display_regs.h` and ALREADY live in `i915-kbl-display-core::regs`; they are
-//!    imported ([`ddi_buf_ctl`] and the `DDI_*` fields), never re-typed.
-//!  * `DP_TP_CTL`, `DP_TP_STATUS`, `DDI_BUF_TRANS_{LO,HI}` and `DISPIO_CR_TX_BMU_CR0` are also `intel_display_regs.h` but
-//!    are NOT in kbl-display-core yet (it is a read-only readout and this task may not edit it). They are parked in the
-//!    `ddi` section below and belong in `i915-kbl-display-core/src/regs.rs` when that crate is next extended; the offsets
-//!    are cited to `intel_display_regs.h` so the move is mechanical. `SOUTH_CHICKEN1` is `i915_reg.h` (PCH, not display).
+//!  * `DDI_BUF_CTL`, `DP_TP_CTL/STATUS`, `DDI_BUF_TRANS_{LO,HI}`, `DISPIO_CR_TX_BMU_CR0`, `PCH_RAWCLK_FREQ` are
+//!    `intel_display_regs.h` and live in `i915-kbl-display-core::regs`; `SOUTH_CHICKEN1` / `SPT_PWM_GRANULARITY` are
+//!    `i915_reg.h` and live in `i915-gt-regs-core::i915_reg`. They are RE-EXPORTED below (as `Reg` where link-core's
+//!    planners want one), never re-typed.
 //! Copyright (c) Intel Corporation.
 use i915_common_core::reg::{bit, field_prep, genmask};
 use i915_common_core::Reg;
@@ -68,72 +66,41 @@ pub const fn dp_aux_ch_ctl_sync_pulse_skl(c: u32) -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// intel_display_regs.h — DDI DP transport, buffer translation, balance leg (parked here, see module doc)
+// intel_display_regs.h — DDI DP transport, buffer translation, balance leg (re-exported from their one home, see module doc)
 // ---------------------------------------------------------------------------------------------------------------
-pub const DP_TP_CTL_A: u32 = 0x64040; // intel_display_regs.h:2302
-pub const DP_TP_CTL_B: u32 = 0x64140; // intel_display_regs.h:2303
-pub const DP_TP_STATUS_A: u32 = 0x64044; // intel_display_regs.h:2329
-pub const DP_TP_STATUS_B: u32 = 0x64144; // intel_display_regs.h:2330
-pub const DP_TP_CTL_ENABLE: u32 = bit(31); // intel_display_regs.h:2307
-pub const DP_TP_CTL_MODE_MASK: u32 = bit(27); // intel_display_regs.h:2309
-pub const DP_TP_CTL_MODE_SST: u32 = field_prep(DP_TP_CTL_MODE_MASK, 0); // intel_display_regs.h:2310
-pub const DP_TP_CTL_MODE_MST: u32 = field_prep(DP_TP_CTL_MODE_MASK, 1); // intel_display_regs.h:2311
-pub const DP_TP_CTL_ENHANCED_FRAME_ENABLE: u32 = bit(18); // intel_display_regs.h:2317
-pub const DP_TP_CTL_LINK_TRAIN_MASK: u32 = genmask(10, 8); // intel_display_regs.h:2319
-pub const DP_TP_CTL_LINK_TRAIN_PAT1: u32 = field_prep(DP_TP_CTL_LINK_TRAIN_MASK, 0); // intel_display_regs.h:2320
-pub const DP_TP_CTL_LINK_TRAIN_PAT2: u32 = field_prep(DP_TP_CTL_LINK_TRAIN_MASK, 1); // intel_display_regs.h:2321
-pub const DP_TP_CTL_LINK_TRAIN_PAT3: u32 = field_prep(DP_TP_CTL_LINK_TRAIN_MASK, 4); // intel_display_regs.h:2322
-pub const DP_TP_CTL_LINK_TRAIN_PAT4: u32 = field_prep(DP_TP_CTL_LINK_TRAIN_MASK, 5); // intel_display_regs.h:2323
-pub const DP_TP_CTL_LINK_TRAIN_IDLE: u32 = field_prep(DP_TP_CTL_LINK_TRAIN_MASK, 2); // intel_display_regs.h:2324
-pub const DP_TP_CTL_LINK_TRAIN_NORMAL: u32 = field_prep(DP_TP_CTL_LINK_TRAIN_MASK, 3); // intel_display_regs.h:2325
-pub const DP_TP_STATUS_IDLE_DONE: u32 = bit(25); // intel_display_regs.h:2335
+pub use i915_kbl_display_core::regs::{
+    DDI_BUF_BALANCE_LEG_ENABLE, DDI_BUF_TRANS_A, DDI_BUF_TRANS_B, DP_TP_CTL_A, DP_TP_CTL_B, DP_TP_CTL_ENABLE,
+    DP_TP_CTL_ENHANCED_FRAME_ENABLE, DP_TP_CTL_LINK_TRAIN_IDLE, DP_TP_CTL_LINK_TRAIN_MASK, DP_TP_CTL_LINK_TRAIN_NORMAL,
+    DP_TP_CTL_LINK_TRAIN_PAT1, DP_TP_CTL_LINK_TRAIN_PAT2, DP_TP_CTL_LINK_TRAIN_PAT3, DP_TP_CTL_LINK_TRAIN_PAT4,
+    DP_TP_CTL_MODE_MASK, DP_TP_CTL_MODE_MST, DP_TP_CTL_MODE_SST, DP_TP_STATUS_A, DP_TP_STATUS_B, DP_TP_STATUS_IDLE_DONE,
+    RAWCLK_FREQ_MASK,
+};
+pub use i915_kbl_display_core::regs::{
+    balance_leg_disable, balance_leg_mask, balance_leg_shift, ddi_buf_trans_select, ddi_port_width,
+};
+pub use i915_gt_regs_core::i915_reg::{SOUTH_CHICKEN1, SPT_PWM_GRANULARITY};
 
-/// `DP_TP_CTL(port)` = `_MMIO_PORT(port, _DP_TP_CTL_A, _DP_TP_CTL_B)` — intel_display_regs.h:2305.
+/// `DP_TP_CTL(port)` — intel_display_regs.h:2305 (offset arithmetic homed in `i915-kbl-display-core`).
 pub const fn dp_tp_ctl(port: i915_kbl_display_core::Ddi) -> Reg {
-    Reg::new(DP_TP_CTL_A + (port as u32) * (DP_TP_CTL_B - DP_TP_CTL_A))
+    Reg::new(i915_kbl_display_core::regs::dp_tp_ctl(port))
 }
 /// `DP_TP_STATUS(port)` — intel_display_regs.h:2332.
 pub const fn dp_tp_status(port: i915_kbl_display_core::Ddi) -> Reg {
-    Reg::new(DP_TP_STATUS_A + (port as u32) * (DP_TP_STATUS_B - DP_TP_STATUS_A))
+    Reg::new(i915_kbl_display_core::regs::dp_tp_status(port))
 }
-
-pub const DDI_BUF_TRANS_A: u32 = 0x64E00; // intel_display_regs.h:2379
-pub const DDI_BUF_TRANS_B: u32 = 0x64E60; // intel_display_regs.h:2380
-/// `DDI_BUF_BALANCE_LEG_ENABLE` (bit 31 of trans1) — intel_display_regs.h:2382.
-pub const DDI_BUF_BALANCE_LEG_ENABLE: u32 = bit(31); // intel_display_regs.h:2382
 /// `DDI_BUF_TRANS_LO(port, i)` — intel_display_regs.h:2381.
 pub const fn ddi_buf_trans_lo(port: i915_kbl_display_core::Ddi, i: u32) -> Reg {
-    Reg::new(DDI_BUF_TRANS_A + (port as u32) * (DDI_BUF_TRANS_B - DDI_BUF_TRANS_A) + i * 8)
+    Reg::new(i915_kbl_display_core::regs::ddi_buf_trans_lo(port, i))
 }
 /// `DDI_BUF_TRANS_HI(port, i)` — intel_display_regs.h:2383.
 pub const fn ddi_buf_trans_hi(port: i915_kbl_display_core::Ddi, i: u32) -> Reg {
-    Reg::new(DDI_BUF_TRANS_A + (port as u32) * (DDI_BUF_TRANS_B - DDI_BUF_TRANS_A) + i * 8 + 4)
+    Reg::new(i915_kbl_display_core::regs::ddi_buf_trans_hi(port, i))
 }
-
 /// `DISPIO_CR_TX_BMU_CR0` — intel_display_regs.h:45.
-pub const DISPIO_CR_TX_BMU_CR0: Reg = Reg::new(0x6C00C); // intel_display_regs.h:45
-/// `BALANCE_LEG_SHIFT(port)` — intel_display_regs.h:47.
-pub const fn balance_leg_shift(port: i915_kbl_display_core::Ddi) -> u32 {
-    8 + 3 * (port as u32)
-}
-/// `BALANCE_LEG_MASK(port)` — intel_display_regs.h:48.
-pub const fn balance_leg_mask(port: i915_kbl_display_core::Ddi) -> u32 {
-    7 << (8 + 3 * (port as u32))
-}
-/// `BALANCE_LEG_DISABLE(port)` — intel_display_regs.h:51.
-pub const fn balance_leg_disable(port: i915_kbl_display_core::Ddi) -> u32 {
-    1 << (23 + (port as u32))
-}
-/// `DDI_BUF_TRANS_SELECT(n)` = `REG_FIELD_PREP(DDI_BUF_EMP_MASK, n)` — intel_display_regs.h:2353.
-pub const fn ddi_buf_trans_select(n: u32) -> u32 {
-    field_prep(i915_kbl_display_core::regs::DDI_BUF_EMP_MASK, n)
-}
-/// `DDI_PORT_WIDTH(width)` = `REG_FIELD_PREP(DDI_PORT_WIDTH_MASK, DDI_PORT_WIDTH_ENCODE(width))`; the encode maps 3 lanes to
-/// 4 and otherwise `width - 1` — intel_display_regs.h:2368-2371.
-pub const fn ddi_port_width(width: u32) -> u32 {
-    let enc = if width == 3 { 4 } else { width - 1 };
-    field_prep(i915_kbl_display_core::regs::DDI_PORT_WIDTH_MASK, enc)
-}
+pub const DISPIO_CR_TX_BMU_CR0: Reg = Reg::new(i915_kbl_display_core::regs::DISPIO_CR_TX_BMU_CR0);
+/// `PCH_RAWCLK_FREQ` — intel_display_regs.h:1807.
+pub const PCH_RAWCLK_FREQ: Reg = Reg::new(i915_kbl_display_core::regs::PCH_RAWCLK_FREQ);
+
 
 // ---------------------------------------------------------------------------------------------------------------
 // intel_pps_regs.h — the panel power sequencer, at the PCH base (HAS_PCH_SPLIT, intel_pps.c:1775)
@@ -214,15 +181,3 @@ pub const BLM_PCH_POLARITY: u32 = bit(29); // intel_backlight_regs.h:84
 pub const BLC_PWM_PCH_CTL2: Reg = Reg::new(0xc8254); // intel_backlight_regs.h:85
 /// `BACKLIGHT_DUTY_CYCLE_MASK` (0xffff) — intel_backlight_regs.h:65.
 pub const BACKLIGHT_DUTY_CYCLE_MASK: u32 = 0xffff; // intel_backlight_regs.h:65
-/// `SOUTH_CHICKEN1` — i915_reg.h:1035.
-pub const SOUTH_CHICKEN1: Reg = Reg::new(0xc2000); // i915_reg.h:1035
-/// `SPT_PWM_GRANULARITY` (SOUTH_CHICKEN1 bit 0) — i915_reg.h:1055.
-pub const SPT_PWM_GRANULARITY: u32 = bit(0); // i915_reg.h:1055
-
-// ---------------------------------------------------------------------------------------------------------------
-// intel_display_regs.h — PCH raw clock (the PPS divisor and the SPT PWM both derive from it)
-// ---------------------------------------------------------------------------------------------------------------
-/// `PCH_RAWCLK_FREQ` — intel_display_regs.h:1807. Parked here like the other `intel_display_regs.h` registers (module doc).
-pub const PCH_RAWCLK_FREQ: Reg = Reg::new(0xc6204); // intel_display_regs.h:1807
-/// `RAWCLK_FREQ_MASK` — intel_display_regs.h:1812.
-pub const RAWCLK_FREQ_MASK: u32 = 0x3ff; // intel_display_regs.h:1812
