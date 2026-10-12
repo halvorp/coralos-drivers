@@ -6,14 +6,14 @@ use common::*;
 use i915_memory_core::regs::{GFX_FLSH_CNTL_EN, GFX_FLSH_CNTL_GEN6};
 use i915_memory_core::*;
 
-type G = Gtt<128, 4>;
+type G = Gtt;
 
 const SCRATCH: u64 = 0x9000;
 const GIB: u64 = 1 << 30;
 const END: u64 = (4 << 30) - 4096; // allocation ends one page before the top: the guard page
 
-fn ggtt<const V: usize>() -> (Gtt<V, 4>, UnbindPlan) {
-    Gtt::<V, 4>::new_ggtt(&kbl(), &geom_4g(), SCRATCH).unwrap()
+fn ggtt() -> (Gtt, UnbindPlan) {
+    Gtt::new_ggtt(&kbl(), &geom_4g(), SCRATCH).unwrap()
 }
 
 fn req(pages: &[u64], size: u64, place: Placement) -> BindRequest<'_> {
@@ -49,7 +49,7 @@ fn creation_refuses_other_generations_and_bad_scratch() {
 
 #[test]
 fn bind_stores_one_pte_per_page_at_gtt_base_plus_8_bytes_each() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pages = [0x10_0000u64, 0x30_0000, 0x20_0000];
     let p = g.plan_bind(&mut NoTablePages, &req(&pages, 3 * 4096, Placement::best())).unwrap();
     // first hole is after the 2-page error-capture slot: GGTT address 0x2000 = entry 2 = BAR0 + 0x800000 + 16
@@ -58,7 +58,7 @@ fn bind_stores_one_pte_per_page_at_gtt_base_plus_8_bytes_each() {
     assert_eq!(w, [gw(2, 0x10_0001), gw(3, 0x30_0001), gw(4, 0x20_0001)], "PTE = page | PRESENT, no cache bits, no RW");
     assert_eq!(w[0].target, Target::Ggtt { mmio_offset: 0x80_0010 });
     // a different cache level or RO flag changes nothing in the GGTT PTE (gen8_ggtt_insert_entries ignores them)
-    let (mut g2, _) = ggtt::<128>();
+    let (mut g2, _) = ggtt();
     let mut r = req(&pages, 3 * 4096, Placement::best());
     r.cache = CacheLevel::None;
     r.flags = i915_memory_core::pte::PTE_READ_ONLY;
@@ -71,7 +71,7 @@ fn bind_stores_one_pte_per_page_at_gtt_base_plus_8_bytes_each() {
 
 #[test]
 fn guard_pages_and_the_scratch_tail_are_scratch_entries() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pages = [0x10_0000u64];
     let mut r = req(&pages, 3 * 4096, Placement::with_mode(Mode::Fixed(0x10_0000)));
     r.guard = 4096;
@@ -88,7 +88,7 @@ fn guard_pages_and_the_scratch_tail_are_scratch_entries() {
 
 #[test]
 fn guard_is_rounded_up_to_the_alignment_as_i915_vma_insert_does() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pages = [0x10_0000u64];
     let mut r = req(&pages, 4096, Placement::best());
     r.alignment = 64 << 10;
@@ -102,7 +102,7 @@ fn guard_is_rounded_up_to_the_alignment_as_i915_vma_insert_does() {
 
 #[test]
 fn placement_modes_low_high_best_and_the_aperture() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     // HIGH: ends exactly at the guard page, which is never allocated
     let h = g.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::with_mode(Mode::High))).unwrap();
@@ -130,7 +130,7 @@ fn placement_modes_low_high_best_and_the_aperture() {
 
 #[test]
 fn best_fit_takes_the_smallest_hole_that_fits() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     let low = Placement::with_mode(Mode::Low);
     let a = g.plan_bind(&mut NoTablePages, &req(&pg, 4 * 4096, low)).unwrap(); // 0x2000..0x6000
@@ -149,7 +149,7 @@ fn best_fit_takes_the_smallest_hole_that_fits() {
 
 #[test]
 fn fixed_offsets_are_checked_and_never_land_on_a_reservation() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     let fx = |o| Placement::with_mode(Mode::Fixed(o));
     assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x1000))).err(), Some(MemError::RangeOccupied { start: 0x1000, len: 4096 }), "the error-capture slot");
@@ -166,8 +166,8 @@ fn fixed_offsets_are_checked_and_never_land_on_a_reservation() {
 }
 
 /// Fill the GGTT with four 1 GiB-ish nodes (pages are few; the node size reserves the space, the tail maps scratch).
-fn full() -> (Gtt<128, 4>, [VmaId; 4]) {
-    let (mut g, _) = ggtt::<128>();
+fn full() -> (Gtt, [VmaId; 4]) {
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     let low = Placement::with_mode(Mode::Low);
     let a = g.plan_bind(&mut NoTablePages, &req(&pg, GIB, low)).unwrap().vma();
@@ -237,7 +237,7 @@ fn pinned_nodes_and_reservations_are_never_victims_and_cannot_be_unbound() {
 
 #[test]
 fn a_fixed_range_over_live_nodes_evicts_them_only_when_allowed() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     let a = g.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::with_mode(Mode::Fixed(0x10_0000)))).unwrap().vma();
     let fx = Placement::with_mode(Mode::Fixed(0x10_0000));
@@ -250,29 +250,23 @@ fn a_fixed_range_over_live_nodes_evicts_them_only_when_allowed() {
 }
 
 #[test]
-fn bounds_are_enforced_victims_vmas_and_the_op_buffer() {
-    // victims: a fixed range over 17 live one-page nodes needs 17 victims; the cap is MAX_EVICT = 16
-    let (mut g, _) = ggtt::<128>();
+fn victims_and_vmas_grow_past_the_old_caps() {
+    // RUNTIME-TABLES-HAVE-NO-CAP: the old caps were 16 victims per plan and 128 VMAs per space.
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
-    for i in 0..17u64 {
+    for i in 0..300u64 {
         g.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::with_mode(Mode::Fixed(0x10_0000 + i * 4096)))).unwrap();
     }
-    let big = req(&pg, 17 * 4096, Placement::with_mode(Mode::Fixed(0x10_0000)).evicting());
-    assert_eq!(g.plan_bind(&mut NoTablePages, &big).err(), Some(MemError::PlanTooLarge { what: "victims", cap: MAX_EVICT }));
-    assert_eq!(MAX_EVICT, 16);
-    assert_eq!(g.live_nodes(), 18, "a refused plan changed nothing");
-    // VMA table: capacity 3 holds the reservation plus two nodes
-    let (mut s, _) = ggtt::<3>();
-    s.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::best())).unwrap();
-    s.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::best())).unwrap();
-    assert_eq!(s.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::best())).err(), Some(MemError::VmaTableFull { cap: 3 }));
-    // eviction frees a slot, so a full table still binds when it evicts
-    assert!(s.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::with_mode(Mode::Fixed(0x2000)).evicting())).is_ok());
+    assert_eq!(g.live_nodes(), 301, "300 nodes plus the error-capture reservation: far past the old 128");
+    let big = req(&pg, 300 * 4096, Placement::with_mode(Mode::Fixed(0x10_0000)).evicting());
+    let p = g.plan_bind(&mut NoTablePages, &big).unwrap();
+    assert_eq!(p.evicted().len(), 300, "one plan evicts 300 victims: far past the old 16");
+    assert_eq!(g.live_nodes(), 2, "the reservation and the one big node");
 }
 
 #[test]
 fn ids_are_never_reused() {
-    let (mut g, _) = ggtt::<128>();
+    let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     let a = g.plan_bind(&mut NoTablePages, &req(&pg, 4096, Placement::best())).unwrap().vma();
     g.plan_unbind(a).unwrap();

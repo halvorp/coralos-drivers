@@ -12,13 +12,9 @@ use crate::nodes::VmaId;
 use crate::pte::{gen8_ggtt_pte_encode, gen8_pte_encode, CacheLevel};
 use crate::regs::{GFX_FLSH_CNTL_EN, GFX_FLSH_CNTL_GEN6};
 use crate::{GttKind, MemError, ENTRIES_PER_TABLE};
+use alloc::vec::Vec;
 use i915_common_core::Reg;
 
-/// Most ops one plan may hold. A PT run covers 512 pages (2 MiB), so one plan reaches roughly 300 MiB of dense bind; larger
-/// binds are split by the caller. Enforced in [`Ops::push`].
-pub const MAX_OPS: usize = 512;
-/// Most victims one plan may evict. Enforced by the allocator.
-pub const MAX_EVICT: usize = 16;
 
 /// One step of a plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,8 +36,6 @@ pub enum Op {
 }
 
 impl Op {
-    const NONE: Op = Op::AwaitRetire { vma: VmaId(0) };
-
     /// 64-bit stores this op performs.
     pub const fn entries(&self) -> u32 {
         match *self {
@@ -92,32 +86,29 @@ pub enum Flush {
     PpgttTlb,
 }
 
-/// Fixed-capacity op list.
-#[derive(Clone, Copy, Debug)]
+/// The op list of one plan. Its length follows the size of the bind (about three ops per fresh 2 MiB), a count the client
+/// chooses, so it has no compile-time cap: it grows with memory and a refused growth is [`MemError::OutOfMemory`] (`plan ops`).
+#[derive(Clone, Debug)]
 pub struct Ops {
-    arr: [Op; MAX_OPS],
-    len: usize,
+    arr: Vec<Op>,
 }
 
 impl Ops {
     pub const fn new() -> Ops {
-        Ops { arr: [Op::NONE; MAX_OPS], len: 0 }
+        Ops { arr: Vec::new() }
     }
     pub fn push(&mut self, op: Op) -> Result<(), MemError> {
-        if self.len == MAX_OPS {
-            return Err(MemError::PlanTooLarge { what: "ops", cap: MAX_OPS });
-        }
-        self.arr[self.len] = op;
-        self.len += 1;
+        self.arr.try_reserve(1).map_err(|_| MemError::OutOfMemory { what: "plan ops" })?;
+        self.arr.push(op);
         Ok(())
     }
     pub fn as_slice(&self) -> &[Op] {
-        &self.arr[..self.len]
+        &self.arr
     }
 }
 
 /// The result of [`crate::Gtt::plan_bind`] (and, with no pages, of [`crate::Gtt::plan_unbind`]).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BindPlan<'a> {
     pub(crate) kind: GttKind,
     pub(crate) vma: VmaId,
@@ -128,8 +119,7 @@ pub struct BindPlan<'a> {
     pub(crate) cache: CacheLevel,
     pub(crate) pte_flags: u32,
     pub(crate) ops: Ops,
-    pub(crate) evicted: [VmaId; MAX_EVICT],
-    pub(crate) n_evicted: usize,
+    pub(crate) evicted: Vec<VmaId>,
     pub(crate) new_tables: u32,
 }
 
@@ -153,7 +143,7 @@ impl<'a> BindPlan<'a> {
     }
     /// VMAs this plan evicted; each has its `AwaitRetire` + scratch fill in [`BindPlan::ops`] ahead of the new range.
     pub fn evicted(&self) -> &[VmaId] {
-        &self.evicted[..self.n_evicted]
+        &self.evicted
     }
     /// Table pages this plan consumed from the caller's [`crate::TablePageSource`] (or the spare pool).
     pub fn new_tables(&self) -> u32 {

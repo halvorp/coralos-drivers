@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The address-range allocator and its eviction policy: a fixed-capacity, address-sorted node table.
+//! The address-range allocator and its eviction policy: a growable, address-sorted node table.
 //!
 //! Policy ported from i915_gem_gtt.c (`i915_gem_gtt_insert`, :189 - BEST by default, HIGH for `PIN_HIGH`, LOW for `PIN_MAPPABLE`;
 //! `i915_gem_gtt_reserve` for fixed offsets) and the victim selection of i915_gem_evict.c (`i915_gem_evict_something`: take
 //! unpinned nodes oldest-first until a hole fits, then give back the ones that turned out not to be needed). The `drm_mm`
-//! red-black tree is replaced by a sorted array: capacity `V` is a declared bound and [`MemError::VmaTableFull`] enforces it.
+//! red-black tree is replaced by a sorted `Vec`: how many VMAs a client keeps is the client's choice, so there is no compile-time
+//! capacity (RUNTIME-TABLES-HAVE-NO-CAP) - growth is fallible and refused as [`MemError::OutOfMemory`] before anything changes.
 //! Linux's RANDOM replacement slot (:274) is deliberately not ported - a planner must be deterministic and testable.
 
-use crate::plan::MAX_EVICT;
+use alloc::vec::Vec;
 use crate::{MemError, GTT_PAGE};
 
 /// A live node's handle. Ids are never reused within one [`crate::Gtt`].
@@ -71,7 +72,6 @@ pub(crate) struct Node {
 }
 
 impl Node {
-    const EMPTY: Node = Node { id: 0, start: 0, size: 0, guard: 0, bound_pages: 0, pinned: false, reserved: false, last_use: 0 };
     pub const fn end(&self) -> u64 {
         self.start + self.size
     }
@@ -86,9 +86,8 @@ impl Node {
     }
 }
 
-pub(crate) struct Nodes<const V: usize> {
-    arr: [Node; V],
-    len: usize,
+pub(crate) struct Nodes {
+    arr: Vec<Node>,
     next_id: u32,
     clock: u64,
 }
@@ -96,8 +95,8 @@ pub(crate) struct Nodes<const V: usize> {
 /// A chosen position plus the victims whose removal makes it free.
 pub(crate) struct Choice {
     pub start: u64,
-    pub victims: [usize; MAX_EVICT],
-    pub n_victims: usize,
+    /// Indices (into the table) of the nodes the choice evicts; as many as the hole needs, no fixed count.
+    pub victims: Vec<usize>,
 }
 
 const fn align_up(v: u64, a: u64) -> Option<u64> {
@@ -107,12 +106,16 @@ const fn align_up(v: u64, a: u64) -> Option<u64> {
     }
 }
 
-impl<const V: usize> Nodes<V> {
+impl Nodes {
     pub const fn new() -> Self {
-        Nodes { arr: [Node::EMPTY; V], len: 0, next_id: 1, clock: 0 }
+        Nodes { arr: Vec::new(), next_id: 1, clock: 0 }
     }
     pub fn len(&self) -> usize {
-        self.len
+        self.arr.len()
+    }
+    /// Make room for `n` more nodes before anything is committed, so a later [`Nodes::insert`] cannot fail.
+    pub fn reserve(&mut self, n: usize) -> Result<(), MemError> {
+        self.arr.try_reserve(n).map_err(|_| MemError::OutOfMemory { what: "vma table" })
     }
     pub fn get(&self, i: usize) -> &Node {
         &self.arr[i]
@@ -121,7 +124,7 @@ impl<const V: usize> Nodes<V> {
         &mut self.arr[i]
     }
     pub fn index_of(&self, id: u32) -> Option<usize> {
-        self.arr[..self.len].iter().position(|n| n.id == id)
+        self.arr.iter().position(|n| n.id == id)
     }
     pub fn tick(&mut self) -> u64 {
         self.clock += 1;
@@ -130,42 +133,29 @@ impl<const V: usize> Nodes<V> {
 
     /// Insert keeping address order; returns the new id.
     pub fn insert(&mut self, mut n: Node) -> Result<u32, MemError> {
-        if self.len == V {
-            return Err(MemError::VmaTableFull { cap: V });
-        }
+        self.reserve(1)?;
         n.id = self.next_id;
         self.next_id += 1;
         n.last_use = self.tick();
-        let at = self.arr[..self.len].iter().position(|m| m.start > n.start).unwrap_or(self.len);
-        let mut i = self.len;
-        while i > at {
-            self.arr[i] = self.arr[i - 1];
-            i -= 1;
-        }
-        self.arr[at] = n;
-        self.len += 1;
+        let at = self.arr.iter().position(|m| m.start > n.start).unwrap_or(self.arr.len());
+        self.arr.insert(at, n);
         Ok(n.id)
     }
 
     pub fn remove(&mut self, idx: usize) -> Node {
-        let n = self.arr[idx];
-        for i in idx..self.len - 1 {
-            self.arr[i] = self.arr[i + 1];
-        }
-        self.len -= 1;
-        n
+        self.arr.remove(idx)
     }
 
     /// The node whose DATA range holds `va`, or whose guard does (second value).
     pub fn find_va(&self, va: u64) -> Option<(usize, bool)> {
-        self.arr[..self.len].iter().position(|n| va >= n.start && va < n.end()).map(|i| {
+        self.arr.iter().position(|n| va >= n.start && va < n.end()).map(|i| {
             let n = &self.arr[i];
             (i, va >= n.data_start() && va < n.data_start() + n.bound_pages * GTT_PAGE)
         })
     }
 
     /// First hole in `[lo, hi)` for `size` bytes at `align`, ignoring nodes flagged in `gone`.
-    fn find_hole(&self, size: u64, align: u64, lo: u64, hi: u64, mode: Mode, gone: &[bool; V]) -> Option<u64> {
+    fn find_hole(&self, size: u64, align: u64, lo: u64, hi: u64, mode: Mode, gone: &[bool]) -> Option<u64> {
         let mut best: Option<(u64, u64)> = None; // (hole length, start)
         let mut high: Option<u64> = None;
         let mut prev_end = lo;
@@ -196,7 +186,7 @@ impl<const V: usize> Nodes<V> {
                 },
             }
         };
-        for (i, n) in self.arr[..self.len].iter().enumerate() {
+        for (i, n) in self.arr.iter().enumerate() {
             if gone[i] {
                 continue;
             }
@@ -215,73 +205,68 @@ impl<const V: usize> Nodes<V> {
         }
     }
 
-    /// Place `size` bytes (guard-inclusive) at `align` inside `[lo, hi)`. `evict` allows unpinned nodes to be victims.
+    /// Place `size` bytes (guard-inclusive) at `align` inside `[lo, hi)`. `evict` allows unpinned nodes to be victims. The scratch
+    /// lists it needs (victims, the scan marks, the scan order) are sized by the live node count and obtained fallibly, so a
+    /// refused allocation is [`MemError::OutOfMemory`] with the table untouched (this function only reads it).
     pub fn choose(&self, size: u64, align: u64, lo: u64, hi: u64, mode: Mode, evict: bool) -> Result<Choice, MemError> {
-        let mut gone = [false; V];
-        let mut victims = [0usize; MAX_EVICT];
-        let mut nv = 0usize;
+        let oom = |what| MemError::OutOfMemory { what };
+        let mut victims: Vec<usize> = Vec::new();
         if let Mode::Fixed(start) = mode {
             // i915_gem_gtt_reserve + i915_gem_evict_for_node: every overlapping node must go, and each must be evictable.
             let end = start + size;
-            for (i, n) in self.arr[..self.len].iter().enumerate() {
+            for (i, n) in self.arr.iter().enumerate() {
                 if n.start < end && start < n.end() {
                     if !evict || !n.evictable() {
                         return Err(MemError::RangeOccupied { start, len: size });
                     }
-                    if nv == MAX_EVICT {
-                        return Err(MemError::PlanTooLarge { what: "victims", cap: MAX_EVICT });
-                    }
-                    victims[nv] = i;
-                    nv += 1;
+                    victims.try_reserve(1).map_err(|_| oom("victims"))?;
+                    victims.push(i);
                 }
             }
-            return Ok(Choice { start, victims, n_victims: nv });
+            return Ok(Choice { start, victims });
         }
+        let n = self.arr.len();
+        let mut gone: Vec<bool> = Vec::new();
+        gone.try_reserve_exact(n).map_err(|_| oom("scratch"))?;
+        gone.resize(n, false);
         if let Some(start) = self.find_hole(size, align, lo, hi, mode, &gone) {
-            return Ok(Choice { start, victims, n_victims: 0 });
+            return Ok(Choice { start, victims });
         }
         if !evict {
             return Err(MemError::NoSpace { size });
         }
         // Oldest-first until a hole opens (i915_gem_evict_something, scan list in LRU order).
-        let mut order = [0usize; V];
-        let mut picked = 0usize;
+        let mut order: Vec<usize> = Vec::new();
+        order.try_reserve_exact(n).map_err(|_| oom("scratch"))?;
         let found = loop {
             let mut oldest: Option<usize> = None;
-            for (i, n) in self.arr[..self.len].iter().enumerate() {
-                if gone[i] || !n.evictable() {
+            for (i, node) in self.arr.iter().enumerate() {
+                if gone[i] || !node.evictable() {
                     continue;
                 }
-                if oldest.map_or(true, |o| n.last_use < self.arr[o].last_use) {
+                if oldest.map_or(true, |o| node.last_use < self.arr[o].last_use) {
                     oldest = Some(i);
                 }
             }
             let Some(o) = oldest else { return Err(MemError::NoSpace { size }) };
             gone[o] = true;
-            order[picked] = o;
-            picked += 1;
+            order.push(o); // capacity n was reserved above: at most n nodes can be picked
             if let Some(s) = self.find_hole(size, align, lo, hi, mode, &gone) {
                 break s;
             }
         };
         // Give back every victim the hole does not actually need (drm_mm_scan_remove_block order: newest first).
         let mut start = found;
-        for k in (0..picked).rev() {
-            gone[order[k]] = false;
+        for &k in order.iter().rev() {
+            gone[k] = false;
             match self.find_hole(size, align, lo, hi, mode, &gone) {
                 Some(s) => start = s,
-                None => gone[order[k]] = true,
+                None => gone[k] = true,
             }
         }
-        for (i, g) in gone[..self.len].iter().enumerate() {
-            if *g {
-                if nv == MAX_EVICT {
-                    return Err(MemError::PlanTooLarge { what: "victims", cap: MAX_EVICT });
-                }
-                victims[nv] = i;
-                nv += 1;
-            }
-        }
-        Ok(Choice { start, victims, n_victims: nv })
+        let count = gone.iter().filter(|g| **g).count();
+        victims.try_reserve_exact(count).map_err(|_| oom("victims"))?;
+        victims.extend(gone.iter().enumerate().filter(|(_, g)| **g).map(|(i, _)| i));
+        Ok(Choice { start, victims })
     }
 }

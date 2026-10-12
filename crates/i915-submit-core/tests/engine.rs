@@ -29,7 +29,7 @@ fn config() -> EngineConfig {
     EngineConfig { status_page_ggtt: STATUS_PAGE, quirks: FlushQuirks { vf_flush_wa: true, dc_flush_wa_kbl: false }, wa_ctx: None, stall_bound: BOUND }
 }
 
-fn rcs<const C: usize, const R: usize>() -> Engine<C, R> {
+fn rcs() -> Engine {
     Engine::new(&kbl_engine(EngineClass::Render), 9, config()).unwrap()
 }
 
@@ -72,7 +72,7 @@ fn expected_request(hwsp: u32, seqno: u32, initial: bool, batch: &BatchSpec) -> 
 
 #[test]
 fn a_request_is_flush_init_breadcrumb_batch_and_fini_breadcrumb_in_that_order() {
-    let mut e = rcs::<2, 8>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     let rq = e.build_request(c, &mut mem, &BATCH).unwrap();
@@ -95,7 +95,7 @@ fn a_request_is_flush_init_breadcrumb_batch_and_fini_breadcrumb_in_that_order() 
 
 #[test]
 fn a_kernel_timeline_has_no_initial_breadcrumb_and_steps_by_one() {
-    let mut e = rcs::<2, 8>();
+    let mut e = rcs();
     let mut s = spec(0);
     s.initial_breadcrumb = false;
     let c = e.create_context(&s).unwrap();
@@ -112,7 +112,7 @@ fn a_kernel_timeline_has_no_initial_breadcrumb_and_steps_by_one() {
 #[test]
 fn the_other_engines_use_the_xcs_emitters() {
     let info = kbl_engine(EngineClass::VideoDecode);
-    let mut e = Engine::<1, 4>::new(&info, 9, config()).unwrap();
+    let mut e = Engine::new(&info, 9, config()).unwrap();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     e.build_request(c, &mut mem, &BATCH).unwrap();
@@ -129,7 +129,7 @@ fn the_other_engines_use_the_xcs_emitters() {
 
 #[test]
 fn a_no_preempt_batch_uses_the_four_dword_form() {
-    let mut e = rcs::<1, 4>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     let b = BatchSpec { nopreempt: true, ..BATCH };
@@ -141,7 +141,7 @@ fn a_no_preempt_batch_uses_the_four_dword_form() {
 
 #[test]
 fn a_refused_request_leaves_the_engine_exactly_as_it_was() {
-    let mut e = rcs::<1, 32>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     // a ring mapping of the wrong size
@@ -172,7 +172,7 @@ fn a_refused_request_leaves_the_engine_exactly_as_it_was() {
 
 #[test]
 fn ring_full_is_refused_by_name_and_clears_after_retire() {
-    let mut e = rcs::<1, 32>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     let mut built = vec![];
@@ -195,7 +195,7 @@ fn ring_full_is_refused_by_name_and_clears_after_retire() {
 
 #[test]
 fn the_ring_wraps_with_noop_fill_and_requests_stay_contiguous() {
-    let mut e = rcs::<1, 32>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     let mut last = None;
@@ -217,7 +217,7 @@ fn the_ring_wraps_with_noop_fill_and_requests_stay_contiguous() {
 
 #[test]
 fn a_packet_that_does_not_fit_before_the_end_restarts_at_zero_after_zeroed_noops() {
-    let mut e = rcs::<1, 32>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     let mut mem = ring_mem(4096);
     let mut found = None;
@@ -256,26 +256,31 @@ fn a_packet_that_does_not_fit_before_the_end_restarts_at_zero_after_zeroed_noops
 }
 
 #[test]
-fn request_and_context_tables_are_bounded_by_name() {
-    let mut e = rcs::<2, 3>();
-    let a = e.create_context(&spec(0)).unwrap();
-    let b = e.create_context(&spec(1)).unwrap();
-    assert_eq!((a, b), (0, 1));
-    assert_eq!(e.create_context(&spec(2)).unwrap_err(), SubmitError::ContextTableFull { capacity: 2 });
+fn context_and_request_tables_grow_past_the_old_caps() {
+    // RUNTIME-TABLES-HAVE-NO-CAP: the tests used to run a 2-context / 3-request engine and the callers 4 / 16.
+    let mut e = rcs();
     let mut mem = ring_mem(4096);
-    for _ in 0..3 {
-        e.build_request(a, &mut mem, &BATCH).unwrap();
+    let ids: Vec<u32> = (0..300).map(|n| e.create_context(&spec(n)).unwrap()).collect();
+    assert_eq!(ids, (0..300).collect::<Vec<u32>>(), "ids are slot indices, dense");
+    for &c in &ids {
+        for _ in 0..3 {
+            e.build_request(c, &mut mem, &BATCH).unwrap();
+        }
     }
-    let e2 = e.build_request(a, &mut mem, &BATCH).unwrap_err();
-    assert_eq!(e2, SubmitError::RequestTableFull { capacity: 3 });
-    assert_eq!(e2.name(), "REQUEST-TABLE-FULL");
-    assert_eq!(e.requests().len(), 3);
-    assert_eq!(e.build_request(7, &mut mem, &BATCH).unwrap_err(), SubmitError::RequestTableFull { capacity: 3 }, "table check comes first");
+    assert_eq!(e.requests().len(), 900);
+    // a destroyed context's slot is reused before the table grows
+    e.destroy_context(299).unwrap_err(); // has requests: busy
+    let mut e2 = rcs();
+    let a = e2.create_context(&spec(0)).unwrap();
+    let b = e2.create_context(&spec(1)).unwrap();
+    e2.destroy_context(a).unwrap();
+    assert_eq!(e2.create_context(&spec(2)).unwrap(), a);
+    assert_eq!(e2.create_context(&spec(3)).unwrap(), b + 1);
 }
 
 #[test]
 fn unknown_and_busy_contexts_are_refused_by_name() {
-    let mut e = rcs::<2, 4>();
+    let mut e = rcs();
     let mut mem = ring_mem(4096);
     assert_eq!(e.build_request(0, &mut mem, &BATCH).unwrap_err(), SubmitError::NoSuchContext { id: 0 });
     assert_eq!(e.retire(1).unwrap_err().name(), "NO-SUCH-CONTEXT");
@@ -291,7 +296,7 @@ fn unknown_and_busy_contexts_are_refused_by_name() {
 
 #[test]
 fn bad_timeline_slots_and_rings_are_refused_at_context_creation() {
-    let mut e = rcs::<2, 4>();
+    let mut e = rcs();
     let mut s = spec(0);
     s.hwsp_ggtt = 0x3004; // not qword aligned
     assert_eq!(e.create_context(&s).unwrap_err().name(), "SEQNO-SLOT-INVALID");
@@ -311,12 +316,12 @@ fn engine_construction_checks_its_inputs() {
     let info = kbl_engine(EngineClass::Render);
     let mut cfg = config();
     cfg.stall_bound = 0;
-    assert_eq!(Engine::<1, 1>::new(&info, 9, cfg).unwrap_err(), SubmitError::ZeroBound { what: "stall_bound" });
+    assert_eq!(Engine::new(&info, 9, cfg).unwrap_err(), SubmitError::ZeroBound { what: "stall_bound" });
     let mut cfg = config();
     cfg.status_page_ggtt = 0x40800;
-    assert_eq!(Engine::<1, 1>::new(&info, 9, cfg).unwrap_err().name(), "GGTT-UNALIGNED");
+    assert_eq!(Engine::new(&info, 9, cfg).unwrap_err().name(), "GGTT-UNALIGNED");
     for gen in [7u8, 10, 11, 12] {
-        assert_eq!(Engine::<1, 1>::new(&info, gen, config()).unwrap_err(), SubmitError::UnsupportedGeneration { gen });
+        assert_eq!(Engine::new(&info, gen, config()).unwrap_err(), SubmitError::UnsupportedGeneration { gen });
     }
 }
 
@@ -326,7 +331,7 @@ fn the_context_image_is_22_pages_for_a_render_engine_and_the_state_page_is_page_
     assert_eq!(r.context_size, 22 * 4096, "GEN9_LR_CONTEXT_RENDER_SIZE (intel_engine_cs.c:47)");
     assert_eq!(kbl_engine(EngineClass::Copy).context_size, 2 * 4096, "GEN8_LR_CONTEXT_OTHER_SIZE (:50)");
     assert!(LRC_STATE_OFFSET + 4096 <= r.context_size);
-    let mut e = rcs::<1, 1>();
+    let mut e = rcs();
     let c = e.create_context(&spec(0)).unwrap();
     assert_eq!(e.context_regs(c).unwrap().as_slice().len(), PAGE_DWORDS);
     assert_eq!(e.context_regs(c).unwrap().as_slice().len() * 4 + LRC_STATE_OFFSET as usize, 2 * 4096);
@@ -334,7 +339,7 @@ fn the_context_image_is_22_pages_for_a_render_engine_and_the_state_page_is_page_
 
 #[test]
 fn a_new_context_image_points_at_its_ring_and_address_space() {
-    let mut e = rcs::<2, 4>();
+    let mut e = rcs();
     let c = e.create_context(&spec(1)).unwrap();
     let regs = e.context_regs(c).unwrap();
     assert_eq!(regs.get(CTX_RING_START), 0x0200_1000);
@@ -352,7 +357,7 @@ fn a_new_context_image_points_at_its_ring_and_address_space() {
 
 #[test]
 fn a_default_state_page_is_kept_and_not_inhibited() {
-    let mut e = rcs::<1, 1>();
+    let mut e = rcs();
     let page = RegState::from_default_state(&[0xa5a5_a5a5; PAGE_DWORDS]);
     let mut s = spec(0);
     s.default_state = Some(&page);
@@ -365,13 +370,13 @@ fn a_default_state_page_is_kept_and_not_inhibited() {
 // ---- submission ------------------------------------------------------------------------------------------------------------
 
 struct Rig {
-    e: Engine<4, 16>,
+    e: Engine,
     mem: [Vec<u32>; 4],
 }
 
 impl Rig {
     fn new() -> Rig {
-        let mut e = rcs::<4, 16>();
+        let mut e = rcs();
         for n in 0..3 {
             e.create_context(&spec(n)).unwrap();
         }

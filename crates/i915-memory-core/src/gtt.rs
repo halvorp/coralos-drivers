@@ -10,10 +10,11 @@
 //! bind in both spaces (Linux relies on `fill_px` of fresh tables for the PPGTT).
 
 use crate::nodes::{Node, Nodes, Choice, Mode, Placement, VmaId};
-use crate::plan::{BindPlan, Op, Ops, UnbindPlan, MAX_EVICT};
+use crate::plan::{BindPlan, Op, Ops, UnbindPlan};
 use crate::probe::GgttGeometry;
 use crate::pte::{gen8_ggtt_pte_encode, gen8_pde_encode, gen8_pte_encode, CacheLevel, PTE_LM, PTE_READ_ONLY};
-use crate::{MemError, ENTRIES_PER_TABLE, GTT_PAGE, MAX_SPARE, PPGTT_BITS};
+use crate::{MemError, ENTRIES_PER_TABLE, GTT_PAGE, PPGTT_BITS};
+use alloc::vec::Vec;
 use i915_devinfo_core::{PlatformDescriptor, PpgttType};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -96,21 +97,24 @@ pub struct Walk {
     pub table: [Option<u64>; 4],
 }
 
-pub struct Gtt<const V: usize = 128, const T: usize = 1024> {
+/// One address space. The VMA table, the page-table table and the spare pool are growable `alloc` collections (no compile-time
+/// capacity: how many buffers a client binds, and so how many table pages they need, is the client's choice); each growth is
+/// fallible and refused as [`MemError::OutOfMemory`] before the space changes.
+pub struct Gtt {
     kind: GttKind,
     total: u64,
     alloc_end: u64,
     mappable_end: u64,
     dma_bits: u8,
-    nodes: Nodes<V>,
+    nodes: Nodes,
     /// `scratch[0]->encode` for the GGTT; `enc[0]` for the PPGTT.
     enc: [u64; 4],
-    tables: [Table; T],
-    n_tables: usize,
-    spare: [u64; MAX_SPARE],
-    n_spare: usize,
-    leaked: u32,
-    /// The PML4 and scratch-chain pages (PPGTT): a table page may never alias them.
+    tables: Vec<Table>,
+    /// Table pages parked by a rolled-back plan, reused before the source is asked again. Its capacity is kept at or above
+    /// `spare.len() + tables.len()` (see [`Gtt::reserve_table_slot`]) so a rollback can never fail to park a page.
+    spare: Vec<u64>,
+    /// The PML4 and scratch-chain pages (PPGTT): a table page may never alias them. FIXED by hardware: a 4-level tree has one
+    /// PML4 and `gen8_init_scratch` makes exactly 4 scratch pages (gen8_ppgtt.c:826).
     fixed: [u64; 5],
 }
 
@@ -118,7 +122,7 @@ const fn align_up(v: u64, a: u64) -> u64 {
     (v + a - 1) & !(a - 1)
 }
 
-impl<const V: usize, const T: usize> Gtt<V, T> {
+impl Gtt {
     fn blank(kind: GttKind, total: u64, alloc_end: u64, mappable_end: u64, dma_bits: u8) -> Self {
         Gtt {
             kind,
@@ -128,11 +132,8 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
             dma_bits,
             nodes: Nodes::new(),
             enc: [0; 4],
-            tables: [Table { level: 0, base: 0, addr: 0 }; T],
-            n_tables: 0,
-            spare: [0; MAX_SPARE],
-            n_spare: 0,
-            leaked: 0,
+            tables: Vec::new(),
+            spare: Vec::new(),
             fixed: [u64::MAX; 5],
         }
     }
@@ -169,7 +170,7 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         let mut ops = Ops::new();
         // clear every entry, last page included (the "guard page", intel_ggtt.c:953)
         ops.push(Op::GgttFill { first: 0, count: geom.entries as u32, value: g.enc[0] })?;
-        let p = g.plan(ops, VmaId(0), 0, 0, 0, &[], CacheLevel::None, 0, 0, 0, [VmaId(0); MAX_EVICT]);
+        let p = g.plan(ops, VmaId(0), 0, 0, 0, &[], CacheLevel::None, 0, Vec::new(), 0);
         Ok((g, p))
     }
 
@@ -198,9 +199,9 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         }
         ops.push(Op::FillTable { table: init.pml4, entry: g.enc[3] })?; // gen8_alloc_top_pd: fill_page_dma(.., scratch[top]->encode), :948
         g.fixed = all;
-        g.tables[0] = Table { level: 3, base: 0, addr: init.pml4 };
-        g.n_tables = 1;
-        let p = g.plan(ops, VmaId(0), 0, 0, 0, &[], CacheLevel::None, 0, 0, 0, [VmaId(0); MAX_EVICT]);
+        g.reserve_table_slot()?;
+        g.tables.push(Table { level: 3, base: 0, addr: init.pml4 });
+        let p = g.plan(ops, VmaId(0), 0, 0, 0, &[], CacheLevel::None, 0, Vec::new(), 0);
         Ok((g, p))
     }
 
@@ -215,11 +216,10 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         pages: &'a [u64],
         cache: CacheLevel,
         pte_flags: u32,
-        n_evicted: usize,
+        evicted: Vec<VmaId>,
         new_tables: u32,
-        evicted: [VmaId; MAX_EVICT],
     ) -> BindPlan<'a> {
-        BindPlan { kind: self.kind, vma, offset, node_start, node_size, pages, cache, pte_flags, ops, evicted, n_evicted, new_tables }
+        BindPlan { kind: self.kind, vma, offset, node_start, node_size, pages, cache, pte_flags, ops, evicted, new_tables }
     }
 
     pub fn kind(&self) -> GttKind {
@@ -240,14 +240,10 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         self.nodes.len()
     }
     pub fn table_count(&self) -> usize {
-        self.n_tables
+        self.tables.len()
     }
     pub fn spare_pages(&self) -> usize {
-        self.n_spare
-    }
-    /// Table pages that could not even be parked in the spare pool (so the caller can see the loss).
-    pub fn leaked_pages(&self) -> u32 {
-        self.leaked
+        self.spare.len()
     }
 
     /// Mark a node in use by a request (it will not be evicted or unbound) or free again.
@@ -305,7 +301,7 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
     }
 
     fn find(&self, level: u8, base: u64) -> Option<usize> {
-        self.tables[..self.n_tables].iter().position(|t| t.level == level && t.base == base)
+        self.tables.iter().position(|t| t.level == level && t.base == base)
     }
 
     /// The access check a device applies before honouring a GPU address: `va..va+len` must lie wholly inside the BOUND data of
@@ -339,14 +335,11 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
 
     /// A page for a new table: the spare pool first, then the caller. Validated, never a duplicate.
     fn get_page<S: TablePageSource>(&mut self, src: &mut S, level: u8, base: u64) -> Result<u64, MemError> {
-        let addr = if self.n_spare > 0 {
-            self.n_spare -= 1;
-            self.spare[self.n_spare]
-        } else {
-            let p = src.table_page(TablePageRequest { level, base_va: base })?;
-            p.device_addr
+        let addr = match self.spare.pop() {
+            Some(a) => a,
+            None => src.table_page(TablePageRequest { level, base_va: base })?.device_addr,
         };
-        if self.check_page(addr).is_err() || self.tables[..self.n_tables].iter().any(|t| t.addr == addr) || self.fixed.contains(&addr) {
+        if self.check_page(addr).is_err() || self.tables.iter().any(|t| t.addr == addr) || self.fixed.contains(&addr) {
             return Err(MemError::TablePageRefused { level });
         }
         Ok(addr)
@@ -360,18 +353,15 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
             let at = match self.find(l, base) {
                 Some(i) => i,
                 None => {
-                    if self.n_tables == T {
-                        return Err(MemError::TableTableFull { cap: T });
-                    }
+                    self.reserve_table_slot()?;
                     let addr = self.get_page(src, l, base)?;
-                    self.tables[self.n_tables] = Table { level: l, base, addr };
-                    self.n_tables += 1;
+                    self.tables.push(Table { level: l, base, addr });
                     *made += 1;
                     ops.push(Op::FillTable { table: addr, entry: self.enc[l as usize] })?; // fill_px(pt, scratch[lvl]->encode), gen8_ppgtt.c:351
                     let idx = ((va >> (12 + 9 * (l as u32 + 1))) & (ENTRIES_PER_TABLE - 1)) as u16;
                     // __set_pd_entry: encode(px_dma(to), I915_CACHE_LLC), intel_ppgtt.c:109
                     ops.push(Op::TableEntry { table: parent, index: idx, value: gen8_pde_encode(addr, CacheLevel::Llc) })?;
-                    self.n_tables - 1
+                    self.tables.len() - 1
                 }
             };
             parent = self.tables[at].addr;
@@ -410,16 +400,20 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         }
     }
 
+    /// Make room for one more table AND keep the spare pool able to hold every table (so [`Gtt::rollback_tables`] is infallible:
+    /// a granted page is never dropped). Called before the page is taken from the source, so a refusal here loses nothing.
+    fn reserve_table_slot(&mut self) -> Result<(), MemError> {
+        let oom = MemError::OutOfMemory { what: "page-table table" };
+        self.tables.try_reserve(1).map_err(|_| oom)?;
+        self.spare.try_reserve(self.tables.len() + 1).map_err(|_| MemError::OutOfMemory { what: "spare pool" })
+    }
+
+    /// Forget the tables made since `keep` and park their pages in the spare pool. Cannot fail: capacity was reserved by
+    /// [`Gtt::reserve_table_slot`] as each table was made.
     fn rollback_tables(&mut self, keep: usize) {
-        while self.n_tables > keep {
-            self.n_tables -= 1;
-            let a = self.tables[self.n_tables].addr;
-            if self.n_spare < MAX_SPARE {
-                self.spare[self.n_spare] = a;
-                self.n_spare += 1;
-            } else {
-                self.leaked += 1;
-            }
+        while self.tables.len() > keep {
+            let t = self.tables.pop().expect("len > keep");
+            self.spare.push(t.addr);
         }
     }
 
@@ -477,19 +471,19 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
             Mode::Fixed(off) => Mode::Fixed(off - guard),
             m => m,
         };
-        let Choice { start, victims, n_victims } = self.nodes.choose(node_size, align, lo, hi, mode, req.place.evict)?;
-        if self.nodes.len() - n_victims >= V {
-            return Err(MemError::VmaTableFull { cap: V });
-        }
+        let Choice { start, victims } = self.nodes.choose(node_size, align, lo, hi, mode, req.place.evict)?;
+        // The node's slot is obtained now, before any table or victim is touched, so the commit below cannot fail.
+        self.nodes.reserve(1)?;
+        let mut evicted: Vec<VmaId> = Vec::new();
+        evicted.try_reserve_exact(victims.len()).map_err(|_| MemError::OutOfMemory { what: "victims" })?;
 
-        let t0 = self.n_tables;
+        let t0 = self.tables.len();
         let mut ops = Ops::new();
         let mut made = 0u32;
-        let mut evicted = [VmaId(0); MAX_EVICT];
         let r = (|| -> Result<(), MemError> {
-            for k in 0..n_victims {
-                let n = *self.nodes.get(victims[k]);
-                evicted[k] = VmaId(n.id);
+            for &vi in &victims {
+                let n = *self.nodes.get(vi);
+                evicted.push(VmaId(n.id));
                 ops.push(Op::AwaitRetire { vma: VmaId(n.id) })?;
                 self.emit(src, &mut ops, n.start, n.size / GTT_PAGE, None, &mut made)?;
             }
@@ -506,13 +500,13 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         }
         // commit: remove victims (descending index keeps the rest valid), insert the node
         let mut order = victims;
-        order[..n_victims].sort_unstable_by(|a, b| b.cmp(a));
-        for k in 0..n_victims {
-            self.nodes.remove(order[k]);
+        order.sort_unstable_by(|a, b| b.cmp(a));
+        for &vi in &order {
+            self.nodes.remove(vi);
         }
         let id = self.nodes.insert(Node { id: 0, start, size: node_size, guard, bound_pages: npages, pinned: false, reserved: false, last_use: 0 })?;
         let offset = start + guard;
-        Ok(self.plan(ops, VmaId(id), offset, start, node_size, req.pages, req.cache, req.flags, n_victims, made, evicted))
+        Ok(self.plan(ops, VmaId(id), offset, start, node_size, req.pages, req.cache, req.flags, evicted, made))
     }
 
     /// Plan the unbind of `id`: wait for the GPU to retire it, point its whole range (guard included) back at scratch, drop the
@@ -529,6 +523,6 @@ impl<const V: usize, const T: usize> Gtt<V, T> {
         // an unbind never creates tables: every page of a bound node already has its path
         self.emit(&mut NoTablePages, &mut ops, n.start, n.size / GTT_PAGE, None, &mut made)?;
         self.nodes.remove(i);
-        Ok(self.plan(ops, id, n.data_start(), n.start, n.size, &[], CacheLevel::None, 0, 0, 0, [VmaId(0); MAX_EVICT]))
+        Ok(self.plan(ops, id, n.data_start(), n.start, n.size, &[], CacheLevel::None, 0, Vec::new(), 0))
     }
 }
