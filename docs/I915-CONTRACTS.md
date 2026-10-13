@@ -249,7 +249,7 @@ the CPU view of granted memory needs `unsafe` this library forbids and the apert
 bytes in a region the CLIENT granted: the frame is a 40-byte `RegionRef` with `FLAG_PAYLOAD_REGION`; the device copies the payload out once, and a reply
 that does not fit a frame goes to the reply area the same `RegionRef` named (refused by name, `REPLY-TOO-LARGE`, if it does not fit). Bounds: 4 MiB
 (`MAX_REGION_PAYLOAD`). The device reaches regions through `PayloadRegions`; the production binding is `SessionRegions` over the kernel's REGION_MAP (113, D13): the
-`region` id is the shmem SLOT the client's CAP_DELEGATE returned, the request is SNAPSHOTTED (mapped read-only, copied once, unmapped) before it
+`region` id is the id of the SESSION CAPABILITY (`DELEG_CAP_TAG | id`) the client's CAP_DELEGATE returned, named to the kernel with the session the call arrived on (`REGION-WRONG-SESSION` otherwise); the request is SNAPSHOTTED (mapped read-only, copied once, unmapped) before it
 is validated, and a reply goes to the reply area. **ABI 1.3** lets the reply live in a SEPARATE region (`REPLY_ELSEWHERE` in `reply_flags`,
 bytes 32..40 that 1.2 reserved as zero): request storage is delegated read-only and reply storage read-write, per delegation. `NoRegions`
 (`PAYLOAD-REGION-UNAVAILABLE`) remains the binding for a host without the kernel call.

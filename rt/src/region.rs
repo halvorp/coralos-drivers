@@ -4,10 +4,13 @@
 //! The words, the argument block and the rules are the kernel's (`coral_firmament_abi::region_map`, docs/doctrine/REGION-MAP-IS-SESSION-SCOPED.md
 //! and DMA-LEASE-IS-EXACT-AND-REVOCABLE.md); this file restates ONLY what a driver needs, and the tests pin every restated number.
 //!
-//! * [`region_map`] maps `[offset, offset+length)` of a region capability the client DELEGATED over its session endpoint (CAP_DELEGATE: the
-//!   `cap` is the slot number the delegation produced) - or of a lease handle - into the REGION_MAP window, with at most the rights the
-//!   delegation carried. The kernel binds the mapping to that session incarnation and removes it, TLB shootdown first, when the session
-//!   ends. [`region_unmap`] ends one early.
+//! * [`region_map`] maps `[offset, offset+length)` of a region capability the client DELEGATED over its session endpoint (CAP_DELEGATE with
+//!   `DELEGATE_SESSION_CAP`: the `cap` is `DELEG_CAP_TAG | id`, kept in a growable kernel ledger, never reused) - or of a lease handle - into
+//!   the REGION_MAP window, with at most the rights the delegation carried. THE CALLER NAMES THE SESSION: the request endpoint the request
+//!   ARRIVED on goes in bits 16..31 of the fourth argument ([`pack_rights_session`]); a capability that arrived on any other session is
+//!   `WrongSession`, so a client cannot make the device map another client's capability (never take the endpoint from the request's bytes).
+//!   The kernel binds the mapping to that session incarnation and removes it, TLB shootdown first, when the session ends. [`region_unmap`]
+//!   ends one early; [`region_cap_drop`] drops a capability (its mappings first).
 //! * [`read_region`] / [`write_region`] are the ONLY place a driver touches a mapping: map, copy once, unmap - nothing keeps a pointer past
 //!   the call, so a session that ended between two calls is a named refusal (`SessionEnded`), never a stale pointer.
 //! * [`dma_lease_create`] / [`dma_lease_revoke`]: a device gives ONE session CPU access to whole pages of its own DMA allocation. The device
@@ -28,6 +31,16 @@ pub const RIGHT_READ: u64 = 1;
 pub const RIGHT_WRITE: u64 = 2;
 /// Set in REGION_MAP's `cap` for a LEASE handle (the low bits are the lease id, never reused). A shmem slot number is below 64.
 pub const LEASE_CAP_TAG: u64 = 1 << 62;
+/// Set in REGION_MAP's `cap` (and in the word CAP_DELEGATE returns with `DELEGATE_SESSION_CAP`) for a SESSION CAPABILITY; the low bits are its id.
+pub const DELEG_CAP_TAG: u64 = 1 << 61;
+/// CAP_DELEGATE's third argument: bit 0 read-only, bit 1 deliver into the receiver's session-capability namespace instead of a shmem slot.
+pub const DELEGATE_RO: u64 = 1;
+pub const DELEGATE_SESSION_CAP: u64 = 2;
+
+/// REGION_MAP's fourth argument: `rights` (bits 0..7) and the session request endpoint (bits 16..31).
+pub const fn pack_rights_session(rights: u64, session_req_ep: u16) -> u64 {
+    rights | ((session_req_ep as u64) << 16)
+}
 /// The window the kernel places REGION_MAP / lease mappings in: its own PML4 entry, 1 TiB. Addresses are never reissued.
 pub const REGION_MAP_VA: u64 = 0x0000_3000_0000_0000;
 pub const REGION_MAP_LEN: u64 = 0x0000_0100_0000_0000;
@@ -61,7 +74,7 @@ pub struct LeaseRequest {
     pub out_lease: u64,
 }
 
-/// Why REGION_MAP / REGION_UNMAP granted nothing. The family is `u64::MAX-130 ..= u64::MAX-139`; nothing changed on any refusal.
+/// Why REGION_MAP / REGION_UNMAP granted nothing. The family is `u64::MAX-130 ..= u64::MAX-140`; nothing changed on any refusal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum RegionStatus {
@@ -85,9 +98,11 @@ pub enum RegionStatus {
     RevokedDuringMap = 9,
     /// REGION_UNMAP of an address that is not a live mapping made by this address space.
     NotMapped = 10,
+    /// The capability did not arrive on the session the caller named (or the named endpoint is no session).
+    WrongSession = 11,
 }
 
-/// Why DMA_LEASE_CREATE / DMA_LEASE_REVOKE granted nothing. The family is `u64::MAX-140 ..= u64::MAX-150`.
+/// Why DMA_LEASE_CREATE / DMA_LEASE_REVOKE granted nothing. The family is `u64::MAX-141 ..= u64::MAX-151`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u32)]
 pub enum LeaseStatus {
@@ -116,10 +131,10 @@ pub enum LeaseStatus {
 }
 
 const REGION_BASE: u64 = u64::MAX - 130;
-const LEASE_BASE: u64 = u64::MAX - 140;
+const LEASE_BASE: u64 = u64::MAX - 141;
 
 impl RegionStatus {
-    pub const ALL: [RegionStatus; 10] = [
+    pub const ALL: [RegionStatus; 11] = [
         RegionStatus::BadRights,
         RegionStatus::OutOfRegion,
         RegionStatus::NoGrant,
@@ -130,6 +145,7 @@ impl RegionStatus {
         RegionStatus::RegionGone,
         RegionStatus::RevokedDuringMap,
         RegionStatus::NotMapped,
+        RegionStatus::WrongSession,
     ];
     pub const fn code(self) -> u64 {
         REGION_BASE - (self as u64 - 1)
@@ -149,6 +165,7 @@ impl RegionStatus {
             RegionStatus::RegionGone => "REGION-GONE",
             RegionStatus::RevokedDuringMap => "REGION-REVOKED-DURING-MAP",
             RegionStatus::NotMapped => "REGION-NOT-MAPPED",
+            RegionStatus::WrongSession => "REGION-WRONG-SESSION",
         }
     }
 }
@@ -251,10 +268,16 @@ pub fn decode_lease(w: u64) -> Result<(), LeaseRefusal> {
     }
 }
 
-/// Map `[offset, offset+length)` of the region capability `cap` (a delegated slot, or a lease handle) with `rights`. Returns the VA of the
-/// first requested byte. The caller owns the mapping until [`region_unmap`] or the end of the session; it must not touch it afterwards.
-pub fn region_map(cap: u64, offset: u64, length: u64, rights: u64) -> Result<*mut u8, RegionRefusal> {
-    decode_map(unsafe { sc(nr::REGION_MAP, cap, offset, length, rights) }).map(|va| va as *mut u8)
+/// Map `[offset, offset+length)` of the region capability `cap` (a session capability, or a lease handle) with `rights`, naming
+/// `session_req_ep`: the request endpoint the request carrying `cap` ARRIVED on. Returns the VA of the first requested byte. The caller owns
+/// the mapping until [`region_unmap`] or the end of the session; it must not touch it afterwards.
+pub fn region_map(cap: u64, offset: u64, length: u64, rights: u64, session_req_ep: u16) -> Result<*mut u8, RegionRefusal> {
+    decode_map(unsafe { sc(nr::REGION_MAP, cap, offset, length, pack_rights_session(rights, session_req_ep)) }).map(|va| va as *mut u8)
+}
+
+/// Drop a session capability: every mapping made from it goes (shootdown first), then the capability's own reference on the region.
+pub fn region_cap_drop(cap: u64) -> Result<(), RegionRefusal> {
+    decode_region(unsafe { sc(nr::REGION_UNMAP, cap, 0, 0, 0) })
 }
 
 /// End one mapping (any address inside it).
@@ -313,11 +336,11 @@ pub unsafe fn copy_out(dst: *mut u8, data: &[u8]) {
 }
 
 /// Snapshot `out.len()` bytes at `offset` of the delegated region `cap` into `out`: map it READ-ONLY, copy once, unmap. Nothing is kept.
-pub fn read_region(cap: u64, offset: u64, out: &mut [u8]) -> Result<(), RegionRefusal> {
+pub fn read_region(cap: u64, session_req_ep: u16, offset: u64, out: &mut [u8]) -> Result<(), RegionRefusal> {
     if out.is_empty() {
         return Ok(());
     }
-    let p = region_map(cap, offset, out.len() as u64, RIGHT_READ)?;
+    let p = region_map(cap, offset, out.len() as u64, RIGHT_READ, session_req_ep)?;
     // see THE GAP above: the copy is the only unrecoverable moment
     unsafe { copy_in(p, out) };
     unmap_after(p)
@@ -325,11 +348,11 @@ pub fn read_region(cap: u64, offset: u64, out: &mut [u8]) -> Result<(), RegionRe
 
 /// Write `data` at `offset` of the delegated region `cap` (a reply area): map it READ+WRITE, copy, unmap. A read-only delegation is
 /// `RightsExceedGrant`.
-pub fn write_region(cap: u64, offset: u64, data: &[u8]) -> Result<(), RegionRefusal> {
+pub fn write_region(cap: u64, session_req_ep: u16, offset: u64, data: &[u8]) -> Result<(), RegionRefusal> {
     if data.is_empty() {
         return Ok(());
     }
-    let p = region_map(cap, offset, data.len() as u64, RIGHT_WRITE)?;
+    let p = region_map(cap, offset, data.len() as u64, RIGHT_WRITE, session_req_ep)?;
     unsafe { copy_out(p, data) };
     unmap_after(p)
 }

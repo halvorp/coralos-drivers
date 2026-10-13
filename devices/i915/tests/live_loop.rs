@@ -44,7 +44,7 @@ struct R {
 struct FakeRegions(Rc<RefCell<R>>);
 
 impl PayloadRegions for FakeRegions {
-    fn read(&mut self, _: ConnId, region: u32, offset: u64, out: &mut [u8]) -> Result<(), RegionError> {
+    fn read(&mut self, _: u16, region: u32, offset: u64, out: &mut [u8]) -> Result<(), RegionError> {
         let mut r = self.0.borrow_mut();
         r.reads.push((region, offset, out.len()));
         let m = r.regions.get(&region).ok_or(RegionError::Unknown { region })?;
@@ -55,7 +55,7 @@ impl PayloadRegions for FakeRegions {
         out.copy_from_slice(&m[offset as usize..end]);
         Ok(())
     }
-    fn write(&mut self, _: ConnId, region: u32, offset: u64, data: &[u8]) -> Result<(), RegionError> {
+    fn write(&mut self, _: u16, region: u32, offset: u64, data: &[u8]) -> Result<(), RegionError> {
         let mut r = self.0.borrow_mut();
         let m = r.regions.get_mut(&region).ok_or(RegionError::Unknown { region })?;
         let end = offset as usize + data.len();
@@ -415,8 +415,8 @@ fn a_region_that_cannot_be_reached_is_refused_by_name_and_the_production_binding
     assert_eq!(w.regions.0.borrow().reads.len(), reads, "no read was attempted");
     // the production binding
     let mut un = NoRegions;
-    assert_eq!(un.read(ConnId(1), 1, 0, &mut [0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
-    assert_eq!(un.write(ConnId(1), 1, 0, &[0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
+    assert_eq!(un.read(1, 1, 0, &mut [0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
+    assert_eq!(un.write(1, 1, 0, &[0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
 }
 
 #[test]

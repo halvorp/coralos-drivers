@@ -9,33 +9,34 @@ fn the_system_call_numbers() {
 }
 
 #[test]
-fn the_region_family_is_ten_words_from_max_130_down_in_kernel_order() {
-    assert_eq!(RegionStatus::ALL.len(), 10);
+fn the_region_family_is_eleven_words_from_max_130_down_in_kernel_order() {
+    assert_eq!(RegionStatus::ALL.len(), 11);
     for (i, s) in RegionStatus::ALL.iter().enumerate() {
         assert_eq!(s.code(), u64::MAX - 130 - i as u64, "{s:?}");
         assert_eq!(*s as u32, i as u32 + 1);
         assert_eq!(RegionStatus::from_code(s.code()), Some(*s));
     }
-    let names = ["REGION-BAD-RIGHTS", "REGION-OUT-OF-REGION", "REGION-NO-GRANT", "REGION-SESSION-ENDED", "REGION-RIGHTS-EXCEED-GRANT", "REGION-NO-VIRTUAL-SPACE", "REGION-NO-MEMORY", "REGION-GONE", "REGION-REVOKED-DURING-MAP", "REGION-NOT-MAPPED"];
+    let names = ["REGION-BAD-RIGHTS", "REGION-OUT-OF-REGION", "REGION-NO-GRANT", "REGION-SESSION-ENDED", "REGION-RIGHTS-EXCEED-GRANT", "REGION-NO-VIRTUAL-SPACE", "REGION-NO-MEMORY", "REGION-GONE", "REGION-REVOKED-DURING-MAP", "REGION-NOT-MAPPED", "REGION-WRONG-SESSION"];
     for (s, n) in RegionStatus::ALL.iter().zip(names) {
         assert_eq!(s.name(), n);
     }
-    assert_eq!(RegionStatus::from_code(u64::MAX - 140), None, "the next family is not this one");
+    assert_eq!(RegionStatus::WrongSession.code(), u64::MAX - 140);
+    assert_eq!(RegionStatus::from_code(u64::MAX - 141), None, "the next family is not this one");
     assert_eq!(RegionStatus::from_code(u64::MAX - 129), None);
 }
 
 #[test]
-fn the_lease_family_is_eleven_words_from_max_140_down_in_kernel_order() {
+fn the_lease_family_is_eleven_words_from_max_141_down_in_kernel_order() {
     assert_eq!(LeaseStatus::ALL.len(), 11);
     for (i, s) in LeaseStatus::ALL.iter().enumerate() {
-        assert_eq!(s.code(), u64::MAX - 140 - i as u64, "{s:?}");
+        assert_eq!(s.code(), u64::MAX - 141 - i as u64, "{s:?}");
         assert_eq!(*s as u32, i as u32 + 1);
         assert_eq!(LeaseStatus::from_code(s.code()), Some(*s));
     }
-    assert_eq!(LeaseStatus::NotLease.code(), u64::MAX - 150);
+    assert_eq!(LeaseStatus::NotLease.code(), u64::MAX - 151);
     assert_eq!(LeaseStatus::PageAlreadyLeased.name(), "LEASE-PAGE-ALREADY-LEASED");
-    assert_eq!(LeaseStatus::from_code(u64::MAX - 151), None);
-    assert_eq!(LeaseStatus::from_code(u64::MAX - 139), None, "the region family's last word is not a lease word");
+    assert_eq!(LeaseStatus::from_code(u64::MAX - 152), None);
+    assert_eq!(LeaseStatus::from_code(u64::MAX - 140), None, "the region family's last word is not a lease word");
 }
 
 #[test]
@@ -54,6 +55,15 @@ fn the_window_the_tag_and_the_rights() {
     assert_eq!(REGION_MAP_VA, 0x3000_0000_0000);
     assert_eq!(REGION_MAP_LEN, 1 << 40);
     assert!(LEASE_CAP_TAG > 64 && LEASE_CAP_TAG.is_power_of_two(), "a lease handle can never be taken for a shmem slot");
+    assert_eq!((DELEG_CAP_TAG, DELEGATE_RO, DELEGATE_SESSION_CAP), (1 << 61, 1, 2));
+    assert_ne!(DELEG_CAP_TAG, LEASE_CAP_TAG);
+}
+
+#[test]
+fn the_session_rides_in_bits_16_to_31_of_the_rights_argument() {
+    assert_eq!(pack_rights_session(RIGHT_READ, 0), 1);
+    assert_eq!(pack_rights_session(RIGHT_READ | RIGHT_WRITE, 0x1234), 0x1234_0003);
+    assert_eq!(pack_rights_session(RIGHT_WRITE, u16::MAX), 0xFFFF_0002);
 }
 
 #[test]

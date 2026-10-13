@@ -6,6 +6,7 @@
 mod exec_common;
 use coralos_hal::fake::FakeDma;
 use exec_common::*;
+use coralos_rt::region::DELEG_CAP_TAG;
 use i915_device::live::{ConnId, Live, LiveStats, RegionSys, SessionRegions, Step, SysRefusal, Wake};
 use i915_device::uapi::{bring_up_render, Hw, RenderConfig};
 use i915_devinfo_core::clock::{gen9_clock_from_ctc, Gen9Clock};
@@ -46,17 +47,20 @@ struct K {
     writes: Vec<(u64, u64, usize)>,
     /// The client scribbles over its whole region the instant after the device's copy.
     clobber_after_read: Option<u8>,
+    /// Every session endpoint the device NAMED, in order.
+    named: Vec<u16>,
 }
 
 #[derive(Clone, Default)]
 struct Kernel(Rc<RefCell<K>>);
 
 impl Kernel {
-    fn delegate(&self, slot: u64, req_ep: u16, bytes: Vec<u8>, ro: bool) {
-        self.0.borrow_mut().grants.insert(slot, Grant { req_ep, bytes, ro });
+    /// CAP_DELEGATE with DELEGATE_SESSION_CAP: the capability is `DELEG_CAP_TAG | id`; the client sends the id.
+    fn delegate(&self, id: u64, req_ep: u16, bytes: Vec<u8>, ro: bool) {
+        self.0.borrow_mut().grants.insert(DELEG_CAP_TAG | id, Grant { req_ep, bytes, ro });
     }
-    fn bytes(&self, slot: u64) -> Vec<u8> {
-        self.0.borrow().grants[&slot].bytes.clone()
+    fn bytes(&self, id: u64) -> Vec<u8> {
+        self.0.borrow().grants[&(DELEG_CAP_TAG | id)].bytes.clone()
     }
     /// The session ends (the client closed it or died): the kernel removes every mapping and refuses new ones.
     fn end_session(&self, req_ep: u16) {
@@ -65,10 +69,14 @@ impl Kernel {
 }
 
 impl RegionSys for Kernel {
-    fn read(&mut self, cap: u64, offset: u64, out: &mut [u8]) -> Result<(), SysRefusal> {
+    fn read(&mut self, cap: u64, session_ep: u16, offset: u64, out: &mut [u8]) -> Result<(), SysRefusal> {
         let mut k = self.0.borrow_mut();
+        k.named.push(session_ep);
         let K { grants, ended, .. } = &mut *k;
         let g = grants.get_mut(&cap).ok_or(SysRefusal::NoGrant)?;
+        if g.req_ep != session_ep {
+            return Err(SysRefusal::WrongSession);
+        }
         if ended.contains(&g.req_ep) {
             return Err(SysRefusal::Revoked);
         }
@@ -83,9 +91,13 @@ impl RegionSys for Kernel {
         k.reads.push((cap, offset, out.len()));
         Ok(())
     }
-    fn write(&mut self, cap: u64, offset: u64, data: &[u8]) -> Result<(), SysRefusal> {
+    fn write(&mut self, cap: u64, session_ep: u16, offset: u64, data: &[u8]) -> Result<(), SysRefusal> {
         let mut k = self.0.borrow_mut();
+        k.named.push(session_ep);
         let g = k.grants.get_mut(&cap).ok_or(SysRefusal::NoGrant)?;
+        if g.req_ep != session_ep {
+            return Err(SysRefusal::WrongSession);
+        }
         if g.ro {
             return Err(SysRefusal::ReadOnly);
         }
@@ -237,7 +249,7 @@ fn an_84_kib_execbuffer2_is_read_from_a_delegated_region_in_one_snapshot_and_the
     w.rid += 1;
     let id = w.rid;
     w.deliver(region_frame(Opcode::Execbuffer2, id, inc, &rr));
-    assert_eq!(w.k.0.borrow().reads, vec![(3, 4096, big.len())], "the device copied exactly the named bytes, once");
+    assert_eq!(w.k.0.borrow().reads, vec![(DELEG_CAP_TAG | 3, 4096, big.len())], "the device copied exactly the named bytes, once");
     let (h, _) = w.last_as(w.cid);
     assert_eq!(h.request_id, id);
     let (status, err) = w.status_errno(w.cid);
@@ -298,7 +310,7 @@ fn a_reply_too_large_for_a_frame_is_written_into_the_clients_separate_read_write
     assert_eq!(&out[..16], &[0xAB; 16][..], "bytes before the reply area are untouched");
     assert_eq!(i915_wire::codec::Reader::new(&out[16..]).u32("status").unwrap(), Status::Ok as u32);
     assert_eq!(w.k.bytes(3), req, "the request region was only read");
-    assert_eq!(w.k.0.borrow().writes, vec![(4, 16, placed.len as usize)]);
+    assert_eq!(w.k.0.borrow().writes, vec![(DELEG_CAP_TAG | 4, 16, placed.len as usize)]);
     // a reply region delegated READ-ONLY is refused by name, and nothing is written anywhere
     w.k.delegate(5, ep, vec![0xCD; 512], true);
     w.rid += 1;
@@ -309,7 +321,7 @@ fn a_reply_too_large_for_a_frame_is_written_into_the_clients_separate_read_write
 }
 
 #[test]
-fn a_connection_reaches_only_the_slots_it_uses_and_a_dead_session_maps_nothing() {
+fn a_client_naming_another_clients_capability_is_refused_by_the_kernel_and_a_dead_session_maps_nothing() {
     let mut w = world();
     let a = w.cid;
     let ia = w.open_as(a);
@@ -323,14 +335,15 @@ fn a_connection_reaches_only_the_slots_it_uses_and_a_dead_session_maps_nothing()
     w.rid += 1;
     w.deliver_as(a, region_frame(Opcode::GetParam, w.rid, ia, &rr));
     assert_eq!(w.status_errno(a), want, "the same answer as the inline call");
-    assert_eq!(w.live.regions.claimed(), 1, "the slot A used is A's");
-    // B names A's slots: refused by name, and nothing of A's is read or written
+    assert_eq!(w.k.0.borrow().named.last(), Some(&W::req_ep(a)), "the device named the endpoint the call ARRIVED on");
+    // B names A's capabilities: the kernel's session check refuses it, by name, and nothing of A's is read or written
     let reads = w.k.0.borrow().reads.len();
     w.live.inline_reply_max = 8;
     w.rid += 1;
     w.deliver_as(b, region_frame(Opcode::GetParam, w.rid, ib, &rr));
     assert_eq!(w.status_errno(b), (Status::Ok, -errno::EACCES));
-    assert!(w.live.log.has("name=PAYLOAD-REGION-NOT-YOURS"));
+    assert!(w.live.log.has("name=PAYLOAD-REGION-WRONG-SESSION"));
+    assert_eq!(w.k.0.borrow().named.last(), Some(&W::req_ep(b)), "B's call named B's session - not anything B wrote in the request");
     assert_eq!(w.k.0.borrow().reads.len(), reads);
     assert!(w.k.0.borrow().writes.is_empty());
     // A dies: the kernel ends its session (every mapping goes) and the loop reaps the connection
@@ -339,14 +352,7 @@ fn a_connection_reaches_only_the_slots_it_uses_and_a_dead_session_maps_nothing()
     w.t.0.borrow_mut().script.push_back(Ev::Wake(Wake::Request(a)));
     w.live.step();
     assert_eq!(w.live.stats.conns_reaped, 1);
-    assert_eq!(w.live.regions.claimed(), 0, "A's bookkeeping went with it");
     assert_eq!(w.live.svc.live_sessions(), 1, "only B's session is left");
-    // B now names the dead session's slot: the KERNEL refuses it (session ended) - a named refusal, not a stale pointer
-    w.rid += 1;
-    w.deliver_as(b, region_frame(Opcode::GetParam, w.rid, ib, &rr));
-    assert_eq!(w.status_errno(b), (Status::Ok, -errno::ENODEV));
-    assert!(w.live.log.has("name=PAYLOAD-REGION-REVOKED"));
-    assert_eq!(w.live.regions.claimed(), 0, "a refused access claims nothing");
     assert_eq!(w.k.0.borrow().live_maps, 0);
 }
 
@@ -356,29 +362,24 @@ fn the_kernels_refusals_are_told_apart_by_name() {
     let mut r = SessionRegions::new(Kernel::default());
     let k = r.sys.clone();
     k.delegate(1, 100, vec![7; 64], true);
-    let c = ConnId(1);
     let mut buf = [0u8; 16];
-    assert_eq!(r.read(c, 1, 0, &mut buf), Ok(()));
+    assert_eq!(r.read(100, 1, 0, &mut buf), Ok(()));
     assert_eq!(buf, [7; 16]);
-    assert_eq!(r.read(c, 1, 60, &mut buf), Err(RegionError::OutOfRange { region: 1, offset: 60, len: 16, size: 0 }));
-    assert_eq!(r.read(c, 9, 0, &mut buf), Err(RegionError::Unknown { region: 9 }));
-    assert_eq!(r.write(c, 1, 0, &[1]), Err(RegionError::ReadOnly { region: 1 }));
+    assert_eq!(r.read(100, 1, 60, &mut buf), Err(RegionError::OutOfRange { region: 1, offset: 60, len: 16, size: 0 }));
+    assert_eq!(r.read(100, 9, 0, &mut buf), Err(RegionError::Unknown { region: 9 }));
+    assert_eq!(r.write(100, 1, 0, &[1]), Err(RegionError::ReadOnly { region: 1 }));
+    // a capability that arrived on a different session
+    assert_eq!(r.read(101, 1, 0, &mut buf), Err(RegionError::WrongSession { region: 1 }));
     k.end_session(100);
-    assert_eq!(r.read(c, 1, 0, &mut buf), Err(RegionError::Revoked { region: 1 }));
-    // a slot another connection holds
-    k.delegate(2, 101, vec![0; 64], false);
-    assert_eq!(r.write(ConnId(2), 2, 0, &[1]), Ok(()));
-    assert_eq!(r.write(c, 2, 0, &[1]), Err(RegionError::NotYours { region: 2 }));
-    r.conn_ended(ConnId(2));
-    assert_eq!(r.write(c, 2, 0, &[1]), Ok(()), "released with its connection");
+    assert_eq!(r.read(100, 1, 0, &mut buf), Err(RegionError::Revoked { region: 1 }));
     let names = [
         RegionError::Revoked { region: 0 }.name(),
-        RegionError::NotYours { region: 0 }.name(),
+        RegionError::WrongSession { region: 0 }.name(),
         RegionError::ReadOnly { region: 0 }.name(),
         RegionError::NoMemory { what: "x" }.name(),
         RegionError::Refused { name: "REGION-BAD-RIGHTS", word: 1 }.name(),
     ];
-    assert_eq!(names, ["PAYLOAD-REGION-REVOKED", "PAYLOAD-REGION-NOT-YOURS", "PAYLOAD-REGION-READ-ONLY", "PAYLOAD-REGION-NOMEM", "REGION-BAD-RIGHTS"]);
+    assert_eq!(names, ["PAYLOAD-REGION-REVOKED", "PAYLOAD-REGION-WRONG-SESSION", "PAYLOAD-REGION-READ-ONLY", "PAYLOAD-REGION-NOMEM", "REGION-BAD-RIGHTS"]);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -393,6 +394,7 @@ fn every_status_word_of_the_kernel_has_a_device_meaning() {
             RegionStatus::SessionEnded | RegionStatus::RevokedDuringMap | RegionStatus::RegionGone => SysRefusal::Revoked,
             RegionStatus::OutOfRegion => SysRefusal::OutOfRegion,
             RegionStatus::NoGrant => SysRefusal::NoGrant,
+            RegionStatus::WrongSession => SysRefusal::WrongSession,
             RegionStatus::RightsExceedGrant => SysRefusal::ReadOnly,
             RegionStatus::NoMemory | RegionStatus::NoVirtualSpace => SysRefusal::NoMemory,
             RegionStatus::BadRights | RegionStatus::NotMapped => SysRefusal::Other { name: s.name(), word: s.code() },

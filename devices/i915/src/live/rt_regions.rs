@@ -14,6 +14,7 @@ pub fn classify(r: RegionRefusal) -> SysRefusal {
         RegionRefusal::Named(RegionStatus::SessionEnded | RegionStatus::RevokedDuringMap | RegionStatus::RegionGone) => SysRefusal::Revoked,
         RegionRefusal::Named(RegionStatus::OutOfRegion) => SysRefusal::OutOfRegion,
         RegionRefusal::Named(RegionStatus::NoGrant) => SysRefusal::NoGrant,
+        RegionRefusal::Named(RegionStatus::WrongSession) => SysRefusal::WrongSession,
         RegionRefusal::Named(RegionStatus::RightsExceedGrant) => SysRefusal::ReadOnly,
         RegionRefusal::Named(RegionStatus::NoMemory | RegionStatus::NoVirtualSpace) => SysRefusal::NoMemory,
         RegionRefusal::Named(s) => SysRefusal::Other { name: s.name(), word: s.code() },
@@ -25,10 +26,10 @@ pub fn classify(r: RegionRefusal) -> SysRefusal {
 pub struct RtRegionSys;
 
 impl RegionSys for RtRegionSys {
-    fn read(&mut self, cap: u64, offset: u64, out: &mut [u8]) -> Result<(), SysRefusal> {
-        read_region(cap, offset, out).map_err(classify)
+    fn read(&mut self, cap: u64, session_ep: u16, offset: u64, out: &mut [u8]) -> Result<(), SysRefusal> {
+        read_region(cap, session_ep, offset, out).map_err(classify)
     }
-    fn write(&mut self, cap: u64, offset: u64, data: &[u8]) -> Result<(), SysRefusal> {
-        write_region(cap, offset, data).map_err(classify)
+    fn write(&mut self, cap: u64, session_ep: u16, offset: u64, data: &[u8]) -> Result<(), SysRefusal> {
+        write_region(cap, session_ep, offset, data).map_err(classify)
     }
 }

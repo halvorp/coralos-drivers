@@ -136,17 +136,19 @@ reassembly (`conn::Parked`). Retired: the static reply endpoint 66 (`EP_I915_REP
 
 **D13 — A `.device` reads a client's payload and gives it CPU access to device pages only through the kernel's session-scoped region calls (2026-10-13).**
 Astra's ruling (4/4 with gemini, deepseek, kimi) on the Kaby Lake GPU path; the kernel's REGION_MAP (113) / REGION_UNMAP (114) / DMA_LEASE_CREATE (115)
-/ DMA_LEASE_REVOKE (116). `coralos-rt` gains `rt::region` (MIT OR Apache-2.0): the wrappers with typed status enums (`RegionStatus` MAX-130..=MAX-139,
-`LeaseStatus` MAX-140..=MAX-150, `LeaseRequest` 64 bytes with `out_lease` at 56), restated from the kernel and pinned by `rt/tests/region.rs` (as D12 did for
+/ DMA_LEASE_REVOKE (116). `coralos-rt` gains `rt::region` (MIT OR Apache-2.0): the wrappers with typed status enums (`RegionStatus` MAX-130..=MAX-140 (incl. `WrongSession`),
+`LeaseStatus` MAX-141..=MAX-151, `LeaseRequest` 64 bytes with `out_lease` at 56), restated from the kernel and pinned by `rt/tests/region.rs` (as D12 did for
 `session_release`), plus `read_region`/`write_region` - map, copy ONCE, unmap - the only place a pointer into a client's memory exists. GAP, documented in
 `region.rs`: rt has no `SIGACTION` wrapper, restorer or resumable copy, so a mapping revoked WHILE that copy runs faults the device instead of becoming
-`PAYLOAD-REGION-REVOKED`; the exposure is one memcpy per region call. (1) PAYLOAD: `live::SessionRegions` is the `PayloadRegions` binding. The client delegates
-request storage READ-ONLY and reply storage READ-WRITE over its session and names each by the slot CAP_DELEGATE returned (ABI 1.3: `RegionRef` gains a reply
-region, `REPLY_ELSEWHERE`). The device snapshots the request into its own buffer BEFORE validating (a read-only delegation does not stop the client changing
-its pages); nothing stays mapped between calls, so a session that ended is a named kernel refusal, not a stale pointer. The kernel's REGION_MAP takes only the
-slot, so the device refuses a slot another connection uses (`PAYLOAD-REGION-NOT-YOURS`); KNOWN LIMIT: the first connection to use a slot owns it, so a client
-that guesses another's slot before its first call can take it - the exact fix is a kernel REGION_MAP that names the session endpoint. The claims table grows
-with memory and reserves its row before the copy (D10). The 61 KiB inline ceiling is lifted; the 4 MiB wire bound stays a validation limit. (2) MMAP:
+`PAYLOAD-REGION-REVOKED`; the exposure is one memcpy per region call. (1) PAYLOAD: `live::SessionRegions` is the `PayloadRegions` binding. The client delegates request storage READ-ONLY and reply storage READ-WRITE over its
+session as SESSION CAPABILITIES (CAP_DELEGATE with `DELEGATE_SESSION_CAP`: `DELEG_CAP_TAG | id` in a growable kernel ledger, never reused, no shmem slot) and
+sends the ids (`RegionRef::region`, `reply_region` with `REPLY_ELSEWHERE`, ABI 1.3; the device ORs the tag back in, so only session capabilities are
+nameable). Every REGION_MAP names the session: the request endpoint the call ARRIVED on (the transport's fact, never the request bytes) in bits 16..31 of
+the rights argument; a capability that arrived on another session is `REGION-WRONG-SESSION` (`PAYLOAD-REGION-WRONG-SESSION`, EACCES), so the confused
+deputy and the 24-slot cap of the first cut are closed in the kernel and the device keeps no ownership table. The device snapshots the request into its own
+buffer BEFORE validating (a read-only delegation does not stop the client changing its pages); nothing stays mapped between calls, so a session that ended is a
+named kernel refusal, not a stale pointer. rt also wraps `region_cap_drop` (REGION_UNMAP of a capability); the device does not call it - capabilities die with
+their session, and a client that wants to retire one early does so itself. The 61 KiB inline ceiling is lifted; the 4 MiB wire bound stays a validation limit. (2) MMAP:
 `GEM-MMAP-OPEN` answers with a kernel lease (`uapi::mmap_lease`, ABI 1.3: `region_cap`, `region_offset`), one per object over its whole page run, recipient =
 the connection's request endpoint + client node from the connect announce (`conn::Peer`), cache = the pages' own (`exec::dma::BO_COHERENCE`, non-snooped, so WC
 - the mmap reply says what the lease IS). Revoked when the object is freed (after retirement and unbinding) or the session ends, never by GEM_CLOSE alone; the
