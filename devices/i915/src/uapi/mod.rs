@@ -13,6 +13,7 @@
 //! | `calls_*`, `exec_call` | one handler per opcode: decode (wire) -> validate (uapi-core) -> plan (gem-core) -> execute (exec/) |
 //! | `adapt` | the seams gem-core plans against, over the executor |
 //! | `pool` | page recycling, and giving idle grants back to the host where `Dma::free` exists |
+//! | `mmap_lease`, `kernel_lease` | GEM CPU mapping through the kernel's DMA lease: when one is minted, revoked, and when its pages may be reused |
 //! | `fx` | applying the planner's effects; hardware contexts and address-space pages |
 //!
 //! The loop that serves these calls on the device's endpoints is [`crate::live`] (same feature).
@@ -37,9 +38,15 @@ mod fail;
 #[cfg(feature = "p3-exec")]
 mod fx;
 #[cfg(feature = "p3-exec")]
+pub mod kernel_lease;
+#[cfg(feature = "p3-exec")]
+mod mmap_lease;
+#[cfg(feature = "p3-exec")]
 pub mod pool;
 #[cfg(feature = "p3-exec")]
 mod service;
+#[cfg(all(feature = "p3-exec", target_arch = "x86_64"))]
+pub mod rt_lease;
 
 #[cfg(feature = "p3-exec")]
 pub use adapt::ObjTable;

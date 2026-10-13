@@ -5,7 +5,7 @@
 //! and granted to this task (RECV on the request endpoint, SEND on the event endpoint). The wait set is the listen endpoint (while the
 //! loop accepts) plus the request endpoint of every connection that is not held, plus the engine line if one is armed - and the
 //! deadline. Nothing here polls. A dead client's request endpoint reads READY forever until [`Transport::release`] gives the pair back.
-use super::transport::{Accepted, ConnId, Recv, SendOutcome, Transport, Wake};
+use super::transport::{Accepted, ConnId, Peer, Recv, SendOutcome, Transport, Wake};
 use alloc::vec::Vec;
 use coralos_rt::session::{decode_announce, ep_set, ANNOUNCE_LEN};
 use coralos_rt::word::{PEER_DEAD, SEND_OK, SEND_RING_FULL, WAIT_IRQ_DENIED, WAIT_IRQ_FIRED, WAIT_TIMEOUT};
@@ -14,6 +14,8 @@ struct Row {
     id: ConnId,
     req: u16,
     evt: u16,
+    /// The connecting task's node, from the announce.
+    client: u64,
     held: bool,
 }
 
@@ -94,7 +96,7 @@ impl Transport for RtTransport {
         }
         let id = ConnId(self.next_id);
         self.next_id += 1;
-        self.rows.push(Row { id, req: a.req, evt: a.evt, held: false });
+        self.rows.push(Row { id, req: a.req, evt: a.evt, client: a.client, held: false });
         Accepted::Conn(id)
     }
     fn hold(&mut self, conn: ConnId, held: bool) {
@@ -121,6 +123,9 @@ impl Transport for RtTransport {
             PEER_DEAD => SendOutcome::PeerDead,
             _ => SendOutcome::Denied,
         }
+    }
+    fn peer(&self, conn: ConnId) -> Option<Peer> {
+        self.row(conn).map(|r| Peer { req_ep: r.req, node: r.client })
     }
     fn release(&mut self, conn: ConnId) -> bool {
         match self.rows.iter().position(|r| r.id == conn) {

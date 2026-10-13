@@ -248,8 +248,18 @@ the CPU view of granted memory needs `unsafe` this library forbids and the apert
 **ABI 1.2 - the payload region** (`i915-wire/src/region.rs`). A call larger than one inline frame (a full EXECBUFFER2 is ~84 KiB) names its
 bytes in a region the CLIENT granted: the frame is a 40-byte `RegionRef` with `FLAG_PAYLOAD_REGION`; the device copies the payload out once, and a reply
 that does not fit a frame goes to the reply area the same `RegionRef` named (refused by name, `REPLY-TOO-LARGE`, if it does not fit). Bounds: 4 MiB
-(`MAX_REGION_PAYLOAD`). The device reaches regions through `PayloadRegions`; the production binding is `NoRegions` (`PAYLOAD-REGION-UNAVAILABLE`) until the
-kernel has a call that maps a foreign grant into a ring-3 device.
+(`MAX_REGION_PAYLOAD`). The device reaches regions through `PayloadRegions`; the production binding is `SessionRegions` over the kernel's REGION_MAP (113, D13): the
+`region` id is the shmem SLOT the client's CAP_DELEGATE returned, the request is SNAPSHOTTED (mapped read-only, copied once, unmapped) before it
+is validated, and a reply goes to the reply area. **ABI 1.3** lets the reply live in a SEPARATE region (`REPLY_ELSEWHERE` in `reply_flags`,
+bytes 32..40 that 1.2 reserved as zero): request storage is delegated read-only and reply storage read-write, per delegation. `NoRegions`
+(`PAYLOAD-REGION-UNAVAILABLE`) remains the binding for a host without the kernel call.
+
+**ABI 1.3 - GEM CPU mapping is a kernel lease.** `GEM-MMAP-OPEN`/`-LEGACY`'s reply gains `region_cap` (the kernel lease handle, REGION_MAP's `cap`)
+and `region_offset` (where the mapping starts in that lease); `cache` is what the pages ARE (today every object page is non-snooped, so
+write-combining, whatever mmap type was asked for). One kernel lease per object, over its whole run, for the session that mapped it; it is
+revoked when the object is freed (closed, GPU retired, unbound) or the session ends, never earlier by GEM_CLOSE, and the pages go back to the pool
+only after the kernel confirmed the lease ended (otherwise quarantined). Kernel leases are page-exclusive, so a dmabuf importer cannot CPU-map an
+object while its exporter still maps it (`MMAP-OBJECT-LEASED-TO-ANOTHER-SESSION`, EBUSY).
 
 **Memory.** Each hardware context's timeline gets its OWN status page (Linux `hwsp_alloc`, gt/intel_timeline.c:20-35, :88-96; the cacheline
 allocator of older kernels is gone from the pinned v7.0-rc6 tree) - there is no slot count. The pool returns idle whole grants to the host

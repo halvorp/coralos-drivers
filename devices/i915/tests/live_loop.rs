@@ -44,7 +44,7 @@ struct R {
 struct FakeRegions(Rc<RefCell<R>>);
 
 impl PayloadRegions for FakeRegions {
-    fn read(&mut self, region: u32, offset: u64, out: &mut [u8]) -> Result<(), RegionError> {
+    fn read(&mut self, _: ConnId, region: u32, offset: u64, out: &mut [u8]) -> Result<(), RegionError> {
         let mut r = self.0.borrow_mut();
         r.reads.push((region, offset, out.len()));
         let m = r.regions.get(&region).ok_or(RegionError::Unknown { region })?;
@@ -55,7 +55,7 @@ impl PayloadRegions for FakeRegions {
         out.copy_from_slice(&m[offset as usize..end]);
         Ok(())
     }
-    fn write(&mut self, region: u32, offset: u64, data: &[u8]) -> Result<(), RegionError> {
+    fn write(&mut self, _: ConnId, region: u32, offset: u64, data: &[u8]) -> Result<(), RegionError> {
         let mut r = self.0.borrow_mut();
         let m = r.regions.get_mut(&region).ok_or(RegionError::Unknown { region })?;
         let end = offset as usize + data.len();
@@ -75,6 +75,7 @@ struct W {
     live: L,
     t: FakeT,
     regions: FakeRegions,
+    leases: FakeLeases,
     mem: Mem,
     /// The client every helper talks as.
     cid: ConnId,
@@ -91,7 +92,9 @@ fn world() -> W {
     let dev = UapiDevice::new(kbl(), 0x09, sseu, hz, 8 * GIB).unwrap();
     let geom = GgttGeometry::probe(1 << 6, 16 << 20, 256 << 20).unwrap();
     let cfg = RenderConfig { quirks: FlushQuirks { vf_flush_wa: true, dc_flush_wa_kbl: false }, stall_bound_ms: STALL_MS };
-    let svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log: &mut log, now_ms: 0 }, dev, &geom, cfg).unwrap();
+    let mut svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log: &mut log, now_ms: 0 }, dev, &geom, cfg).unwrap();
+    let leases = FakeLeases::default();
+    svc.set_lease_sys(Box::new(leases.clone()));
     let t = FakeT::default();
     t.0.borrow_mut().now = 1;
     let regions = FakeRegions::default();
@@ -104,7 +107,7 @@ fn world() -> W {
     assert_eq!(live.step(), Step::Woke(Wake::Accept));
     assert_eq!(live.stats.conns_accepted, 1);
     live.stats = LiveStats::default();
-    W { live, t, regions, mem, cid, rid: 0, csb: 0 }
+    W { live, t, regions, leases, mem, cid, rid: 0, csb: 0 }
 }
 
 fn region_frame(op: Opcode, id: u64, inc: u64, rr: &RegionRef) -> Vec<u8> {
@@ -189,9 +192,9 @@ impl W {
     fn waits(&self) -> Vec<(Option<u64>, bool)> {
         self.t.0.borrow().waits.clone()
     }
-    fn snapshot(&self) -> [usize; 9] {
+    fn snapshot(&self) -> [usize; 10] {
         let s = &self.live.svc;
-        [s.live_sessions(), s.gem().session_count(), s.gem().object_count(), s.live_leases(), s.live_hw_contexts(), s.live_vm_records(), s.live_object_pages(), s.requests_in_flight(), s.pool().pages_out()]
+        [s.live_sessions(), s.gem().session_count(), s.gem().object_count(), s.live_leases(), s.live_hw_contexts(), s.live_vm_records(), s.live_object_pages(), s.requests_in_flight(), s.pool().pages_out(), s.live_kernel_leases()]
     }
 }
 
@@ -327,7 +330,7 @@ fn a_call_larger_than_a_frame_travels_through_a_payload_region() {
     region.extend_from_slice(&big);
     region.resize(region.len() + 8192, 0);
     w.regions.0.borrow_mut().regions.insert(9, region);
-    let rr = RegionRef { region: 9, offset: 4096, len: big.len() as u32, reply_cap: 8192, reply_offset: (4096 + big.len()) as u64 };
+    let rr = RegionRef { region: 9, offset: 4096, len: big.len() as u32, reply_cap: 8192, reply_offset: (4096 + big.len()) as u64, reply_region: 9 };
     w.rid += 1;
     let id = w.rid;
     w.deliver(region_frame(Opcode::Execbuffer2, id, inc, &rr));
@@ -355,7 +358,7 @@ fn a_reply_that_does_not_fit_a_frame_goes_to_the_clients_reply_area_and_is_refus
     let mut p = vec![0u8; 64];
     let n = GetParamReq { param: 1, ..Default::default() }.to_payload(&mut p).unwrap();
     w.regions.0.borrow_mut().regions.insert(3, [p[..n].to_vec(), vec![0u8; 512]].concat());
-    let rr = RegionRef { region: 3, offset: 0, len: n as u32, reply_cap: 512, reply_offset: n as u64 };
+    let rr = RegionRef { region: 3, offset: 0, len: n as u32, reply_cap: 512, reply_offset: n as u64, reply_region: 3 };
     w.deliver(region_frame(Opcode::GetParam, 50, inc, &rr));
     let r = w.last_reply_header_only();
     assert!(r.0.is_region() && r.0.is_reply(), "the reply says it is in the region");
@@ -393,7 +396,7 @@ fn a_region_that_cannot_be_reached_is_refused_by_name_and_the_production_binding
     use i915_device::live::NoRegions;
     let mut w = world();
     let inc = w.open();
-    let rr = RegionRef { region: 77, offset: 0, len: 64, reply_cap: 0, reply_offset: 0 };
+    let rr = RegionRef { region: 77, offset: 0, len: 64, reply_cap: 0, reply_offset: 0, reply_region: 77 };
     // unknown region
     w.deliver(region_frame(Opcode::GetParam, 1, inc, &rr));
     assert!(w.last_reply().is_err(errno::EINVAL));
@@ -412,8 +415,8 @@ fn a_region_that_cannot_be_reached_is_refused_by_name_and_the_production_binding
     assert_eq!(w.regions.0.borrow().reads.len(), reads, "no read was attempted");
     // the production binding
     let mut un = NoRegions;
-    assert_eq!(un.read(1, 0, &mut [0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
-    assert_eq!(un.write(1, 0, &[0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
+    assert_eq!(un.read(ConnId(1), 1, 0, &mut [0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
+    assert_eq!(un.write(ConnId(1), 1, 0, &[0u8; 4]).unwrap_err().name(), "PAYLOAD-REGION-UNAVAILABLE");
 }
 
 #[test]
@@ -543,4 +546,149 @@ fn a_full_reply_ring_holds_the_reply_and_the_requests_until_it_drains_and_keeps_
     assert_eq!(w.last_reply().hdr.request_id, id1);
     assert_eq!(w.live.stats.replies_dropped, 0);
     assert_eq!(w.live.next_deadline(), None, "and the timer is gone again");
+}
+
+// ---- GEM CPU mapping through the kernel's DMA lease -----------------------------------------------------------------------------
+
+impl W {
+    fn close_handle(&mut self, inc: u64, handle: u32) {
+        assert_eq!(self.call(inc, Opcode::GemClose, &GemCloseReq { handle, ..Default::default() }).errno, 0);
+    }
+    /// A session with a mapped batch + an unmapped result, a submission in flight, and every handle closed and the mapping unmapped: the
+    /// client is done with it all while the GPU is not. Returns `(inc, timeline dword, seqno, kernel lease handle)`.
+    fn closed_while_in_flight(&mut self) -> (u64, u64, u32, u64) {
+        let inc = self.open();
+        let (batch, result) = (self.create(inc, 4096), self.create(inc, 4096));
+        let bl = self.lease(inc, batch, 4096);
+        self.write_batch(&bl);
+        let r = self.raw(inc, Opcode::Execbuffer2, &exec_payload(result, batch, 0)).unwrap();
+        let head = ExecReply::decode(&r.payload).unwrap().head;
+        let tl = self.live.svc.timeline_addrs()[0];
+        self.close_handle(inc, batch);
+        self.close_handle(inc, result);
+        assert_eq!(self.call(inc, Opcode::GemMmapClose, &GemMmapCloseReq { lease: bl.lease, ..Default::default() }).errno, 0);
+        (inc, tl, head.seqno, bl.region_cap)
+    }
+}
+
+#[test]
+fn a_mapping_is_a_kernel_lease_over_the_object_with_the_pages_own_cache_type_for_this_sessions_client() {
+    let mut w = world();
+    let inc = w.open();
+    let h = w.create(inc, 3 * 4096);
+    let l = w.lease(inc, h, 3 * 4096);
+    let k = w.leases.0.borrow();
+    assert_eq!(k.created.len(), 1);
+    let s = k.created[0];
+    assert_eq!((s.length, s.offset), (3 * 4096, 0), "the object's whole run, whole pages");
+    assert_eq!(s.coherence, coralos_hal::Coherence::NonSnooped);
+    assert_eq!(s.peer, i915_device::conn::Peer { req_ep: 100 + w.cid.0 as u16, node: 0x7000 + w.cid.0 }, "the recipient is the client of THIS connection, as its connect announce named it");
+    assert_eq!((l.cache, l.region_cap, l.region_offset, l.len), (i915_wire::msg::gem::cache::WRITE_COMBINING, k.live[0].0, 0, 3 * 4096));
+    drop(k);
+    // a second mapping of the same object by the same session shares the lease (kernel leases are page-exclusive)
+    let l2 = w.lease(inc, h, 4096);
+    assert_eq!(l2.region_cap, l.region_cap);
+    assert_eq!(w.leases.live_count(), 1);
+    assert_eq!(w.live.svc.live_kernel_leases(), 1);
+}
+
+#[test]
+fn a_kernel_lease_outlives_gem_close_and_unmap_and_ends_only_after_the_gpu_retires_the_object() {
+    let mut w = world();
+    let base = w.snapshot();
+    let (inc, tl, seqno, handle) = w.closed_while_in_flight();
+    let free0 = w.live.svc.pool().pages_free();
+    assert_eq!(w.leases.events(), vec![format!("create {handle:#x}")]);
+    assert_eq!(w.live.svc.requests_in_flight(), 1);
+    assert_eq!(w.leases.live_count(), 1, "GEM_CLOSE and the unmap do not end it: the GPU still uses the pages");
+    assert_eq!(w.live.svc.pages_quarantined(), 0);
+    // the GPU retires the request: the object is freed, the lease ends FIRST, then the pages go back to the pool
+    w.gpu_complete(tl, seqno);
+    w.wake(Wake::Deadline);
+    assert_eq!(w.leases.events(), vec![format!("create {handle:#x}"), format!("revoke {handle:#x}")]);
+    assert_eq!(w.leases.live_count(), 0);
+    assert!(w.live.svc.pool().pages_free() > free0, "the pages are reusable now");
+    assert_eq!(w.live.svc.pages_quarantined(), 0);
+    // and reuse is real: a new object lands on recycled pages and the (page-exclusive) fake kernel accepts the lease
+    let h2 = w.create(inc, 4096);
+    let l2 = w.lease(inc, h2, 4096);
+    assert_ne!(l2.region_cap, handle, "a lease handle is never reissued");
+    assert_eq!(w.leases.live_count(), 1);
+    w.raw(inc, Opcode::SessionClose, &[]).unwrap();
+    w.wake(Wake::Deadline);
+    assert_eq!(w.snapshot(), base, "the session's end took the second lease with it");
+}
+
+#[test]
+fn pages_whose_lease_the_kernel_will_not_confirm_ended_are_quarantined_never_reused() {
+    let mut w = world();
+    let (inc, tl, seqno, _h) = w.closed_while_in_flight();
+    let free0 = w.live.svc.pool().pages_free();
+    w.leases.0.borrow_mut().revoke_fails = true; // an unproven teardown
+    w.gpu_complete(tl, seqno);
+    w.wake(Wake::Deadline);
+    assert_eq!(w.live.svc.pages_quarantined(), 1, "the batch's page");
+    assert_eq!(w.live.svc.pool().pages_free(), free0 + 1, "only the unmapped result's page came back: the quarantined page did not");
+    assert!(w.live.log.has("QUARANTINED"));
+    assert_eq!(w.live.svc.live_kernel_leases(), 0);
+    assert_eq!(w.leases.live_count(), 1, "the kernel still has the lease: its pages must never be anyone else's");
+    // many new objects mapped: none is handed the quarantined page (the fake kernel refuses a lease over a leased page)
+    w.leases.0.borrow_mut().revoke_fails = false;
+    for _ in 0..8 {
+        let h = w.create(inc, 4096);
+        let l = w.lease(inc, h, 4096);
+        assert_ne!(l.region_cap, 0);
+    }
+    assert_eq!(w.leases.live_count(), 9);
+}
+
+#[test]
+fn a_peer_that_dies_has_its_leases_revoked_at_once_and_its_pages_wait_for_the_gpu() {
+    let mut w = world();
+    let base = w.snapshot();
+    // died with nothing in flight
+    let inc = w.open();
+    let h = w.create(inc, 4096);
+    let _ = w.lease(inc, h, 4096);
+    assert_eq!(w.leases.live_count(), 1);
+    w.t.kill(w.cid);
+    w.wake(Wake::Request(w.cid));
+    assert_eq!(w.leases.live_count(), 0, "the dead client's lease is revoked the moment its session is");
+    assert_eq!(w.snapshot(), base);
+    // died with the GPU still using the mapped object
+    w.reconnect();
+    let (_inc, tl, seqno) = start_work(&mut w);
+    let free0 = w.live.svc.pool().pages_free();
+    assert_eq!(w.leases.live_count(), 1);
+    w.t.kill(w.cid);
+    w.wake(Wake::Request(w.cid));
+    assert_eq!(w.leases.live_count(), 0, "revoked at death, though the request is still on the engine");
+    assert_eq!(w.live.svc.requests_in_flight(), 1);
+    assert_eq!(w.live.svc.pool().pages_free(), free0, "the pages are not reusable until the GPU retires");
+    w.gpu_complete(tl, seqno);
+    w.wake(Wake::Deadline);
+    assert_eq!(w.snapshot(), base);
+    assert_eq!(w.live.svc.pages_quarantined(), 0);
+}
+
+#[test]
+fn a_mapping_the_kernel_will_not_lease_is_refused_by_name_and_leaves_no_gem_mapping_behind() {
+    use i915_device::uapi::kernel_lease::{LeaseFail, NoLeaseSys};
+    let mut w = world();
+    let inc = w.open();
+    let h = w.create(inc, 4096);
+    let off = w.call(inc, Opcode::GemMmapOffset, &GemMmapOffsetReq { handle: h, flags: 2, ..Default::default() }).body::<GemMmapOffsetRep>();
+    let open = GemMmapOpenReq { offset: off.offset, len: 4096 };
+    w.leases.0.borrow_mut().create_fails = Some(LeaseFail::NoMemory);
+    assert!(w.call(inc, Opcode::GemMmapOpen, &open).is_err(errno::ENOMEM));
+    w.leases.0.borrow_mut().create_fails = Some(LeaseFail::Refused { name: "LEASE-PAGE-ALREADY-LEASED", word: 0 });
+    assert!(w.call(inc, Opcode::GemMmapOpen, &open).is_err(errno::EBUSY));
+    assert!(w.live.log.has("name=LEASE-PAGE-ALREADY-LEASED"));
+    w.live.svc.set_lease_sys(Box::new(NoLeaseSys));
+    assert!(w.call(inc, Opcode::GemMmapOpen, &open).is_err(errno::ENODEV));
+    assert!(w.live.log.has("name=MMAP-LEASE-UNAVAILABLE"));
+    assert_eq!((w.live.svc.live_leases(), w.live.svc.live_kernel_leases()), (0, 0));
+    // had a GEM mapping been left behind, the object would outlive its last handle
+    w.close_handle(inc, h);
+    assert_eq!(w.live.svc.gem().object_count(), 0);
 }

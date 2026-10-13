@@ -89,8 +89,14 @@ msg!(
 msg!(
     /// A CPU-mapping LEASE (what the shim maps; never a pointer). The device grants access to `len` bytes of the object's memory
     /// starting at `grant_addr`, a DEVICE address inside a physically contiguous run, with the cache attribute `cache`. `cache`
-    /// is [`cache`]. The lease stays valid until GEM-MMAP-CLOSE or the session dies; closing the GEM handle does NOT revoke it.
-    GemMmapRep { lease: u32, cache: u32, grant_addr: u64, len: u64 }
+    /// is [`cache`] and is what the lease IS (the pages carry one cache type; the reply never promises another). The lease stays valid until
+    /// GEM-MMAP-CLOSE or the session dies; closing the GEM handle does NOT revoke it.
+    ///
+    /// ABI 1.3: the CPU maps it with the KERNEL: `region_cap` is the kernel lease handle (REGION_MAP's `cap`), `region_offset` the byte offset in
+    /// that lease where the mapping starts, `len` how many bytes. The device revokes the kernel lease when the object is freed (after the GPU
+    /// retired every request that touched it and its address-space entries are unbound) or when the session ends; a mapping read after that
+    /// faults (SIGBUS). One kernel lease serves every GEM-MMAP-OPEN of the same object by the same session.
+    GemMmapRep { lease: u32, cache: u32, grant_addr: u64, len: u64, region_cap: u64, region_offset: u64 }
 );
 msg!(GemMmapCloseReq { lease: u32, _pad: Pad32 });
 

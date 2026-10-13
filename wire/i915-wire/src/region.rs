@@ -24,8 +24,14 @@
 //!  16    4    len           request: bytes of call payload; reply: bytes of reply payload placed
 //!  20    4    reply_cap     bytes available at reply_offset (0 = the client has no reply area)
 //!  24    8    reply_offset  where a reply that does not fit inline may be placed
-//!  32    8    reserved      zero
+//!  32    4    reply_region  ABI 1.3: the region the reply area is in; meaningful ONLY with REPLY_ELSEWHERE in `reply_flags`, else zero
+//!  36    4    reply_flags   ABI 1.3: bit 0 REPLY_ELSEWHERE; every other bit zero
 //! ```
+//!
+//! WHY A SECOND REGION (ABI 1.3): the kernel delegates a region to a device read-only or read-write, per delegation. A client delegates
+//! its request storage READ-ONLY and its reply storage READ-WRITE over its session, so a reply cannot be written into the request's region.
+//! With REPLY_ELSEWHERE clear (every ABI 1.2 client) the reply area is in `region`, as before; the bytes 32..40 were reserved zero, so
+//! a 1.2 frame decodes unchanged. The reply's own [`RegionRef`] names the region the bytes were placed in.
 use crate::codec::{Reader, Writer};
 use crate::WireError;
 
@@ -37,6 +43,10 @@ pub const REGION_LAYOUT: u32 = 1;
 pub const REGION_REF_BYTES: usize = 40;
 /// The most a region payload or reply area may be: 4 MiB. A VALIDATION limit, not a buffer size.
 pub const MAX_REGION_PAYLOAD: u32 = 4 << 20;
+/// `reply_flags` bit 0: the reply area is in [`RegionRef::reply_region`], not in [`RegionRef::region`] (ABI minor 3).
+pub const REPLY_ELSEWHERE: u32 = 1;
+/// The ABI minor that introduced the separate reply region.
+pub const REPLY_REGION_SINCE_MINOR: u16 = 3;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegionRef {
@@ -45,6 +55,8 @@ pub struct RegionRef {
     pub len: u32,
     pub reply_cap: u32,
     pub reply_offset: u64,
+    /// The region the reply area is in: equal to `region` unless the frame set REPLY_ELSEWHERE.
+    pub reply_region: u32,
 }
 
 impl RegionRef {
@@ -60,11 +72,16 @@ impl RegionRef {
         let len = r.u32("region.len")?;
         let reply_cap = r.u32("region.reply_cap")?;
         let reply_offset = r.u64("region.reply_offset")?;
-        let reserved = r.u64("region.reserved")?;
+        let reply_region = r.u32("region.reply_region")?;
+        let reply_flags = r.u32("region.reply_flags")?;
         r.finish()?;
-        if reserved != 0 {
-            return Err(WireError::FieldReservedNonZero { what: "region.reserved", got: reserved });
+        if reply_flags & !REPLY_ELSEWHERE != 0 {
+            return Err(WireError::FieldReservedNonZero { what: "region.reply_flags", got: reply_flags as u64 });
         }
+        if reply_flags & REPLY_ELSEWHERE == 0 && reply_region != 0 {
+            return Err(WireError::FieldReservedNonZero { what: "region.reply_region", got: reply_region as u64 });
+        }
+        let reply_region = if reply_flags & REPLY_ELSEWHERE != 0 { reply_region } else { region };
         if len == 0 {
             return Err(WireError::BadValue { what: "region.len", got: 0 });
         }
@@ -80,7 +97,7 @@ impl RegionRef {
         if reply_offset.checked_add(reply_cap as u64).is_none() {
             return Err(WireError::BadValue { what: "region.reply_offset+reply_cap", got: reply_offset });
         }
-        Ok(RegionRef { region, offset, len, reply_cap, reply_offset })
+        Ok(RegionRef { region, offset, len, reply_cap, reply_offset, reply_region })
     }
 
     /// Write the [`REGION_REF_BYTES`]; returns that length.
@@ -92,7 +109,12 @@ impl RegionRef {
         w.u32(self.len)?;
         w.u32(self.reply_cap)?;
         w.u64(self.reply_offset)?;
-        w.u64(0)?;
+        if self.reply_region == self.region {
+            w.u64(0)?;
+        } else {
+            w.u32(self.reply_region)?;
+            w.u32(REPLY_ELSEWHERE)?;
+        }
         Ok(w.pos())
     }
 }

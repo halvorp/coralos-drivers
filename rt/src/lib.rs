@@ -8,7 +8,8 @@
 //!
 //! WHAT IS HERE (every fact this crate makes public):
 //!   numbers  WRITE 0 · EXIT 1 · SEND 3 · RECV 4 · MMIO_MAP 8 · IRQ_WAIT 10 · TRY_RECV 20 · CONNECT 21 · TICKS 24 ·
-//!            MMAP 25 · PORT_IO 52 · SESSION_RELEASE 100 · WAIT_ANY_IRQ 80 · MMIO_LEN 90 · DMA_ALLOC_TYPED 103 · DMA_QUOTA 105 · IRQ_LINE 109 · IRQ_ARM 110
+//!            MMAP 25 · PORT_IO 52 · SESSION_RELEASE 100 · WAIT_ANY_IRQ 80 · MMIO_LEN 90 · DMA_ALLOC_TYPED 103 · DMA_QUOTA 105 · IRQ_LINE 109 · IRQ_ARM 110 ·
+//!            REGION_MAP 113 · REGION_UNMAP 114 · DMA_LEASE_CREATE 115 · DMA_LEASE_REVOKE 116
 //!   words    SYSCALL_ERR / SEND_DENIED / WAIT_TIMEOUT = u64::MAX · WAIT_IRQ_FIRED = MAX-1 · WAIT_IRQ_DENIED = MAX-2 ·
 //!            PEER_DEAD = MAX-6 · SEND_OK 0 · SEND_RING_FULL 1 · DMA_ALLOC_TYPED refusals MAX-120..=MAX-127 (8, named)
 //!   layout   the DMA out-record `{ uva: u64, phys: u64 }` (repr C, 16 bytes) · DMA cache argument: low byte WB 0 / WC 1 /
@@ -25,6 +26,10 @@
 //!            endpoint, the end-of-session tombstone `[0xDD, client u64]` on a session's request endpoint, the 128-endpoint wait set
 //!            (`ep_set`), and SESSION_RELEASE 100 (`session_release(req, evt)`) to give a dead session's endpoints back. `connect` is the
 //!            client half and was already here.
+//!   region + lease (2026-10-13; region.rs) session-scoped mapping of a client's delegated payload (READ for a request, WRITE for a reply) and
+//!            DMA leases that give one session CPU access to pages of the device's own DMA; status words are closed sets
+//!            (`RegionStatus` MAX-130..=MAX-139, `LeaseStatus` MAX-140..=MAX-150), `LeaseRequest` is 64 bytes with `out_lease` at 56.
+//!            GAP: no SIGACTION wrapper - a mapping revoked mid-copy faults the device (see region.rs).
 //!   key wire (2026-10-11; keywire.rs) the physical key event frame `[0x90, HID usage, state]` on endpoint 12 (KEY_EP);
 //!            state RELEASE 0 · PRESS 1 · REPEAT 2 · ALL_UP 3
 //!   heap     (2026-10-12; heap.rs) `LazyHeap`: a `GlobalAlloc` over a chain of demand-zero `MMAP` reservations, grown on demand; no new call.
@@ -44,6 +49,7 @@ pub mod heap;
 pub mod keywire;
 pub mod mmio;
 pub mod portio;
+pub mod region;
 pub mod session;
 
 /// The syscall numbers.
@@ -66,6 +72,10 @@ pub mod nr {
     pub const DMA_QUOTA: u64 = 105;
     pub const IRQ_LINE: u64 = 109;
     pub const IRQ_ARM: u64 = 110;
+    pub const REGION_MAP: u64 = 113;
+    pub const REGION_UNMAP: u64 = 114;
+    pub const DMA_LEASE_CREATE: u64 = 115;
+    pub const DMA_LEASE_REVOKE: u64 = 116;
 }
 
 /// The return words.

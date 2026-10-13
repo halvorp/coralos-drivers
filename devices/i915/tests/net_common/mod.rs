@@ -5,7 +5,7 @@
 //! Like the real kernel it delivers messages of at most 4096 bytes (a longer one is reported oversized), reports a dead client's queued
 //! messages BEFORE the death mark, and wakes the LOWEST ready endpoint first (`auto` mode).
 #![allow(dead_code)]
-use i915_device::conn::{Accepted, ConnId, Recv, SendOutcome, Transport, Wake};
+use i915_device::conn::{Accepted, ConnId, Peer, Recv, SendOutcome, Transport, Wake};
 use i915_wire::frag::{split, Feed, Joiner, Limits};
 use i915_wire::Header;
 use std::cell::RefCell;
@@ -239,6 +239,9 @@ impl Transport for FakeT {
         c.unread += 1;
         c.sent.push(msg.to_vec());
         SendOutcome::Sent
+    }
+    fn peer(&self, conn: ConnId) -> Option<Peer> {
+        Some(Peer { req_ep: 100 + conn.0 as u16, node: 0x7000 + conn.0 })
     }
     fn release(&mut self, conn: ConnId) -> bool {
         let mut s = self.0.borrow_mut();

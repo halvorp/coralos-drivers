@@ -202,6 +202,7 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
     /// still on the engine finish first and their objects are freed when they retire - and its endpoints go back to the kernel.
     fn reap(&mut self, id: ConnId, why: &str) {
         let Some(c) = self.conns.remove(id) else { return };
+        self.regions.conn_ended(id);
         if let Some(inc) = c.session {
             let now = self.t.now_ms();
             let mut hw = Hw { ex: &mut self.ex, gm: &mut self.gm, log: &mut self.log, now_ms: now };
@@ -315,9 +316,16 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
     /// Record what the call did to the connection's session: a SESSION-OPEN that succeeded binds the new incarnation to it; a
     /// SESSION-CLOSE that ended it unbinds.
     fn bind(&mut self, h: &Header, done: &Result<Dispatched, WireError>) {
+        let peer = self.t.peer(self.cur);
         let Some(c) = self.conns.get_mut(self.cur) else { return };
         match (h.opcode, done) {
-            (Opcode::SessionOpen, Ok(Dispatched::Reply(rh, _))) if rh.session_incarnation != 0 => c.session = Some(rh.session_incarnation),
+            (Opcode::SessionOpen, Ok(Dispatched::Reply(rh, _))) if rh.session_incarnation != 0 => {
+                c.session = Some(rh.session_incarnation);
+                // who the session's client is: the recipient of its mapping leases
+                if let Some(p) = peer {
+                    self.svc.set_session_peer(rh.session_incarnation, p);
+                }
+            }
             (Opcode::SessionClose, _) => {
                 if let Some(inc) = c.session {
                     if self.svc.session_idx(inc).is_none() {
@@ -345,7 +353,7 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
             return self.refuse(h, Status::Ok, errno::ENOMEM, "LIVE-NOMEM", rr.len as u64);
         }
         req.resize(rr.len as usize, 0);
-        if let Err(e) = self.regions.read(rr.region, rr.offset, &mut req) {
+        if let Err(e) = self.regions.read(self.cur, rr.region, rr.offset, &mut req) {
             return self.refuse_region(h, e);
         }
         self.stats.calls += 1;
@@ -368,10 +376,10 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
                     return self.refuse(h, Status::Ok, errno::EFAULT, "REPLY-TOO-LARGE", len as u64);
                 }
                 let area: &[u8] = if big.is_empty() { &self.outbuf[HEADER_BYTES..HEADER_BYTES + len] } else { &big[HEADER_BYTES..HEADER_BYTES + len] };
-                if let Err(e) = self.regions.write(rr.region, rr.reply_offset, area) {
+                if let Err(e) = self.regions.write(self.cur, rr.reply_region, rr.reply_offset, area) {
                     return self.refuse_region(h, e);
                 }
-                let placed = RegionRef { region: rr.region, offset: rr.reply_offset, len: len as u32, reply_cap: rr.reply_cap, reply_offset: rr.reply_offset };
+                let placed = RegionRef { region: rr.reply_region, offset: rr.reply_offset, len: len as u32, reply_cap: rr.reply_cap, reply_offset: rr.reply_offset, reply_region: rr.reply_region };
                 let head = rh.reply_in_region();
                 let ok = placed.encode(&mut self.outbuf[HEADER_BYTES..]).and_then(|_| head.encode(&mut self.outbuf));
                 match ok {
@@ -447,6 +455,10 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
             RegionError::Unavailable => self.refuse(h, Status::Unsupported, errno::EOPNOTSUPP, e.name(), 0),
             RegionError::Unknown { region } => self.refuse(h, Status::Ok, errno::EINVAL, e.name(), region as u64),
             RegionError::OutOfRange { offset, .. } => self.refuse(h, Status::Ok, errno::EFAULT, e.name(), offset),
+            RegionError::Revoked { region } => self.refuse(h, Status::Ok, errno::ENODEV, e.name(), region as u64),
+            RegionError::NotYours { region } | RegionError::ReadOnly { region } => self.refuse(h, Status::Ok, errno::EACCES, e.name(), region as u64),
+            RegionError::NoMemory { .. } => self.refuse(h, Status::Ok, errno::ENOMEM, e.name(), 0),
+            RegionError::Refused { word, .. } => self.refuse(h, Status::Ok, errno::EIO, e.name(), word),
         }
     }
 

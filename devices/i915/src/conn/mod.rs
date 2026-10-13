@@ -28,4 +28,4 @@ pub use table::{Conn, ConnTable, Flush, FlushCount, Pulled, Queued};
 pub const REPLY_RETRY_MS: u64 = 2;
 
 pub use parked::Parked;
-pub use transport::{Accepted, ConnId, Recv, SendOutcome, Transport, Wake};
+pub use transport::{Accepted, ConnId, Peer, Recv, SendOutcome, Transport, Wake};

@@ -8,6 +8,15 @@ use i915_wire::frag::Limits;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConnId(pub u64);
 
+/// Who a connection's client is, as the kernel's connect announce named it: what a lease needs to name its RECIPIENT. Opaque to the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Peer {
+    /// The session's request endpoint (this task holds RECV on it).
+    pub req_ep: u16,
+    /// The client's node (a packed task reference: slot and generation).
+    pub node: u64,
+}
+
 /// What ended a wait.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Wake {
@@ -85,6 +94,10 @@ pub trait Transport {
     fn recv(&mut self, conn: ConnId, buf: &mut [u8]) -> Recv;
     /// Send one message to `conn`.
     fn send(&mut self, conn: ConnId, msg: &[u8]) -> SendOutcome;
+    /// The client of `conn` as the announce named it. `None` for a transport that does not know (the parked loop never needs it).
+    fn peer(&self, _conn: ConnId) -> Option<Peer> {
+        None
+    }
     /// The connection is over (its client died or the device closed it): forget it and give its endpoints back. `false` = the kernel
     /// refused the release (the pair stays held until this task exits); the connection is forgotten either way.
     fn release(&mut self, conn: ConnId) -> bool;

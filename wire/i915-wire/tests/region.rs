@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! The payload region (ABI 1.2): the reference layout, every bound, the flag-vs-minor rule, and that a reply does not inherit it.
+//! The payload region (ABI 1.2, reply region 1.3): the reference layout, every bound, the flag-vs-minor rule, and that a reply does not inherit it.
 use i915_wire::region::*;
 use i915_wire::*;
 
 /// The layout written out by hand, byte for byte (docs in region.rs): region 7, layout 1, offset 0x1000, len 100_000, cap 200_000,
-/// reply_offset 0x40_0000, reserved 0.
+/// reply_offset 0x40_0000, reply_region 0, reply_flags 0 (the 1.2 reserved zero).
 fn bytes() -> Vec<u8> {
     let mut v = vec![];
     v.extend_from_slice(&[7, 0, 0, 0]);
@@ -22,7 +22,7 @@ fn the_documented_constants_and_layout() {
     assert_eq!((REGION_SINCE_MINOR, REGION_LAYOUT, REGION_REF_BYTES, MAX_REGION_PAYLOAD), (2, 1, 40, 4 << 20));
     assert!(MAX_REGION_PAYLOAD > MAX_PAYLOAD, "a region exists to carry what an inline frame cannot");
     let r = RegionRef::decode(&bytes()).unwrap();
-    assert_eq!(r, RegionRef { region: 7, offset: 0x1000, len: 100_000, reply_cap: 200_000, reply_offset: 0x40_0000 });
+    assert_eq!(r, RegionRef { region: 7, offset: 0x1000, len: 100_000, reply_cap: 200_000, reply_offset: 0x40_0000, reply_region: 7 });
     let mut out = [0u8; 64];
     assert_eq!(r.encode(&mut out).unwrap(), REGION_REF_BYTES);
     assert_eq!(&out[..40], &bytes()[..], "encode writes the hand-written bytes");
@@ -48,7 +48,30 @@ fn every_bound_is_enforced_by_name() {
     assert!(RegionRef::decode(&with(16, &at)).is_ok() && RegionRef::decode(&with(20, &at)).is_ok(), "the limit itself is allowed");
     assert_eq!(RegionRef::decode(&with(8, &[0xff; 8])).unwrap_err().name(), "WIRE-BAD-VALUE", "offset + len wraps");
     assert_eq!(RegionRef::decode(&with(24, &[0xff; 8])).unwrap_err().name(), "WIRE-BAD-VALUE", "reply_offset + reply_cap wraps");
-    assert_eq!(RegionRef::decode(&with(32, &[1])).unwrap_err().name(), "WIRE-FIELD-RESERVED-NONZERO");
+    assert_eq!(RegionRef::decode(&with(32, &[1])).unwrap_err().name(), "WIRE-FIELD-RESERVED-NONZERO", "a reply region without REPLY_ELSEWHERE");
+    assert_eq!(RegionRef::decode(&with(36, &[2])).unwrap_err().name(), "WIRE-FIELD-RESERVED-NONZERO", "an unknown reply flag");
+}
+
+#[test]
+fn a_reply_can_live_in_its_own_region_and_a_1_2_frame_still_means_the_same_region() {
+    assert_eq!((REPLY_ELSEWHERE, REPLY_REGION_SINCE_MINOR), (1, 3));
+    let mut b = bytes();
+    b[32..36].copy_from_slice(&11u32.to_le_bytes());
+    b[36..40].copy_from_slice(&1u32.to_le_bytes());
+    let r = RegionRef::decode(&b).unwrap();
+    assert_eq!((r.region, r.reply_region), (7, 11));
+    let mut out = [0u8; 40];
+    r.encode(&mut out).unwrap();
+    assert_eq!(&out[..], &b[..], "a separate reply region round-trips byte for byte");
+    // reply region 0 is a real region id when the flag says so
+    let mut z = bytes();
+    z[36..40].copy_from_slice(&1u32.to_le_bytes());
+    assert_eq!(RegionRef::decode(&z).unwrap().reply_region, 0);
+    // the 1.2 bytes decode as "the same region" and re-encode to the same bytes
+    let old = RegionRef::decode(&bytes()).unwrap();
+    assert_eq!(old.reply_region, old.region);
+    old.encode(&mut out).unwrap();
+    assert_eq!(&out[..], &bytes()[..]);
 }
 
 #[test]
