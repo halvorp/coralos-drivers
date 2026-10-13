@@ -252,7 +252,7 @@ impl Sys {
         }
     }
 
-    fn fw_answer(&mut self, s: &Step) -> FwInput {
+    pub fn fw_answer(&mut self, s: &Step) -> FwInput {
         self.trace.push(T::Fw(s.label));
         if let Some((_, a)) = self.fw_override.iter().find(|o| o.0 == s.label) {
             return *a;
@@ -268,7 +268,7 @@ impl Sys {
     }
 
     /// Returns (header, payload) of the reply, or an IPC-layer error.
-    fn ipc(&mut self, name: &'static str, header: u64, payload: &[u8]) -> Result<(u64, Vec<u8>), avs_ipc_core::error::IpcError> {
+    pub fn ipc(&mut self, name: &'static str, header: u64, payload: &[u8]) -> Result<(u64, Vec<u8>), avs_ipc_core::error::IpcError> {
         // the three base-firmware queries share one wire message; name them by their parameter id (messages.h:355-362)
         let name = if name == "large config get" {
             match LARGE_PARAM_ID.get(header) {

@@ -21,7 +21,8 @@
 //!            OFFSET checked against the granted length and the width; no write is exposed. No new system call or number.
 //!   write-allow-listed MMIO (2026-10-12; mmio.rs) `WriteWindow`: a window readable everywhere and writable ONLY at the `&'static`
 //!            `WriteRange` list given at open; one 32-bit `write32` at an OFFSET checked against the length, alignment and the list
-//!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); no 8/16-bit write. No new system call or number.
+//!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); 8- and 16-bit writes (2026-10-13, `write8`/`write16`, same list, a narrow
+//!            write inside an allowed dword changes only its own bytes). No new system call or number.
 //!   session wire (2026-10-13; session.rs) SERVING connect(): the announce `[0xC0, req u16, evt u16, client u64]` posted on a LISTEN
 //!            endpoint, the end-of-session tombstone `[0xDD, client u64]` on a session's request endpoint, the 128-endpoint wait set
 //!            (`ep_set`), and SESSION_RELEASE 100 (`session_release(req, evt)`) to give a dead session's endpoints back. `connect` is the
@@ -127,9 +128,10 @@ pub fn write(b: &[u8]) {
 }
 /// End the task.
 pub fn exit(code: u64) -> ! {
-    unsafe { sc(nr::EXIT, code, 0, 0, 0) };
+    // EXIT does not return; the loop only satisfies `-> !` and asks again rather than spin if a kernel ever did return (it blocks in the
+    // call, it never busy-waits)
     loop {
-        core::hint::spin_loop();
+        unsafe { sc(nr::EXIT, code, 0, 0, 0) };
     }
 }
 /// Send `msg` on endpoint `ep`: a SEND_* / PEER_DEAD word.
@@ -147,7 +149,8 @@ pub fn try_recv(ep: u64, buf: &mut [u8]) -> u64 {
 /// Open a session on a listen endpoint: `Some((req, evt))`, or None (one undifferentiated refusal).
 pub fn connect(listen_ep: u16) -> Option<(u16, u16)> {
     let w = unsafe { sc(nr::CONNECT, listen_ep as u64, 0, 0, 0) };
-    (w != word::SYSCALL_ERR).then_some(((w >> 16) as u16, w as u16))
+    // a minted pair is two dynamic endpoints, never 0: an answer of 0 is not a session and is refused like the error word
+    (w != word::SYSCALL_ERR && w != 0).then_some(((w >> 16) as u16, w as u16))
 }
 /// A SERVER drops its side of a session whose client is gone (SESSION_RELEASE, 100): `true` when the kernel took it. The kernel
 /// checks that the pair is one recorded session, that the caller holds RECV(`req`) and SEND(`evt`), and that no client side is left

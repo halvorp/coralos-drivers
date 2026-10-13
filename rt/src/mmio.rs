@@ -187,7 +187,13 @@ impl WriteWindow {
 
     /// Is a 32-bit write at `off` inside the allow-list?
     pub fn allows32(&self, off: u64) -> bool {
-        self.allow.iter().any(|r| off >= r.off && off.checked_add(4).map_or(false, |e| e <= r.off + r.len))
+        self.allows(off, 4)
+    }
+
+    /// Is a `width`-byte write at `off` wholly inside one allow-list entry? (A byte or halfword inside an allowed dword is allowed:
+    /// it changes only its own bytes, never a neighbouring register.)
+    pub fn allows(&self, off: u64, width: u64) -> bool {
+        self.allow.iter().any(|r| off >= r.off && off.checked_add(width).map_or(false, |e| e <= r.off + r.len))
     }
 
     /// Write one 32-bit register. Range and alignment are checked first (as a read), then the allow-list; only then is memory touched.
@@ -199,6 +205,29 @@ impl WriteWindow {
         // SAFETY: `check` proved [off, off + 4) lies inside the window the kernel granted and mapped at `base`, 4-byte aligned;
         // the allow-list test above proved the register is one this window was opened to write.
         unsafe { core::ptr::write_volatile(va as *mut u32, v) };
+        Ok(())
+    }
+
+    /// Write one byte (2026-10-13, avs.device: the HD-audio stream descriptors have byte registers - `SD_CTL`, `SD_STS`, `SD_LVI`). Range,
+    /// then the allow-list; a byte outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing. The access is exactly one byte wide.
+    pub fn write8(&mut self, off: u64, v: u8) -> Result<(), MmioError> {
+        let va = self.win.check(off, 1)?;
+        if !self.allows(off, 1) {
+            return Err(MmioError::WriteNotAllowed { off, width: 1 });
+        }
+        // SAFETY: `check` proved the byte lies inside the granted, mapped window; the allow-list test proved it is one this window may write.
+        unsafe { core::ptr::write_volatile(va as *mut u8, v) };
+        Ok(())
+    }
+
+    /// Write one 16-bit register (`SD_FORMAT`, `SD_LVI`, ...): a halfword write never touches the neighbouring halfword.
+    pub fn write16(&mut self, off: u64, v: u16) -> Result<(), MmioError> {
+        let va = self.win.check(off, 2)?;
+        if !self.allows(off, 2) {
+            return Err(MmioError::WriteNotAllowed { off, width: 2 });
+        }
+        // SAFETY: as `write8`; `check` also proved the offset 2-byte aligned.
+        unsafe { core::ptr::write_volatile(va as *mut u16, v) };
         Ok(())
     }
 }
