@@ -969,3 +969,16 @@ fn a_fence_grant_gives_the_recipient_a_wait_only_sync_file_that_outlives_the_exp
     assert_eq!(call(&mut w, a, Opcode::FdClose, &FdCloseReq { token: g3, kind: sync::fd_kind::SYNC_FILE_GRANT, ..Default::default() }).errno, 0, "the exporter withdraws an unredeemed grant");
     assert!(call(&mut w, b, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant: g3 }).is_err(errno::EINVAL));
 }
+
+#[test]
+fn an_unredeemed_grant_dies_with_its_exporter_and_frees_the_object() {
+    let mut w = world();
+    let (a, b) = (open(&mut w), open(&mut w));
+    let ha = create(&mut w, a, 4096);
+    let tok = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
+    w.svc.session_dead(&mut hw!(w), a);
+    poll(&mut w);
+    assert!(call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL), "the exporter is gone: nothing to redeem");
+    assert_eq!(w.svc.gem().object_count(), 0, "no grant keeps the exporter's pages alive");
+    assert_eq!(w.svc.live_primes(), 0);
+}

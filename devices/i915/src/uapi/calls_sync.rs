@@ -199,7 +199,7 @@ impl UapiService {
                 let r = SyncFileMergeReq::from_payload(p)?;
                 ok!(SyncFileTokenRep { token: self.sync.file_merge(inc, r.a, r.b)?, ..Default::default() })
             }
-            _ => {
+            Opcode::SyncFileWait => {
                 let r = SyncFileWaitReq::from_payload(p)?;
                 match self.sync.file_status(inc, r.token)? {
                     FenceStatus::Signalled(e) => ok!(SyncFileWaitRep { fence_error: e, ..Default::default() }),
@@ -212,6 +212,8 @@ impl UapiService {
                     }
                 }
             }
+            // routed by `route_session` only; an opcode that reaches here is a routing bug, refused by name rather than taken for a wait
+            _ => Err(Fail::new(errno::EINVAL, "UNROUTED")),
         }
     }
 
