@@ -11,8 +11,9 @@
 //! THE CRATE DOES NOT TOUCH THE BUS. A plan is a [`bus::Plan`]; the [`runner::Runner`] hands the `.device` one [`bus::Step`] at a time
 //! and judges its answer; every wait is bounded by the plan AND counted by the runner, and every failure has a name.
 //!
-//! SPEAKERS ARE NOT HERE. Every transaction this crate can build addresses 0x1A; the MAX98373 amplifiers at 0x31/0x32 are refused by
-//! name in [`bus::check_target`] (Astra audio ruling: headphones first, speakers refused until the protection path exists).
+//! SPEAKERS ARE NOT HERE. Every transaction this crate can build addresses the codec of a [`bus::Wiring`] (board data handed in by the
+//! caller); the speaker amplifiers on the same bus are refused by name in [`bus::Wiring::check_target`] (Astra audio ruling: headphones
+//! first, speakers refused until the protection path exists).
 //!
 //! WHAT IS DELIBERATELY NOT PORTED (each named, each a decision for the owner or wave 3): the headphone-impedance test
 //! (`da7219_aad_hptest_work`, a tone through the jack at 0 dB gains: [`aad::JackReport`] reports a 3-pole jack as `Headphone` and

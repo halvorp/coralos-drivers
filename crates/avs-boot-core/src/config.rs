@@ -9,14 +9,6 @@ use avs_topology_core::topology::Topology;
 use hda_ext_core::bdl::Bdl;
 use hda_ext_core::stream::Streams;
 
-/// The SSP the DA7219 headset codec is on (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2: "DA7219 on SSP1"; `ssp1p_*` in da7219-tplg.bin).
-pub const HEADPHONE_SSP_INSTANCE: u32 = 1;
-/// The SSP the two MAX98373 speaker amplifiers are on ("amps on SSP0"). A path through it is refused by name.
-pub const SPEAKER_SSP_INSTANCE: u32 = 0;
-/// The playback widgets of `da7219-tplg.bin`: the front end (host copier) and the back end (SSP1 copier) (avs_kbl-da7219 topology).
-pub const ATLAS_FE_WIDGET: &[u8] = b"ssp1p_fe";
-pub const ATLAS_BE_WIDGET: &[u8] = b"ssp1p_be";
-
 /// A PCM's hardware parameters as `avs_test_hw_params` compares them (path.c:85-92).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StreamParams {
@@ -38,12 +30,17 @@ pub struct LibImage {
 
 #[derive(Clone, Copy, Debug)]
 pub struct PlaybackSel<'a> {
+    /// The topology's playback widgets: the front end (host copier) and the back end (SSP copier). Names of the topology file
+    /// (the Atlas headset's are `ssp1p_fe` / `ssp1p_be` in `da7219-tplg.bin`).
     pub fe_widget: &'a [u8],
     pub be_widget: &'a [u8],
     pub fe: StreamParams,
     pub be: StreamParams,
-    /// The SSP the back end must be on.
+    /// The SSP the back end must be on: BOARD data from the board row (ZERO-HW-OUTSIDE-BSP). Atlas' headset codec is on SSP1.
     pub ssp_instance: u32,
+    /// The SSPs of the board's speaker amplifiers, from the same row (Atlas: SSP0, the two MAX98373). A back end on any of them is the
+    /// speaker path and is refused by name ([`crate::plan::PlanError::SpeakerPathRefused`]), whatever `ssp_instance` says.
+    pub speaker_ssp: &'a [u32],
 }
 
 /// The host stream and its DMA memory, prepared by the `.device` from hda-ext-core's walks and planners.

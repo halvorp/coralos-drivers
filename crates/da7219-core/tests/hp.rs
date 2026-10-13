@@ -237,3 +237,32 @@ fn power_up_plans_fit_their_cap() {
         assert!(p.len() < PLAN_CAP);
     }
 }
+
+#[test]
+fn the_route_sends_the_dai_through_the_dacs_and_mixers_to_the_amplifiers_and_nothing_else() {
+    let mut f = initialised();
+    // reset values (da7219.c:2336-2341): DIG_ROUTING_DAC 0x32, MIXOUT_x_SELECT 0 (OFF), DROUTING_ST_OUTFILT 0x01 / 0x02
+    assert_eq!((f.reg(0x2e), f.reg(0x4b), f.reg(0x4c), f.reg(0x3c), f.reg(0x3d)), (0x32, 0, 0, 0x01, 0x02));
+    f.regs[0x2e] = 0x00; // as if the DACs listened to the ADC
+    f.regs[0x3c] = 0x04; // sidetone into the left mixer
+    f.regs[0x4b] = 0x80; // an unrelated bit that must survive
+    f.run(route_plan().unwrap()).unwrap();
+    assert_eq!(f.reg(0x2e), 0x32, "DAC L from DAIL (2), DAC R from DAIR (3)");
+    assert_eq!(f.reg(0x4b), 0x81, "left output mixer takes the DAC; the other bits are left alone");
+    assert_eq!(f.reg(0x4c), 0x01);
+    assert_eq!(f.reg(0x3c), 0x01, "left sidetone mixer takes only the left output filter");
+    assert_eq!(f.reg(0x3d), 0x02, "right takes only the right");
+    assert_only_codec(&f);
+    // the route is applied while muted and touches no mute, enable or gain register
+    for (_, reg, _) in &f.writes {
+        assert!(![HP_L, HP_R, DAC_L, DAC_R, MIXOUT_L, MIXOUT_R, CP, 0x45, 0x46, 0x48, 0x49].contains(reg), "reg {reg:#x}");
+    }
+}
+
+#[test]
+fn a_route_that_does_not_stick_is_caught_by_name() {
+    let mut f = initialised();
+    f.stuck.push((0x4b, 0x01));
+    let e = f.run(route_plan().unwrap()).unwrap_err();
+    assert_eq!(e.step, "route-mixout-l-set");
+}

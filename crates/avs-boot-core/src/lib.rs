@@ -24,9 +24,9 @@
 //! [`error::BootFailure`] naming the stage, the step and the reason; after the first failure nothing further is asked of the DSP except
 //! restoring the PCI gating, and the caller is told whether the DSP must be powered down ([`error::BootFailure::dsp_dirty`]).
 //!
-//! SPEAKERS ARE NEVER PLANNED. The only gateways a path may hold are the host-output copier and the I2S-output copier of SSP1; a path
-//! whose I2S gateway is SSP0 (the two MAX98373 amplifiers, ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2) is refused by name before a
-//! single message is sent ([`plan::PlanError::SpeakerPathRefused`]).
+//! SPEAKERS ARE NEVER PLANNED. The only gateways a path may hold are the host-output copier and the I2S-output copier of the SSP the
+//! board row names for the headset; a path whose I2S gateway is one of the board's speaker SSPs ([`config::PlaybackSel::speaker_ssp`])
+//! is refused by name before a single message is sent ([`plan::PlanError::SpeakerPathRefused`]).
 //!
 //! THE VOLUME CEILING. A peakvol module's `target_volume` in the TOPOLOGY is its ceiling ([`volume`]): the module is initialised silent
 //! (Linux initialises it at `S32_MAX`, path.c:589-593, and sets the user volume afterwards), a topology that declares a zero or

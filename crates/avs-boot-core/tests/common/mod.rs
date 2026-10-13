@@ -5,6 +5,13 @@
 #![allow(dead_code)]
 use avs_boot_core::boot::*;
 use avs_boot_core::config::*;
+
+/// The Atlas board row (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2): the headset codec on SSP1, the speaker amplifiers on SSP0; the
+/// topology's playback widgets (da7219-tplg.bin).
+pub const HEADPHONE_SSP_INSTANCE: u32 = 1;
+pub const SPEAKER_SSP: [u32; 1] = [0];
+pub const ATLAS_FE_WIDGET: &[u8] = b"ssp1p_fe";
+pub const ATLAS_BE_WIDGET: &[u8] = b"ssp1p_be";
 use avs_boot_core::error::BootFailure;
 use avs_boot_core::running::Running;
 use avs_fw_core::bdl::{ClDmaLayout, Extent};
@@ -358,7 +365,7 @@ pub fn cfg<'a>(topo: &'a Topology<'a>, nhlt: &'a Nhlt<'a>) -> BootConfig<'a> {
         layout: layout(),
         basefw_len: 40_000,
         libs: vec![],
-        playback: PlaybackSel { fe_widget: ATLAS_FE_WIDGET, be_widget: ATLAS_BE_WIDGET, fe: S16_48K, be: S16_48K, ssp_instance: HEADPHONE_SSP_INSTANCE },
+        playback: PlaybackSel { fe_widget: ATLAS_FE_WIDGET, be_widget: ATLAS_BE_WIDGET, fe: S16_48K, be: S16_48K, ssp_instance: HEADPHONE_SSP_INSTANCE, speaker_ssp: &SPEAKER_SSP },
         host: host_setup(),
         min_fw: avs_fw_core::regs::SKL_MIN_FW_VERSION,
     }

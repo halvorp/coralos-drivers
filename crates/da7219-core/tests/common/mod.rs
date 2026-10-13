@@ -4,6 +4,14 @@
 #![allow(dead_code)]
 pub mod defaults;
 
+/// The Atlas board row (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2, recovery-image ACPI): DA7219 0x1A; MAX98373 right 0x31, left 0x32.
+pub const CODEC_ADDR: u16 = 0x1A;
+pub const AMP_ADDRS: [u16; 2] = [0x31, 0x32];
+
+pub fn wiring() -> Wiring<'static> {
+    Wiring::new(CODEC_ADDR, &AMP_ADDRS).unwrap()
+}
+
 use da7219_core::bus::*;
 use da7219_core::regs::*;
 use da7219_core::runner::*;
@@ -67,23 +75,23 @@ impl Fake {
         }
         match s.op {
             Op::Write { reg, value } => {
-                self.record(&wire::write(reg, value).unwrap());
+                self.record(&wire::write(&wiring(), reg, value).unwrap());
                 self.put(s.label, reg, value);
                 Input::Done
             }
             Op::Update { reg, mask, value } => {
-                self.record(&wire::read(reg, 1).unwrap());
+                self.record(&wire::read(&wiring(), reg, 1).unwrap());
                 let new = (self.regs[reg as usize] & !mask) | (value & mask);
-                self.record(&wire::write(reg, new).unwrap());
+                self.record(&wire::write(&wiring(), reg, new).unwrap());
                 self.put(s.label, reg, new);
                 Input::Done
             }
             Op::Read { reg } | Op::Verify { reg, .. } => {
-                self.record(&wire::read(reg, 1).unwrap());
+                self.record(&wire::read(&wiring(), reg, 1).unwrap());
                 Input::Value(self.regs[reg as usize])
             }
             Op::Poll { reg, .. } => {
-                self.record(&wire::read(reg, 1).unwrap());
+                self.record(&wire::read(&wiring(), reg, 1).unwrap());
                 self.poll_reads += 1;
                 Input::Value(self.regs[reg as usize])
             }
@@ -92,11 +100,11 @@ impl Fake {
                 Input::Done
             }
             Op::ReadPair { reg } => {
-                self.record(&wire::read(reg, 2).unwrap());
+                self.record(&wire::read(&wiring(), reg, 2).unwrap());
                 Input::Pair([self.regs[reg as usize], self.regs[reg as usize + 1]])
             }
             Op::WritePair { reg, first, second } => {
-                self.record(&wire::write_pair(reg, first, second).unwrap());
+                self.record(&wire::write_pair(&wiring(), reg, first, second).unwrap());
                 if reg == DA7219_ACCDET_IRQ_EVENT_A {
                     // the event registers clear on a write of 1
                     self.regs[reg as usize] &= !first;
@@ -140,7 +148,7 @@ impl Fake {
 pub fn assert_only_codec(f: &Fake) {
     assert!(!f.log.is_empty());
     for t in &f.log {
-        assert_eq!(t.addr, 0x1A, "a message left the codec: {t:?}");
+        assert_eq!(t.addr, CODEC_ADDR, "a message left the codec: {t:?}");
         assert_ne!(t.addr, 0x31);
         assert_ne!(t.addr, 0x32);
     }

@@ -57,6 +57,30 @@ const MUTES: [(u8, &str); 4] = [
     (DA7219_DAC_R_CTRL, "dac-r-muted"),
 ];
 
+/// The route from the DAI to the headphone amplifiers, which Linux leaves to the mixer state ALSA restores (UCM `avs_da7219`: `Out DACL Mux
+/// DAIL`, ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.4), not to the driver: the DACs take the DAI's left/right (`Out DACL/DACR Mux`,
+/// `DIG_ROUTING_DAC`, da7219.c:708-724), the output mixers take the DACs (`Mixer Out FilterL/R` "DACL/DACR Switch", `MIXOUT_x_SELECT`,
+/// da7219.c:737-747) and the sidetone mixers take only their own output filter (`ST Mixer Out FilterL/R`, `DROUTING_ST_OUTFILT_1x`,
+/// da7219.c:749-771; the sidetone input stays off). The reset values of the DAC mux and the sidetone mixers already are these; the mixer-out
+/// switches are the ones that reset OFF - without them a running stream is silent. Applied while the path is muted, before [`power_up_plan`].
+pub fn route_plan() -> Result<Plan, crate::PlanError> {
+    // da7219_out_sel_txt (da7219.c:686-688): "ADC", "Tone Generator", "DAIL", "DAIR" - the enum value is the position
+    const SRC_DAIL: u8 = 2;
+    const SRC_DAIR: u8 = 3;
+    let mut p = Plan::new();
+    p.push(Step::abort("route-dac-source", Op::Update { reg: DA7219_DIG_ROUTING_DAC, mask: DA7219_DAC_L_SRC_MASK | DA7219_DAC_R_SRC_MASK, value: (SRC_DAIL << DA7219_DAC_L_SRC_SHIFT) | (SRC_DAIR << DA7219_DAC_R_SRC_SHIFT) }));
+    p.push(Step::abort("route-mixout-l", Op::Update { reg: DA7219_MIXOUT_L_SELECT, mask: DA7219_MIXOUT_L_MIX_SELECT_MASK, value: DA7219_MIXOUT_L_MIX_SELECT_MASK }));
+    p.push(Step::abort("route-mixout-r", Op::Update { reg: DA7219_MIXOUT_R_SELECT, mask: DA7219_MIXOUT_R_MIX_SELECT_MASK, value: DA7219_MIXOUT_R_MIX_SELECT_MASK }));
+    // left filter feeds the left sidetone mixer, right feeds right, sidetone off (bits 0, 1, 2 of each)
+    p.push(Step::abort("route-st-mixer-l", Op::Update { reg: DA7219_DROUTING_ST_OUTFILT_1L, mask: 0x07, value: 1 << DA7219_DMIX_ST_SRC_OUTFILT1L_SHIFT }));
+    p.push(Step::abort("route-st-mixer-r", Op::Update { reg: DA7219_DROUTING_ST_OUTFILT_1R, mask: 0x07, value: 1 << DA7219_DMIX_ST_SRC_OUTFILT1R_SHIFT }));
+    let dac_src = (SRC_DAIL << DA7219_DAC_L_SRC_SHIFT) | (SRC_DAIR << DA7219_DAC_R_SRC_SHIFT);
+    p.push(Step::abort("route-dac-source-set", Op::Verify { reg: DA7219_DIG_ROUTING_DAC, mask: DA7219_DAC_L_SRC_MASK | DA7219_DAC_R_SRC_MASK, want: dac_src }));
+    p.push(Step::abort("route-mixout-l-set", Op::Verify { reg: DA7219_MIXOUT_L_SELECT, mask: DA7219_MIXOUT_L_MIX_SELECT_MASK, want: DA7219_MIXOUT_L_MIX_SELECT_MASK }));
+    p.push(Step::abort("route-mixout-r-set", Op::Verify { reg: DA7219_MIXOUT_R_SELECT, mask: DA7219_MIXOUT_R_MIX_SELECT_MASK, want: DA7219_MIXOUT_R_MIX_SELECT_MASK }));
+    p.checked()
+}
+
 /// Power the headphone path up with every output still muted. Precondition (verified): the four mute bits are set.
 pub fn power_up_plan(o: PowerUp) -> Result<Plan, crate::PlanError> {
     let mut p = Plan::new();
@@ -172,7 +196,7 @@ pub struct GainPolicy {
 impl GainPolicy {
     /// The CEILING is the point ChromeOS itself never exceeds: UCM `Playback Digital Volume 111` (= 0x6F, 0 dB) and CRAS `avs_da7219`
     /// `max_volume 0` (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.4); the headphone amplifier stays at its reset 0 dB. The INITIAL values
-    /// are conservative (-12 dB DAC, -6 dB amplifier) and PROVISIONAL: the owner or a silicon measurement sets the real figures.
+    /// are conservative choices (-12 dB DAC, -6 dB amplifier), not derived from a measurement: UNVERIFIED on silicon.
     pub const ATLAS_HEADPHONES: GainPolicy = GainPolicy {
         dac_max: DA7219_DAC_DIGITAL_GAIN_0DB,
         hp_max: DA7219_HP_AMP_GAIN_0DB,

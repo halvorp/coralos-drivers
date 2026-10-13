@@ -1,56 +1,63 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The bus gate, the wire encoding and the runner's own bounds.
 mod common;
+use common::{wiring, AMP_ADDRS};
 use da7219_core::bus::*;
 use da7219_core::runner::*;
 use i2c_core_msg_core::flags::I2C_M_RD;
 use i2c_designware_master_core::setup::validate_message;
 
 #[test]
-fn the_codec_address_is_the_acpi_one_and_the_amplifiers_are_the_recovery_ones() {
-    // ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2: DA7219 0x1A, MAX98373 right 0x31, left 0x32
-    assert_eq!(DA7219_I2C_ADDR, 0x1A);
-    assert_eq!(MAX98373_RIGHT_ADDR, 0x31);
-    assert_eq!(MAX98373_LEFT_ADDR, 0x32);
+fn a_wiring_cannot_put_the_codec_at_an_amplifiers_address_or_off_the_bus() {
+    assert!(Wiring::new(0x1A, &[0x31, 0x32]).is_ok());
+    assert_eq!(Wiring::new(0x31, &[0x31, 0x32]), Err(BusError::SpeakerAmplifier { addr: 0x31 }));
+    assert_eq!(Wiring::new(0x32, &[0x31, 0x32]), Err(BusError::SpeakerAmplifier { addr: 0x32 }));
+    assert_eq!(Wiring::new(0x00, &[]), Err(BusError::BadAddress { addr: 0x00 }), "general call");
+    assert_eq!(Wiring::new(0x7C, &[]), Err(BusError::BadAddress { addr: 0x7C }), "10-bit prefix");
+    assert_eq!(Wiring::new(0x1A, &[]).unwrap().codec(), 0x1A);
 }
 
 #[test]
-fn the_gate_refuses_both_speaker_amplifiers_by_name_and_everything_but_the_codec() {
-    assert_eq!(check_target(0x31), Err(BusError::SpeakerAmplifier { addr: 0x31 }));
-    assert_eq!(check_target(0x32), Err(BusError::SpeakerAmplifier { addr: 0x32 }));
-    assert_eq!(check_target(0x1A), Ok(()));
-    // a valid address that is not the codec
-    assert_eq!(check_target(0x2A), Err(BusError::NotTheCodec { addr: 0x2A }));
-    // a reserved 7-bit address (general call) is not a valid target at all
-    assert_eq!(check_target(0x00), Err(BusError::BadAddress { addr: 0x00 }));
-    assert_eq!(check_target(0x7C), Err(BusError::BadAddress { addr: 0x7C }));
+fn the_gate_refuses_every_listed_amplifier_by_name_and_everything_but_the_codec() {
+    let w = wiring();
+    assert_eq!(w.check_target(0x31), Err(BusError::SpeakerAmplifier { addr: 0x31 }));
+    assert_eq!(w.check_target(0x32), Err(BusError::SpeakerAmplifier { addr: 0x32 }));
+    assert_eq!(w.check_target(0x1A), Ok(()));
+    assert_eq!(w.check_target(0x2A), Err(BusError::NotTheCodec { addr: 0x2A }));
+    assert_eq!(w.check_target(0x00), Err(BusError::BadAddress { addr: 0x00 }));
+    assert_eq!(w.check_target(0x7C), Err(BusError::BadAddress { addr: 0x7C }));
+    // a board with a different set of amplifiers is guarded the same way
+    let w2 = Wiring::new(0x1A, &[0x40]).unwrap();
+    assert_eq!(w2.check_target(0x40), Err(BusError::SpeakerAmplifier { addr: 0x40 }));
+    assert_eq!(w2.check_target(0x31), Err(BusError::NotTheCodec { addr: 0x31 }));
 }
 
 #[test]
 fn no_wire_builder_will_put_a_message_on_an_amplifier() {
-    for addr in [0x31u16, 0x32] {
-        assert_eq!(wire::write_to(addr, 0x47, 0x80), Err(BusError::SpeakerAmplifier { addr }));
-        assert_eq!(wire::write_pair_to(addr, 0xC4, 0, 0), Err(BusError::SpeakerAmplifier { addr }));
-        assert_eq!(wire::read_to(addr, 0x6B, 1), Err(BusError::SpeakerAmplifier { addr }));
+    let w = wiring();
+    for addr in AMP_ADDRS {
+        assert_eq!(wire::write_to(&w, addr, 0x47, 0x80), Err(BusError::SpeakerAmplifier { addr }));
+        assert_eq!(wire::write_pair_to(&w, addr, 0xC4, 0, 0), Err(BusError::SpeakerAmplifier { addr }));
+        assert_eq!(wire::read_to(&w, addr, 0x6B, 1), Err(BusError::SpeakerAmplifier { addr }));
     }
 }
 
 #[test]
 fn a_register_write_is_one_two_byte_message_and_a_read_is_a_write_then_a_read() {
-    let w = wire::write(0x47, 0x80).unwrap();
+    let w = wire::write(&wiring(), 0x47, 0x80).unwrap();
     assert_eq!(w.messages().len(), 1);
     assert_eq!((w.msgs[0].addr, w.msgs[0].flags, w.msgs[0].len, w.out[0], w.out[1]), (0x1A, 0, 2, 0x47, 0x80));
-    let r = wire::read(0xC2, 2).unwrap();
+    let r = wire::read(&wiring(), 0xC2, 2).unwrap();
     assert_eq!(r.messages().len(), 2);
     assert_eq!((r.msgs[0].flags, r.msgs[0].len, r.out[0]), (0, 1, 0xC2));
     assert_eq!((r.msgs[1].flags, r.msgs[1].len), (I2C_M_RD, 2));
-    let p = wire::write_pair(0xC4, 0xFF, 0xFF).unwrap();
+    let p = wire::write_pair(&wiring(), 0xC4, 0xFF, 0xFF).unwrap();
     assert_eq!((p.msgs[0].len, p.out), (3, [0xC4, 0xFF, 0xFF]));
 }
 
 #[test]
 fn the_read_pair_is_a_legal_designware_transaction() {
-    let r = wire::read(0x6B, 1).unwrap();
+    let r = wire::read(&wiring(), 0x6B, 1).unwrap();
     // the controller's own rule: same target, a restart between the write and the read (i2c-designware-master.c:826-855)
     assert_eq!(validate_message(r.messages(), 1, false), Ok(()));
 }

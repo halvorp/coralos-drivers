@@ -6,45 +6,62 @@
 //! Ported from Linux `sound/soc/codecs/da7219.c` (regmap: `reg_bits = 8`, `val_bits = 8`, da7219.c:2440-2441). Copyright (c) 2015
 //! Dialog Semiconductor, author Adam Thomson; the Linux files are `GPL-2.0-or-later`, this port is distributed under `GPL-2.0-only`.
 //!
-//! WHICH CHIP A PLAN TALKS TO. Every plan in this crate addresses the DA7219 at [`DA7219_I2C_ADDR`] and no other device. The two
-//! MAX98373 speaker amplifiers (0x31 right, 0x32 left) are refused by name ([`BusError::SpeakerAmplifier`]) at the one place a wire
-//! message is built, so no plan can reach them even by a typo (owner ruling, Astra audio ruling: headphones first, speakers refused
-//! until the protection path exists).
+//! WHICH CHIP A PLAN TALKS TO. A plan holds registers and values, never an address; an address enters only where a wire message is
+//! built ([`wire`]), through a [`Wiring`], and that is the codec's. The speaker amplifiers on the same bus are refused by name
+//! ([`BusError::SpeakerAmplifier`]) at that one place, so no plan can reach them even by a typo (Astra audio ruling: headphones first,
+//! speakers refused until the protection path exists).
 
 use i2c_core_msg_core::address::validate_7bit_strict;
 use i2c_core_msg_core::flags::I2C_M_RD;
 use i2c_designware_master_core::setup::Message;
 
-/// The DA7219's 7-bit address on Atlas: ACPI `DLGS7219`, I2C4 (PCI 00:19.2), recovery-image ACPI dump
-/// (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2). This is a board fact, not a Linux constant: Linux reads it from `_CRS`.
-pub const DA7219_I2C_ADDR: u16 = 0x1A;
-/// MAX98373 right amplifier "MAXR" (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2). NEVER targeted.
-pub const MAX98373_RIGHT_ADDR: u16 = 0x31;
-/// MAX98373 left amplifier "MAXL". NEVER targeted.
-pub const MAX98373_LEFT_ADDR: u16 = 0x32;
+/// BOARD wiring of the I2C bus the codec shares with other devices, handed in by whoever read the board's description (the `.device` from
+/// the board row / ACPI `_CRS`; ZERO-HW-OUTSIDE-BSP: no board address lives in this crate). It names the codec's address and the addresses
+/// of the speaker amplifiers on the same bus; a [`Wiring`] cannot be built with the codec at an amplifier's address, and no message can be
+/// built for an amplifier's address through it ([`BusError::SpeakerAmplifier`]). The Atlas values (ATLAS-PERIPHERALS-FROM-RECOVERY.md
+/// section 3.2, recovery-image ACPI) are DA7219 0x1A and MAX98373 0x31 / 0x32.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wiring<'a> {
+    codec: u16,
+    speaker_amps: &'a [u16],
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BusError {
-    /// A plan tried to address a MAX98373 speaker amplifier.
+    /// A plan tried to address a speaker amplifier, or the codec was declared at an amplifier's address.
     SpeakerAmplifier { addr: u16 },
-    /// A plan tried to address something that is not the DA7219.
+    /// A plan tried to address something that is not the codec.
     NotTheCodec { addr: u16 },
     /// The address is not a valid strict 7-bit address (i2c-core-msg-core).
     BadAddress { addr: u16 },
 }
 
-/// The single gate every wire message passes. `addr` must be exactly [`DA7219_I2C_ADDR`].
-pub fn check_target(addr: u16) -> Result<(), BusError> {
-    if addr == MAX98373_RIGHT_ADDR || addr == MAX98373_LEFT_ADDR {
-        return Err(BusError::SpeakerAmplifier { addr });
+impl<'a> Wiring<'a> {
+    pub fn new(codec: u16, speaker_amps: &'a [u16]) -> Result<Self, BusError> {
+        validate_7bit_strict(codec).map_err(|_| BusError::BadAddress { addr: codec })?;
+        if speaker_amps.contains(&codec) {
+            return Err(BusError::SpeakerAmplifier { addr: codec });
+        }
+        Ok(Self { codec, speaker_amps })
     }
-    if validate_7bit_strict(addr).is_err() {
-        return Err(BusError::BadAddress { addr });
+
+    pub const fn codec(&self) -> u16 {
+        self.codec
     }
-    if addr != DA7219_I2C_ADDR {
-        return Err(BusError::NotTheCodec { addr });
+
+    /// The single gate every wire message passes: `addr` must be exactly the codec's.
+    pub fn check_target(&self, addr: u16) -> Result<(), BusError> {
+        if self.speaker_amps.contains(&addr) {
+            return Err(BusError::SpeakerAmplifier { addr });
+        }
+        if validate_7bit_strict(addr).is_err() {
+            return Err(BusError::BadAddress { addr });
+        }
+        if addr != self.codec {
+            return Err(BusError::NotTheCodec { addr });
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 /// What the `.device` does for one step. Registers are 8-bit and so are values (da7219.c:2440).
@@ -169,7 +186,7 @@ impl Default for Plan {
 }
 
 /// The I2C wire form of an operation. A register write is ONE message `[reg, value]`; a register read is a write of `[reg]` then a read of
-/// `len` bytes, joined by a repeated START (regmap-i2c, `reg_bits = 8`). All messages are checked by [`check_target`].
+/// `len` bytes, joined by a repeated START (regmap-i2c, `reg_bits = 8`). All messages are checked by [`Wiring::check_target`].
 pub mod wire {
     use super::*;
 
@@ -191,32 +208,32 @@ pub mod wire {
     const EMPTY: Message = Message { addr: 0, flags: 0, len: 0 };
 
     /// The `_to` forms take the target explicitly so the gate itself can be driven with a speaker-amplifier address; the plain forms
-    /// always use [`DA7219_I2C_ADDR`].
-    pub fn write_to(addr: u16, reg: u8, value: u8) -> Result<Transaction, BusError> {
-        check_target(addr)?;
+    /// always use the wiring's codec address.
+    pub fn write_to(w: &Wiring<'_>, addr: u16, reg: u8, value: u8) -> Result<Transaction, BusError> {
+        w.check_target(addr)?;
         Ok(Transaction { msgs: [Message { addr, flags: 0, len: 2 }, EMPTY], count: 1, out: [reg, value, 0] })
     }
 
-    pub fn write_pair_to(addr: u16, reg: u8, first: u8, second: u8) -> Result<Transaction, BusError> {
-        check_target(addr)?;
+    pub fn write_pair_to(w: &Wiring<'_>, addr: u16, reg: u8, first: u8, second: u8) -> Result<Transaction, BusError> {
+        w.check_target(addr)?;
         Ok(Transaction { msgs: [Message { addr, flags: 0, len: 3 }, EMPTY], count: 1, out: [reg, first, second] })
     }
 
     /// Read `len` registers starting at `reg`.
-    pub fn read_to(addr: u16, reg: u8, len: usize) -> Result<Transaction, BusError> {
-        check_target(addr)?;
+    pub fn read_to(w: &Wiring<'_>, addr: u16, reg: u8, len: usize) -> Result<Transaction, BusError> {
+        w.check_target(addr)?;
         Ok(Transaction { msgs: [Message { addr, flags: 0, len: 1 }, Message { addr, flags: I2C_M_RD, len }], count: 2, out: [reg, 0, 0] })
     }
 
-    pub fn write(reg: u8, value: u8) -> Result<Transaction, BusError> {
-        write_to(DA7219_I2C_ADDR, reg, value)
+    pub fn write(w: &Wiring<'_>, reg: u8, value: u8) -> Result<Transaction, BusError> {
+        write_to(w, w.codec(), reg, value)
     }
 
-    pub fn write_pair(reg: u8, first: u8, second: u8) -> Result<Transaction, BusError> {
-        write_pair_to(DA7219_I2C_ADDR, reg, first, second)
+    pub fn write_pair(w: &Wiring<'_>, reg: u8, first: u8, second: u8) -> Result<Transaction, BusError> {
+        write_pair_to(w, w.codec(), reg, first, second)
     }
 
-    pub fn read(reg: u8, len: usize) -> Result<Transaction, BusError> {
-        read_to(DA7219_I2C_ADDR, reg, len)
+    pub fn read(w: &Wiring<'_>, reg: u8, len: usize) -> Result<Transaction, BusError> {
+        read_to(w, w.codec(), reg, len)
     }
 }

@@ -290,3 +290,18 @@ fn boot_new_refuses_a_bad_host_stream_before_touching_anything() {
     c.playback.fe.rate = 47999;
     assert!(Boot::new(&c).is_err(), "no stream format for 47999 Hz");
 }
+
+#[test]
+fn the_speaker_ssps_are_the_boards_and_a_different_board_is_guarded_the_same_way() {
+    // a board row that lists SSP1 as an amplifier link makes the headset's own back end the speaker path
+    let Some((r, sys)) = run_with(|_| {}, |_| {}, |c| c.playback.speaker_ssp = &[1]) else { return };
+    assert_eq!(plan_err(r), PlanError::SpeakerPathRefused { ssp_instance: 1 });
+    assert_eq!(names(&sys), QUERIES);
+    let Some((r, _)) = run_with(|_| {}, |_| {}, |c| c.playback.speaker_ssp = &[3, 1, 2]) else { return };
+    assert_eq!(plan_err(r), PlanError::SpeakerPathRefused { ssp_instance: 1 });
+    // an empty list is a board without amplifiers on SSP: the SSP check alone remains
+    assert!(run_with(|_| {}, |_| {}, |c| c.playback.speaker_ssp = &[]).unwrap().0.is_ok());
+    // with the Atlas row (SSP0) a back end on SSP0 is still the speaker path (a_back_end_on_ssp0...), and the required SSP is checked after
+    let Some((r, _)) = run_with(|_| {}, |_| {}, |c| c.playback.ssp_instance = 2) else { return };
+    assert_eq!(plan_err(r), PlanError::SspInstanceNotAllowed { found: 1, wanted: 2 });
+}

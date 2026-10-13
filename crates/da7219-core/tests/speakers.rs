@@ -22,6 +22,7 @@ fn all_plans() -> Vec<(&'static str, Plan)> {
         ("clock-down", atlas_clock_down().unwrap()),
         ("dai-fmt", fmt_plan(ATLAS_DAI_FMT).unwrap()),
         ("dai-hw-params", hw_params_plan(48000, 32, 2).unwrap()),
+        ("route", route_plan().unwrap()),
         ("power-up", power_up_plan(PowerUp::default()).unwrap()),
         ("power-down", power_down_plan(PowerUp::default()).unwrap()),
         ("mute", mute_plan().unwrap()),
@@ -44,15 +45,15 @@ fn all_plans() -> Vec<(&'static str, Plan)> {
 #[test]
 fn every_plan_the_crate_can_build_talks_only_to_the_codec() {
     let plans = all_plans();
-    assert_eq!(plans.len(), 25, "a new plan must be added to this list");
+    assert_eq!(plans.len(), 26, "a new plan must be added to this list");
     for (name, plan) in plans {
         let mut f = Fake::reset();
         // run against a reset chip; a verification failure is fine here - what matters is where the messages went
         let _ = f.run(plan);
         assert!(!f.log.is_empty(), "{name}");
         for t in &f.log {
-            assert_eq!(t.addr, DA7219_I2C_ADDR, "{name}: {t:?}");
-            assert!(t.addr != MAX98373_RIGHT_ADDR && t.addr != MAX98373_LEFT_ADDR, "{name} reached an amplifier");
+            assert_eq!(t.addr, CODEC_ADDR, "{name}: {t:?}");
+            assert!(!AMP_ADDRS.contains(&t.addr), "{name} reached an amplifier");
         }
     }
 }
@@ -74,11 +75,4 @@ fn the_interrupt_machine_never_leaves_the_codec_either() {
         }
         assert_only_codec(&f);
     }
-}
-
-#[test]
-fn nothing_in_the_register_map_is_an_amplifier_address_and_the_codec_is_not_one_either() {
-    assert_ne!(DA7219_I2C_ADDR, MAX98373_RIGHT_ADDR);
-    assert_ne!(DA7219_I2C_ADDR, MAX98373_LEFT_ADDR);
-    assert_eq!([MAX98373_RIGHT_ADDR, MAX98373_LEFT_ADDR], [0x31, 0x32]);
 }

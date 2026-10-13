@@ -7,7 +7,7 @@
 //! (:405-437, :570-611), `avs_path_module_create` (:871-905), `avs_path_binding_arm` (:908-958), `avs_path_pipeline_arm` (:982-1010),
 //! `avs_path_pipeline_create` (:1037-1096), `avs_path_init` / `avs_path_arm` (:1098-1154), `avs_path_bind` (:1389-1420) and the
 //! instance-id allocators of `dsp.c` (`avs_dsp_create_pipeline`, :299-317; `avs_dsp_init_module`, :225-263).
-use crate::config::*;
+use crate::config::{PlaybackSel, StreamParams};
 use crate::msg::IpcMsg;
 use crate::volume::{PeakvolHandle, VOLUME_UNITY};
 use alloc::vec::Vec;
@@ -42,7 +42,7 @@ pub enum PlanError {
     ModuleKindNotSupported { kind: ModuleKind },
     /// A module that carries initial configs (`avs_path_module_send_init_configs`, path.c:839-864): not needed for headphones.
     InitConfigsNotSupported,
-    /// A back end on the speaker SSP. THE SPEAKER AMPLIFIERS ARE NEVER PLANNED.
+    /// A back end on one of the board's speaker SSPs. THE SPEAKER AMPLIFIERS ARE NEVER PLANNED.
     SpeakerPathRefused { ssp_instance: u32 },
     /// An I2S gateway on an SSP other than the one the playback path is for.
     SspInstanceNotAllowed { found: u32, wanted: u32 },
@@ -171,7 +171,7 @@ struct Alloc {
 
 impl Alloc {
     fn ppl(&mut self) -> Result<u8, PlanError> {
-        if self.next_ppl >= self.max_ppl || self.next_ppl > 0xff {
+        if self.next_ppl >= self.max_ppl || self.next_ppl > u8::MAX as u32 {
             return Err(PlanError::PipelinesExhausted { max: self.max_ppl });
         }
         let id = self.next_ppl as u8;
@@ -188,7 +188,7 @@ impl Alloc {
             }
         };
         let n = self.inst[slot].1;
-        if n >= max || n > 0xff {
+        if n >= max || n > u8::MAX as u32 {
             return Err(PlanError::ModuleInstancesExhausted { module_id, max });
         }
         self.inst[slot].1 += 1;
@@ -213,6 +213,7 @@ struct Ctx<'a, 'b> {
     nhlt: &'a avs_topology_core::nhlt::Nhlt<'a>,
     mods: &'a ModulesInfo<'a>,
     ssp: u32,
+    speaker_ssp: &'a [u32],
     dma_id: u32,
 }
 
@@ -274,7 +275,7 @@ fn module(c: &Ctx<'_, '_>, role: Role, p: &Pipeline, ppl: u8, m: &Module, al: &m
                 (Role::FrontEnd, AVS_DMA_HDA_HOST_OUTPUT) => {}
                 (Role::BackEnd, AVS_DMA_I2S_LINK_OUTPUT) => {
                     let inst = (ext.copier.vindex >> 4) as u32;
-                    if inst == SPEAKER_SSP_INSTANCE {
+                    if c.speaker_ssp.contains(&inst) {
                         return Err(PlanError::SpeakerPathRefused { ssp_instance: inst });
                     }
                     if inst != c.ssp {
@@ -372,7 +373,7 @@ pub fn plan_playback(sel: &PlaybackSel<'_>, dma_id: u32, topo: &Topology<'_>, nh
     }
     let mut plan = PathPlan { create: Vec::new(), bind: Vec::new(), pipelines: Vec::new(), modules: Vec::new(), peakvols: Vec::new(), dma_id };
     let mut al = Alloc { next_ppl: 0, max_ppl: fw.max_ppl_count, inst: Vec::new() };
-    let c = Ctx { topo, nhlt, mods, ssp: sel.ssp_instance, dma_id };
+    let c = Ctx { topo, nhlt, mods, ssp: sel.ssp_instance, speaker_ssp: sel.speaker_ssp, dma_id };
     // the back end is created first, as DPCM calls the back end's hw_params before the front end's (pcm.c:659-697)
     build_path(&c, Role::BackEnd, be_p, &mut al, &mut plan)?;
     let fe_first = plan.pipelines.len();
