@@ -139,7 +139,8 @@ pub fn try_recv(ep: u64, buf: &mut [u8]) -> u64 {
 /// Open a session on a listen endpoint: `Some((req, evt))`, or None (one undifferentiated refusal).
 pub fn connect(listen_ep: u16) -> Option<(u16, u16)> {
     let w = unsafe { sc(nr::CONNECT, listen_ep as u64, 0, 0, 0) };
-    (w != word::SYSCALL_ERR).then_some(((w >> 16) as u16, w as u16))
+    // a minted pair is two dynamic endpoints, never 0: an answer of 0 is not a session and is refused like the error word
+    (w != word::SYSCALL_ERR && w != 0).then_some(((w >> 16) as u16, w as u16))
 }
 /// A SERVER drops its side of a session whose client is gone (SESSION_RELEASE, 100): `true` when the kernel took it. The kernel
 /// checks that the pair is one recorded session, that the caller holds RECV(`req`) and SEND(`evt`), and that no client side is left

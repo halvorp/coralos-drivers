@@ -360,6 +360,15 @@ impl Machine for RtMachine {
     }
 
     fn fw_exchange(&mut self, req: &[u8], reply: &mut [u8], timeout_ms: u32) -> FwRecv {
+        // a reply that arrived after an earlier exchange gave up is stale: drop whatever is queued so the next frame is THIS request's answer
+        // (the caller still checks the opcode and id of what it gets)
+        let mut stale = [0u8; 16];
+        for _ in 0..16 {
+            let n = coralos_rt::try_recv(AVS_FW_REPLY as u64, &mut stale);
+            if n == 0 || n == PEER_DEAD {
+                break;
+            }
+        }
         match coralos_rt::send(AVS_FW_REQ as u64, req) {
             SEND_OK => {}
             _ => return FwRecv::Unavailable,
