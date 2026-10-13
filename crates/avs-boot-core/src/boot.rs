@@ -103,6 +103,14 @@ enum Phase {
     Finished,
 }
 
+/// Which firmware image a code-loader step is moving (see [`Boot::image`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Image {
+    BaseFirmware,
+    /// The `n`-th entry of [`BootConfig::libs`].
+    Library(usize),
+}
+
 struct LibState {
     table: LibraryTable,
     idx: usize,
@@ -162,6 +170,17 @@ impl<'a> Boot<'a> {
             unwind: None,
             next_started: false,
         })
+    }
+
+    /// The image the pending [`Action::Fw`] belongs to, when it is a code-loader step (`Op::CopyToDma` copies from it): the `.device`
+    /// holds the stripped base firmware and each stripped library and has no other way to know which one the transfer is moving.
+    pub fn image(&self) -> Option<Image> {
+        match &self.phase {
+            Phase::Fw { stage: Stage::BaseFirmware, .. } => Some(Image::BaseFirmware),
+            // `next_library` advances the index before it starts the transfer
+            Phase::Fw { stage: Stage::Libraries, .. } => self.lib.as_ref().and_then(|l| l.idx.checked_sub(1)).map(Image::Library),
+            _ => None,
+        }
     }
 
     /// The program that powers the DSP's main core down, for a caller that was told `dsp_dirty`.

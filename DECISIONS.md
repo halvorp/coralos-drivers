@@ -133,3 +133,27 @@ declared length per connection, after the wire has bounded it). Refusals are nam
 `FRAG-SHORT-FRAGMENT`, `FRAG-INTERLEAVED`, `FRAG-OVERLONG`, plus the wire's own header names; the request a half-received frame belonged to is
 answered. The kernel's tombstone is told from data only BETWEEN frames. The device's parked `service()` uses the same connections and the same
 reassembly (`conn::Parked`). Retired: the static reply endpoint 66 (`EP_I915_REPLY`) and the parked loop's 10 ms pace.
+
+**D13 — `avs.device`: the Atlas headphone path as ONE public `.device`; the DSP lives only while a stream plays; every fence is a list that a test proves equal to what the plans write (2026-10-13).**
+`devices/avs` executes the wave-1/wave-2 plans (it adds no policy to them) and serves Aura.engine over `wire/avs-wire` (MIT OR Apache-2.0; its
+`board` module is the board record the loader writes and the device refuses to start without). HEADPHONES ONLY: the speaker route is answered
+`SPEAKER-PROTECTION-UNAVAILABLE` and touches nothing; amplifier addresses are refused at two layers (`da7219-core::Wiring` and `rig::I2cAllow`); the
+speaker-reset pad (`SPKR_RST_L`) is driven low first of all and read back, a refusal to grant that write is the named gap `SPEAKER-RESET-PAD` and a
+pad that reads high is `INIT-FAILED(speaker-hold)`. **Lifecycle:** the device attaches the codec and parses every file at start (the status can then say
+FIRMWARE-UNAVAILABLE(file) / BACKEND-UNAVAILABLE(step) / INIT-FAILED(step) / HEADPHONE-DISCONNECTED before anyone asks), but boots the DSP only for a
+running stream and powers it off (codec to the verified safe state first) when the stream stops, the jack is pulled, a fault occurs or the client dies.
+The cost is a boot per start; the benefit is no idle power, no state that can go stale, and one path to verify. **Fences:** `allow.rs` lists the BAR4 /
+BAR0 / configuration registers (offset AND width) the plans write, built once discovery has read the controller; the production machine builds its
+window grants FROM that list (`Machine::layout_ready`) after opening every window read-only; `tests/fences.rs` runs a whole life of the device and
+requires set equality with the writes the simulated hardware saw, and shows the two real fences (an extra entry, a removed address check) failing.
+The I2C allow-list is the codec's address and no other; the pad allow-list is one `PADCFG0`. **Waiting:** idle is one blocking wait on requests and the
+jack event with no deadline; a running stream adds the cAVS interrupt and a watchdog of three rings; plans' polls sleep between reads on the same
+primitive; the codec's long sequences service the playing stream between steps. A level interrupt with no cause 64 times in a row is `irq-storm`; a codec
+line that stays asserted after 8 passes is `jack-irq-storm` and is left masked at its owner until the client's next start. **Wire and kernel gaps, named:**
+PCM travels inline (`PCM-WRITE`, 16 KiB) until the kernel can map a client region; the region form (`STREAM-OPEN-RING`) is defined and answered
+`RING-REGION-UNAVAILABLE`. The codec's interrupt reaches the device as a message from the pad interrupt owner because one `WAIT_ANY_IRQ` waits on one line.
+The six endpoint numbers in `devices/avs/src/wire.rs` (67..=72) are PROPOSED registry entries. `rt` gains `WriteWindow::write8` / `write16` (the stream
+descriptors have byte and halfword registers; a narrow write inside an allowed dword changes only its own bytes), additive and under the same list. The
+pipeline latency from host DMA to the pin is reported as UNMEASURED (`u32::MAX`), never guessed; the audio clock is the host stream's `LPIB`, not
+submitted bytes. UNVERIFIED ON SILICON (named, not claimed): the SSP/codec clock order (the codec is powered up AFTER the pipelines run, because the SRM PLL
+locks to the word clock), MSI vs INTx for the cAVS line, the I2C controller's fast-mode counts, the pad community window layout, `GPP_F10`'s interrupt route.

@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# avs.device - the Intel cAVS audio DSP (Sunrise Point-LP / Kaby Lake, PCI 8086:9d71) and the Dialog DA7219 headset codec of the Pixelbook
+# Go (ATLAS) as a ring-3 CoralOS `.device`. HEADPHONES ONLY: the speaker amplifiers (MAX98373) are never addressed (Astra audio ruling,
+# 2026-10-12: headphones first, speakers refused until a speaker-protection path exists). It composes the wave-1 and wave-2 cores
+# (avs-fw-core, avs-ipc-core, avs-topology-core, hda-ext-core, avs-boot-core, da7219-core), executes their plans over coralos-rt and
+# coralos-hal, and serves Aura.engine over the permissive avs-wire. The dependency list below is a CONTRACT: tests/contract.rs fails the build
+# on a closed CoralOS crate, in the manifest or in a source.
+[package]
+name = "avs-device"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "avs.device: cAVS DSP + DA7219 headphone playback, grant-bounded MMIO with a register allow-list, an IPC pump that blocks on the interrupt, a verified safe state"
+
+[lib]
+name = "avs_device"
+path = "src/lib.rs"
+
+[features]
+# Builds the standalone ELF (src/main.rs); off for the library and its host tests.
+entry = []
+
+[[bin]]
+name = "avs-device"
+path = "src/main.rs"
+test = false
+required-features = ["entry"]
+
+[dependencies]
+coralos-rt = { path = "../../rt" }
+coralos-hal = { path = "../../hal" }
+avs-wire = { path = "../../wire/avs-wire" }
+avs-fw-core = { path = "../../crates/avs-fw-core" }
+avs-ipc-core = { path = "../../crates/avs-ipc-core" }
+avs-topology-core = { path = "../../crates/avs-topology-core" }
+avs-boot-core = { path = "../../crates/avs-boot-core" }
+hda-ext-core = { path = "../../crates/hda-ext-core" }
+da7219-core = { path = "../../crates/da7219-core" }
+i2c-core-msg-core = { path = "../../crates/i2c-core-msg-core" }
+i2c-designware-core = { path = "../../crates/i2c-designware-core" }
+i2c-designware-master-core = { path = "../../crates/i2c-designware-master-core" }
+
+[dev-dependencies]
+coralos-hal = { path = "../../hal", features = ["fake"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[workspace]

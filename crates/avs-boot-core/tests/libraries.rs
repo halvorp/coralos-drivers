@@ -102,3 +102,43 @@ fn a_library_the_firmware_refuses_fails_by_name_and_the_gating_is_restored() {
     assert!(fw_pos(&sys, "power-gating-on").unwrap() > fw_pos(&sys, "code-ipc-reply").unwrap());
     assert!(!names(&sys).contains(&"get modules info"), "nothing past the failed library");
 }
+
+#[test]
+fn the_code_loader_steps_say_which_image_they_move() {
+    let Some(tb) = tplg_bytes() else { return };
+    let nb = nhlt_bytes();
+    let mut topo = Topology::parse(&tb, None).unwrap();
+    topo.libs.push(Library { name: Name::from_bytes(b"LIBA").unwrap() });
+    let nhlt = Nhlt::parse(&nb, true).unwrap();
+    let mut c = cfg(&topo, &nhlt);
+    c.libs = vec![lib(b"LIBA\0\0\0\0", 20_000)];
+    let mut sys = Sys::new(Fw::atlas(&topo));
+    let mut boot = Boot::new(&c).unwrap();
+    assert_eq!(boot.image(), None, "nothing is moving before the boot starts");
+    let mut ev = Event::Begin;
+    let mut seen: Vec<(&'static str, Option<Image>)> = vec![];
+    for _ in 0..5000 {
+        let act = boot.next(ev);
+        let img = boot.image();
+        match act {
+            Action::Fw(step) => {
+                seen.push((step.label, img));
+                ev = Event::Fw(sys.fw_answer(&step));
+            }
+            Action::Ipc(m) => {
+                let (h, body) = sys.ipc(m.name, m.header, &m.payload).unwrap();
+                ev = Event::IpcReply { header: h, payload: Box::leak(body.into_boxed_slice()) };
+            }
+            Action::WriteBdl(_) => ev = Event::BdlWritten,
+            Action::AskCodecSafe => ev = Event::CodecSafe(true),
+            Action::Finished(_) => break,
+            Action::Failed(f) => panic!("{f:?}"),
+        }
+    }
+    let first_base = seen.iter().find(|(l, _)| *l == "cldma-bdlpl").unwrap();
+    assert_eq!(first_base.1, Some(Image::BaseFirmware));
+    let lib_send = seen.iter().find(|(l, _)| *l == "code-ipc-send").unwrap();
+    assert_eq!(lib_send.1, Some(Image::Library(0)));
+    let gating_on = seen.iter().find(|(l, _)| *l == "power-gating-on").unwrap();
+    assert_eq!(gating_on.1, None, "gating is not a code-loader step");
+}

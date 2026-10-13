@@ -207,3 +207,26 @@ fn write_window_open_failures_are_the_read_window_ones() {
     assert_eq!(w.read8(0), Ok(0x00));
     assert_eq!(w.read16(2), Ok(0x1000));
 }
+
+#[test]
+fn narrow_writes_land_only_in_their_own_bytes_and_only_inside_the_allow_list() {
+    let mut p = page();
+    let mut w = open_w(&mut p);
+    // 0x10 is allowed as a dword: a byte at 0x11 and a halfword at 0x12 change only their own bytes
+    assert_eq!(w.write32(0x10, 0).unwrap(), ());
+    assert_eq!(w.write8(0x11, 0xab), Ok(()));
+    assert_eq!(w.write16(0x12, 0xcdef), Ok(()));
+    assert_eq!(w.read32(0x10), Ok(0xcdef_ab00));
+    // the neighbouring dword (not allowed) is refused for both widths, by name, and unchanged
+    assert_eq!(w.write8(0x14, 1), Err(MmioError::WriteNotAllowed { off: 0x14, width: 1 }));
+    assert_eq!(w.write16(0x14, 1), Err(MmioError::WriteNotAllowed { off: 0x14, width: 2 }));
+    assert_eq!(w.write8(0x0f, 1), Err(MmioError::WriteNotAllowed { off: 0x0f, width: 1 }), "the byte just below the range");
+    assert_eq!(w.write16(0x0e, 1), Err(MmioError::WriteNotAllowed { off: 0x0e, width: 2 }));
+    // range and alignment are checked first
+    assert_eq!(w.write16(0x11, 1), Err(MmioError::Misaligned { off: 0x11, width: 2 }));
+    assert_eq!(w.write8(4096, 1), Err(MmioError::OutOfRange { off: 4096, width: 1, len: 4096 }));
+    assert_eq!(w.write16(4095, 1), Err(MmioError::Misaligned { off: 4095, width: 2 }));
+    assert!(w.allows(0x13, 1) && !w.allows(0x13, 2), "a halfword at 0x13 would run into 0x14");
+    drop(w);
+    assert_eq!(p.0[5], 0x1000_0005, "the dword after the range was never touched");
+}

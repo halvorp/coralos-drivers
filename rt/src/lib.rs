@@ -20,7 +20,8 @@
 //!            OFFSET checked against the granted length and the width; no write is exposed. No new system call or number.
 //!   write-allow-listed MMIO (2026-10-12; mmio.rs) `WriteWindow`: a window readable everywhere and writable ONLY at the `&'static`
 //!            `WriteRange` list given at open; one 32-bit `write32` at an OFFSET checked against the length, alignment and the list
-//!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); no 8/16-bit write. No new system call or number.
+//!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); 8- and 16-bit writes (2026-10-13, `write8`/`write16`, same list, a narrow
+//!            write inside an allowed dword changes only its own bytes). No new system call or number.
 //!   session wire (2026-10-13; session.rs) SERVING connect(): the announce `[0xC0, req u16, evt u16, client u64]` posted on a LISTEN
 //!            endpoint, the end-of-session tombstone `[0xDD, client u64]` on a session's request endpoint, the 128-endpoint wait set
 //!            (`ep_set`), and SESSION_RELEASE 100 (`session_release(req, evt)`) to give a dead session's endpoints back. `connect` is the

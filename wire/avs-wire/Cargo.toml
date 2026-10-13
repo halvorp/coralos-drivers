@@ -1,0 +1,17 @@
+# The avs.device wire header, ABI major 1: the ONE thing the public GPL `avs.device` and the closed CoralOS Aura.engine / firmware broker
+# compile against. Permissive (MIT OR Apache-2.0) like i915-wire, hal/ and rt/, because the closed tree links it (DECISIONS.md D9). It contains
+# no Linux-derived code: the layout is CoralOS's own design, pointer-free and fixed-endian.
+[package]
+name = "avs-wire"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = "avs.device wire protocol: the 32-byte fixed-endian frame header, opcodes, statuses and causes, the playback stream messages, the jack and period events, the firmware-file channel"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[workspace]
