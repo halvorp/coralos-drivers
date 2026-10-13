@@ -65,6 +65,9 @@ fn every_opcode_number_is_pinned_and_introduced_by_the_right_minor() {
         (Opcode::PrimeFdToHandle, 0x161, 1, "PRIME-FD-TO-HANDLE"),
         (Opcode::DmabufExportSyncFile, 0x162, 1, "DMABUF-EXPORT-SYNC-FILE"),
         (Opcode::DmabufImportSyncFile, 0x163, 1, "DMABUF-IMPORT-SYNC-FILE"),
+        (Opcode::PrimeGrant, 0x164, 4, "PRIME-GRANT"),
+        (Opcode::SyncFileGrant, 0x165, 4, "SYNC-FILE-GRANT"),
+        (Opcode::SyncFileRedeem, 0x166, 4, "SYNC-FILE-REDEEM"),
     ];
     for (op, n, since, name) in table {
         assert_eq!(*op as u32, *n);
@@ -173,9 +176,9 @@ fn every_fixed_message_is_transactional_and_ignores_no_byte() {
         exec::ExecHeader, ExecObject, Reloc, exec::Fence, ExtHeader, ExecRepHead, RelocUpdate, SyncobjCreateReq, SyncobjHandleRep, SyncobjDestroyReq, SyncobjWaitHead,
         SyncobjWaitRep, SyncobjArrayHead, SyncobjQueryRepHead, SyncobjTransferReq, SyncobjHandleToFdReq, SyncobjTokenRep, SyncobjFdToHandleReq, FdCloseReq, SyncFileMergeReq,
         SyncFileTokenRep, SyncFileWaitReq, SyncFileWaitRep, PrimeHandleToFdReq, PrimeTokenRep, PrimeFdToHandleReq, PrimeHandleRep, DmabufExportSyncFileReq, DmabufSyncFileRep,
-        DmabufImportSyncFileReq,
+        DmabufImportSyncFileReq, PrimeGrantReq, SyncFileGrantReq, SyncFileGrantRep, SyncFileRedeemReq,
     );
-    assert_eq!(n, 72, "the message count is pinned: a message added or dropped changes this");
+    assert_eq!(n, 76, "the message count is pinned: a message added or dropped changes this");
 }
 
 #[test]

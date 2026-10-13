@@ -88,6 +88,18 @@ pub(crate) struct PrimeRec {
     pub token: u64,
     pub obj: ObjId,
     pub owner: u64,
+    /// The one session that may redeem it (ABI 1.4). `PRIME-HANDLE-TO-FD` addresses it to the exporter itself.
+    pub recipient: u64,
+}
+
+/// An offer of one fence to ONE named session (`SYNC-FILE-GRANT`, ABI 1.4). It holds a reference on the fence until it is redeemed,
+/// withdrawn, or either party's session ends.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FenceGrant {
+    pub grant: u64,
+    pub fence: i915_syncobj_core::FenceId,
+    pub owner: u64,
+    pub recipient: u64,
 }
 
 /// A hardware (execlist) context behind one GEM context.
@@ -153,6 +165,8 @@ pub struct UapiService {
     pub(crate) leases: Vec<LeaseRec>,
     pub(crate) primes: Vec<PrimeRec>,
     pub(crate) next_prime: u64,
+    pub(crate) fence_grants: Vec<FenceGrant>,
+    pub(crate) next_fence_grant: u64,
     pub(crate) hwctx: Vec<HwCtx>,
     pub(crate) vms: Vec<VmRec>,
     pub(crate) inflight: Vec<Inflight>,
@@ -228,6 +242,8 @@ impl UapiService {
             leases: Vec::new(),
             primes: Vec::new(),
             next_prime: 1,
+            fence_grants: Vec::new(),
+            next_fence_grant: 1,
             hwctx: Vec::new(),
             vms: Vec::new(),
             inflight: Vec::new(),
@@ -403,11 +419,11 @@ impl UapiService {
             }
             GetParam | Query | RegRead => self.call_device(hw, h.opcode, inc, p, out),
             GemCreate | GemCreateExt | GemClose | GemMmapOffset | GemMmapOpen | GemMmapLegacy | GemMmapClose | GemSetDomain | GemSetTiling | GemGetTiling | GemBusy | GemWait
-            | GemMadvise | GemSetCaching | GemGetCaching | PrimeHandleToFd | PrimeFdToHandle | DmabufExportSyncFile | DmabufImportSyncFile => self.call_gem(hw, h, inc, p, out),
+            | GemMadvise | GemSetCaching | GemGetCaching | PrimeHandleToFd | PrimeFdToHandle | PrimeGrant | DmabufExportSyncFile | DmabufImportSyncFile => self.call_gem(hw, h, inc, p, out),
             ContextCreate | ContextCreateExt | ContextDestroy | ContextGetParam | ContextSetParam | VmCreate | VmDestroy | GetResetStats => self.call_ctx(hw, h.opcode, inc, p, out),
             Execbuffer2 => self.call_exec(hw, inc, p, out),
             SyncobjCreate | SyncobjDestroy | SyncobjWait | SyncobjTimelineWait | SyncobjSignal | SyncobjReset | SyncobjTimelineSignal | SyncobjQuery | SyncobjTransfer
-            | SyncobjHandleToFd | SyncobjFdToHandle | FdClose | SyncFileMerge | SyncFileWait => self.call_sync(hw, h, inc, p, out),
+            | SyncobjHandleToFd | SyncobjFdToHandle | FdClose | SyncFileMerge | SyncFileWait | SyncFileGrant | SyncFileRedeem => self.call_sync(hw, h, inc, p, out),
             // already routed above
             Hello | GetReadout | SetMode | PageFlip | AllocScanout | SubmitBatch | SessionOpen => Err(Fail::new(errno::EINVAL, "UNROUTED")),
         }
@@ -472,11 +488,22 @@ impl UapiService {
             let _ = self.with_sink(hw, inc, |gem, sink| gem.mmap_close(lease, sink));
         }
         self.leases.retain(|l| l.inc != inc);
-        let grants: Vec<ObjId> = self.primes.iter().filter(|p| p.owner == inc).map(|p| p.obj).collect();
+        // grants this session made, and grants addressed to it (nobody is left to redeem those): their references end. Handles an importer
+        // already redeemed hold their own references and are untouched.
+        let grants: Vec<ObjId> = self.primes.iter().filter(|p| p.owner == inc || p.recipient == inc).map(|p| p.obj).collect();
         for obj in grants {
             let _ = self.with_sink(hw, inc, |gem, sink| gem.prime_release(obj, sink));
         }
-        self.primes.retain(|p| p.owner != inc);
+        self.primes.retain(|p| p.owner != inc && p.recipient != inc);
+        let mut k = 0;
+        while k < self.fence_grants.len() {
+            if self.fence_grants[k].owner == inc || self.fence_grants[k].recipient == inc {
+                let g = self.fence_grants.swap_remove(k);
+                self.sync.put_fence(g.fence);
+            } else {
+                k += 1;
+            }
+        }
         let mut k = 0;
         while k < self.implicit.len() {
             if self.implicit[k].2 == inc {

@@ -179,3 +179,18 @@ descriptors have byte and halfword registers; a narrow write inside an allowed d
 pipeline latency from host DMA to the pin is reported as UNMEASURED (`u32::MAX`), never guessed; the audio clock is the host stream's `LPIB`, not
 submitted bytes. UNVERIFIED ON SILICON (named, not claimed): the SSP/codec clock order (the codec is powered up AFTER the pipelines run, because the SRM PLL
 locks to the word clock), MSI vs INTx for the cAVS line, the I2C controller's fast-mode counts, the pad community window layout, `GPP_F10`'s interrupt route.
+
+**D-NEXT — A buffer or a fence crosses processes only as a GRANT addressed to one NAMED session; a number is never the authority (2026-10-13).**
+Astra's GPU-kernel ruling Q3 ("PRIME transfers a recipient-bound BO grant, redeemed into an independent handle/lease - not the exporter's revocable CPU lease. Fence
+grants provide wait-only authority; device events drive blocking poll. Descriptor numbers remain process-local."), wire ABI 1.4 (additive). Before this the PRIME
+export token was a bearer number: `PRIME-FD-TO-HANDLE` honoured it from ANY session, and the u64 was a counter. Now: (1) a token minted by `PRIME-HANDLE-TO-FD` is
+addressed to its exporter only; (2) `PRIME-GRANT {handle, flags, recipient}` mints a token addressed to the session incarnation `recipient` - a live session of this
+device (the incarnation is what the recipient's SESSION-OPEN reply told it; the exporter learns it from the recipient over whatever channel the two processes share) -
+redeemable only by a `PRIME-FD-TO-HANDLE` that ARRIVES on that session's own endpoint (the kernel lets only that client send there), into the recipient's OWN handle;
+a stolen, copied or unknown token is `EINVAL` either way (named `PRIME-NOT-RECIPIENT` / `PRIME-NO-SUCH-TOKEN` on the log only: no oracle for which tokens exist);
+(3) `SYNC-FILE-GRANT {token, recipient}` / `SYNC-FILE-REDEEM {grant}`: the grant holds ONE reference on the fence behind the exporter's sync_file (so the exporter may close its
+own at once), is spent by the redeem, and gives the recipient a sync_file token of its own session over the same fence - wait-only by construction (a sync_file can be
+waited on, merged and used as a dependency; nothing signals through it); `FD-CLOSE` kind 3 withdraws an unredeemed grant. (4) Lifetime: a grant ends with its exporter OR
+its recipient; a handle or sync_file already redeemed holds its own reference and is untouched. NOT in this row: syncobj export tokens (`SYNCOBJ-HANDLE-TO-FD`
+without EXPORT_SYNC_FILE) are still the old bearer form - a full syncobj is signalable, so it needs its own ruling; the importer's CPU lease on a shared object is still
+refused while the exporter maps it (`MMAP-OBJECT-LEASED-TO-ANOTHER-SESSION`) - each side getting its own lease needs the page-exclusive lease rule lifted in gem-core.

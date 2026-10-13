@@ -23,7 +23,7 @@ fn frame() -> Vec<u8> {
 fn constants_are_the_documented_values() {
     assert_eq!(MAGIC, 0x3531_3949);
     assert_eq!(&MAGIC.to_le_bytes(), b"I915");
-    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 3)); // minor 1: the uAPI messages; minor 2: the payload region; minor 3: reply region + mmap lease handle
+    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 4)); // minor 1: the uAPI messages; minor 2: the payload region; minor 3: reply region + mmap lease handle; minor 4: grants to a named session
     assert_eq!(HEADER_BYTES, 40);
     assert_eq!(MAX_PAYLOAD, 65536);
     assert_eq!(FLAG_REPLY, 1);
@@ -52,7 +52,7 @@ fn encode_produces_exactly_the_hand_written_bytes() {
     let mut out = [0xffu8; 48];
     h.encode(&mut out).unwrap();
     let mut expect = frame();
-    expect[6] = ABI_MINOR as u8; // a request built by this crate declares ABI minor 3 (ABI_MINOR) (the hand-written frame above is a minor-0 frame)
+    expect[6] = ABI_MINOR as u8; // a request built by this crate declares ABI minor 4 (ABI_MINOR) (the hand-written frame above is a minor-0 frame)
     assert_eq!(&out[..40], &expect[..40]);
     assert_eq!(&out[40..], &[0xff; 8], "encode writes the header and nothing past it");
 }
