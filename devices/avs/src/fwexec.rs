@@ -180,6 +180,8 @@ pub fn perform<M: Machine>(rig: &mut Rig<M>, pump: &mut Pump, ctx: &mut FwCtx<'_
                 ctx.poll = None;
                 Input::PollTimedOut(v)
             } else {
+                // a bounded hardware handshake with no wakeup source (the plan's own clock budget and read bound end it): a blocking timed
+                // wait between reads, the PollPlan exception of rig::Rig::sleep_ms - never a spin
                 rig.sleep_us(p.interval_us);
                 Input::Value(v)
             }

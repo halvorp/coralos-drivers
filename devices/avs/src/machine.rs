@@ -87,13 +87,16 @@ pub struct Want {
     pub avs_irq: bool,
     /// A jack event from the pad interrupt owner.
     pub jack: bool,
-    /// A request frame from the client, or the client's death.
+    /// A request frame from the client's session, or the session's death.
     pub requests: bool,
+    /// A client's `connect()` on the LISTEN endpoint. Not wanted while a session is open: the device serves one client at a time, and a
+    /// second connect waits in the kernel's queue until the first session is released.
+    pub accept: bool,
 }
 
 impl Want {
-    pub const NOTHING: Want = Want { avs_irq: false, jack: false, requests: false };
-    pub const IRQ_ONLY: Want = Want { avs_irq: true, jack: false, requests: false };
+    pub const NOTHING: Want = Want { avs_irq: false, jack: false, requests: false, accept: false };
+    pub const IRQ_ONLY: Want = Want { avs_irq: true, jack: false, requests: false, accept: false };
 }
 
 /// What ended a wait.
@@ -102,7 +105,9 @@ pub enum Wake {
     AvsIrq,
     Jack,
     Request,
-    /// The client's endpoint reports its peer dead.
+    /// A client connected: [`Machine::accept`] takes the session.
+    Accept,
+    /// The open session's client is gone (a tombstone or a dead peer).
     PeerDead,
     /// The pad interrupt owner's endpoint reports its peer dead: the codec's interrupt can no longer reach the device.
     JackGone,
@@ -172,7 +177,12 @@ pub trait Machine {
     /// Tell the pad interrupt owner the codec's interrupt line was serviced, so it may deliver the next.
     fn rearm_jack(&mut self);
 
-    // ---- the client ----
+    // ---- the client: one connect() session at a time ----
+    /// Take a pending connect as THE session (its announce is consumed); false if there was none or it was not a whole announce.
+    fn accept(&mut self) -> bool;
+    /// Give the session's endpoints back to the kernel (SESSION_RELEASE) once the client is gone. The kernel never reclaims a server's side
+    /// of a session on its own; without this the pair stays held until the device exits. A no-op without a session.
+    fn release_session(&mut self);
     fn recv_request(&mut self, buf: &mut [u8]) -> Recv;
     fn send_to_client(&mut self, frame: &[u8]) -> SendOutcome;
 

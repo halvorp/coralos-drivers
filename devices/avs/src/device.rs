@@ -82,6 +82,8 @@ pub struct Device<M: Machine> {
     pub(crate) jack_masked: bool,
     /// The pad interrupt owner is gone for good.
     pub(crate) jack_gone: bool,
+    /// A client's session is open (its endpoints are held until [`Machine::release_session`]).
+    pub(crate) session: bool,
     pub subs: u32,
     pub st: StatusBody,
     pub(crate) hold_done: bool,
@@ -119,6 +121,7 @@ impl<M: Machine> Device<M> {
             gnd_deadline: None,
             jack_masked: false,
             jack_gone: false,
+            session: false,
             subs: 0,
             st,
             hold_done: false,
@@ -445,6 +448,9 @@ impl<M: Machine> Device<M> {
         self.stop_session(true);
         self.stream = None;
         self.subs = 0;
+        // the kernel never reclaims a server's side of a session: hand the pair back, then the next connect may be accepted
+        self.rig.m.release_session();
+        self.session = false;
         self.publish();
     }
 
@@ -467,7 +473,7 @@ impl<M: Machine> Device<M> {
             return Wake::Jack;
         }
         let deadline = self.next_deadline();
-        let want = Want { avs_irq: self.dsp.is_some(), jack: jack_ok, requests: true };
+        let want = Want { avs_irq: self.dsp.is_some(), jack: jack_ok, requests: self.session, accept: !self.session };
         let wake = self.rig.wait(deadline, want);
         // ... and the same after the wait: whatever woke the task, a jack event that arrived with it goes first, so the request or the
         // interrupt that follows sees the state AFTER the removal
@@ -481,6 +487,12 @@ impl<M: Machine> Device<M> {
             Wake::Jack => {
                 if !served && self.rig.m.take_jack_event() {
                     self.on_jack_event();
+                }
+            }
+            Wake::Accept => {
+                if self.rig.m.accept() {
+                    self.session = true;
+                    emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION-OPEN client connected]"));
                 }
             }
             Wake::Request => self.on_request(),

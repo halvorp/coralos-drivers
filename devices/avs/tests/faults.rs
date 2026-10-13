@@ -242,3 +242,31 @@ fn a_dead_pad_interrupt_owner_takes_the_path_down_because_an_unplug_could_no_lon
     let (s, ph) = start_stream(&mut dev, &mut c, id);
     assert_eq!((s, ph.phase), (Status::BackendUnavailable, StreamPhase::Suspended));
 }
+
+#[test]
+fn a_dead_clients_session_endpoints_are_handed_back_and_the_next_client_is_served_one_at_a_time() {
+    let Some(mut dev) = started(true) else { return };
+    let mut c = Client::new();
+    let id = open_stream(&mut dev, &mut c);
+    assert!(dev.rig.m.session_open);
+    // a second client connects while the first is served: it waits, it is not accepted, nothing is released
+    dev.rig.m.listen_pending += 1;
+    let (s, _) = {
+        let (s, b, _) = call(&mut dev, &mut c, Opcode::StreamOpen, &s16_open());
+        (s, b)
+    };
+    assert_eq!(s, Status::StreamBusy);
+    assert_eq!((dev.rig.m.listen_pending, dev.rig.m.released), (1, 0));
+    start_stream(&mut dev, &mut c, id);
+    dev.rig.m.at_ms(5, sim::Ev::PeerDead);
+    run_ms(&mut dev, 50);
+    assert_eq!(dev.rig.m.released, 1, "SESSION_RELEASE for the dead client's pair");
+    assert!(dev.stream.is_none());
+    assert_safe_and_down(&dev);
+    // the waiting client is accepted and gets a working, fresh device
+    run_ms(&mut dev, 5);
+    assert!(dev.rig.m.session_open && dev.rig.m.listen_pending == 0);
+    let mut c2 = Client::new();
+    let id2 = open_stream(&mut dev, &mut c2);
+    assert_ne!(id, id2);
+}

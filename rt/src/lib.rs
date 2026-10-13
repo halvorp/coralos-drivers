@@ -118,9 +118,10 @@ pub fn write(b: &[u8]) {
 }
 /// End the task.
 pub fn exit(code: u64) -> ! {
-    unsafe { sc(nr::EXIT, code, 0, 0, 0) };
+    // EXIT does not return; the loop only satisfies `-> !` and asks again rather than spin if a kernel ever did return (it blocks in the
+    // call, it never busy-waits)
     loop {
-        core::hint::spin_loop();
+        unsafe { sc(nr::EXIT, code, 0, 0, 0) };
     }
 }
 /// Send `msg` on endpoint `ep`: a SEND_* / PEER_DEAD word.

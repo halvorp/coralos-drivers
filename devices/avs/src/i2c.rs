@@ -11,7 +11,8 @@
 //!
 //! THE WAIT FOR COMPLETION BLOCKS ON THE CONTROLLER'S INTERRUPT when the launch row grants it (`STOP_DET` and `TX_ABRT` are unmasked for
 //! the transfer and masked again after it); a host with no I2C line falls back to a timed sleep between status reads. Either way every
-//! wait is bounded twice: by [`XFER_BUDGET_MS`] on the host's clock and by [`SPIN_LIMIT`] iterations, and none of them spins.
+//! wait is bounded twice (the sleep without a line is the PollPlan-style exception of `rig::Rig::sleep_ms`: a blocking timed wait on a hardware
+//! status that has no wakeup source here): by [`XFER_BUDGET_MS`] on the host's clock and by [`SPIN_LIMIT`] iterations, and none of them spins.
 use crate::machine::I2cFault;
 use i2c_designware_core::abort::{verdict, AbortVerdict, CAPTURE_THEN_CLEAR};
 use i2c_designware_core::enable::{disable_took_effect, next_step, DisableStep, DISABLE_ATTEMPTS};

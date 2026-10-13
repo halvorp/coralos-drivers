@@ -200,6 +200,7 @@ pub fn wake_name(w: Wake) -> &'static str {
         Wake::Jack => "jack",
         Wake::Request => "request",
         Wake::PeerDead => "peer-dead",
+        Wake::Accept => "accept",
         Wake::JackGone => "jack-gone",
         Wake::Deadline => "deadline",
     }

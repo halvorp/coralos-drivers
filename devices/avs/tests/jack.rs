@@ -112,6 +112,7 @@ fn the_ground_switch_is_enabled_after_its_delay_unless_detection_completes_first
     };
     // insertion only: the delayed work is armed and the main loop's wait carries it as a deadline
     dev.rig.m.at_ms(1, Ev::Custom(Box::new(ins_only)));
+    assert_eq!(dev.step(), avs_device::machine::Wake::Accept, "the client's connect, taken first");
     assert_eq!(dev.step(), avs_device::machine::Wake::Jack, "the insertion pass");
     let due = dev.ground_switch_due().expect("the delayed enable is armed");
     assert_eq!(dev.rig.m.codec.regs[0xfb] & 1, 0, "not yet");

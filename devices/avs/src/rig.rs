@@ -68,7 +68,10 @@ impl<M: Machine> Rig<M> {
         self.m.now_ms()
     }
 
-    /// Block for at least `ms` milliseconds, waking for nothing. A blocking wait, not a spin.
+    /// Block for at least `ms` milliseconds, waking for nothing. A BLOCKING timed wait, never a spin. It is the named exception for a bounded
+    /// hardware wait that has no wakeup source (a codec settling delay, a register that settles in microseconds, an I2C status with no line
+    /// granted): the same shape as i915-display-link's `Effect::DelayUs` / `PollPlan`. Where an interrupt exists the code blocks on it instead
+    /// (the cAVS pump, the I2C controller's line); the bound is the plan's own and is enforced twice (its clock budget and its read count).
     pub fn sleep_ms(&mut self, ms: u64) {
         if ms == 0 {
             return;

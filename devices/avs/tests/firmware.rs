@@ -57,6 +57,10 @@ impl Machine for Chan {
         false
     }
     fn rearm_jack(&mut self) {}
+    fn accept(&mut self) -> bool {
+        unimplemented!()
+    }
+    fn release_session(&mut self) {}
     fn recv_request(&mut self, _: &mut [u8]) -> Recv {
         unimplemented!()
     }

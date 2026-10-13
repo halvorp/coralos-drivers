@@ -88,6 +88,10 @@ pub struct Sim {
     pub outbox: Vec<Vec<u8>>,
     pub client_dead: bool,
     pub jack_owner_dead: bool,
+    /// Clients that have connect()ed and not been accepted; whether a session is open; how many sessions were handed back.
+    pub listen_pending: u32,
+    pub session_open: bool,
+    pub released: u32,
     pub ring_full: u32,
     jack_msgs: u32,
     jack_armed: bool,
@@ -156,6 +160,9 @@ impl Sim {
             outbox: vec![],
             client_dead: false,
             jack_owner_dead: false,
+            listen_pending: 1,
+            session_open: false,
+            released: 0,
             ring_full: 0,
             jack_msgs: 0,
             jack_armed: true,
@@ -279,6 +286,9 @@ impl Sim {
     fn ready(&self, want: Want) -> Option<Wake> {
         if want.avs_irq && self.irq_level() {
             return Some(Wake::AvsIrq);
+        }
+        if want.accept && self.listen_pending > 0 {
+            return Some(Wake::Accept);
         }
         if want.requests && self.client_dead {
             return Some(Wake::PeerDead);
@@ -561,6 +571,25 @@ impl Machine for Sim {
         if self.codec.irq_asserted() {
             self.jack_msgs += 1;
             self.jack_armed = false;
+        }
+    }
+
+    fn accept(&mut self) -> bool {
+        if self.listen_pending > 0 && !self.session_open {
+            self.listen_pending -= 1;
+            self.session_open = true;
+            self.client_dead = false;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn release_session(&mut self) {
+        if self.session_open {
+            self.session_open = false;
+            self.released += 1;
+            self.inbox.clear();
         }
     }
 

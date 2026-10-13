@@ -152,7 +152,8 @@ primitive; the codec's long sequences service the playing stream between steps. 
 line that stays asserted after 8 passes is `jack-irq-storm` and is left masked at its owner until the client's next start. **Wire and kernel gaps, named:**
 PCM travels inline (`PCM-WRITE`, 16 KiB) until the kernel can map a client region; the region form (`STREAM-OPEN-RING`) is defined and answered
 `RING-REGION-UNAVAILABLE`. The codec's interrupt reaches the device as a message from the pad interrupt owner because one `WAIT_ANY_IRQ` waits on one line.
-The six endpoint numbers in `devices/avs/src/wire.rs` (67..=72) are PROPOSED registry entries. `rt` gains `WriteWindow::write8` / `write16` (the stream
+The client is served over a `connect()` session on ONE LISTEN endpoint (one session at a time; a second connect waits in the kernel's queue), and the dead
+client's pair is returned with `session_release`. The five endpoint numbers in `devices/avs/src/wire.rs` (67..=71) are PROPOSED registry entries. `rt` gains `WriteWindow::write8` / `write16` (the stream
 descriptors have byte and halfword registers; a narrow write inside an allowed dword changes only its own bytes), additive and under the same list. The
 pipeline latency from host DMA to the pin is reported as UNMEASURED (`u32::MAX`), never guessed; the audio clock is the host stream's `LPIB`, not
 submitted bytes. UNVERIFIED ON SILICON (named, not claimed): the SSP/codec clock order (the codec is powered up AFTER the pipelines run, because the SRM PLL

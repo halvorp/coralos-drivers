@@ -21,6 +21,7 @@ use avs_wire::board::Board;
 use coralos_hal::{Coherence, Dma, DmaRefusal, DmaRegion, Irq};
 use coralos_rt::mmio::{Kernel, MmioError, ReadWindow, WriteRange, WriteWindow};
 use coralos_rt::word::{PEER_DEAD, SEND_OK, SEND_RING_FULL, WAIT_IRQ_DENIED, WAIT_IRQ_FIRED, WAIT_TIMEOUT};
+use coralos_rt::session::{decode_announce, ep_set, is_tombstone};
 use coralos_rt::{RtDma, RtIrq};
 
 /// The span of each window the device reads: the HD-audio header and the capability chain are found by discovery; the DSP window needs its
@@ -152,6 +153,8 @@ pub struct RtMachine {
     irq_i2c: Option<RtIrq>,
     dma: RtDma,
     irq_denied: bool,
+    /// The open client session: (request endpoint we RECV, event endpoint we SEND).
+    session: Option<(u16, u16)>,
 }
 
 impl RtMachine {
@@ -167,6 +170,7 @@ impl RtMachine {
             irq_i2c: coralos_rt::irq_line(IRQ_SLOT_I2C).map(|line| RtIrq { line, level: true }),
             dma: RtDma,
             irq_denied: false,
+            session: None,
         }
     }
 
@@ -255,19 +259,27 @@ impl Machine for RtMachine {
     }
 
     fn wait(&mut self, deadline_ms: Option<u64>, want: Want) -> Wake {
-        // endpoints 64..=127 are the high word of the set
-        let hi = |ep: u16| 1u64 << (ep - 64);
-        let mut eps_hi = 0u64;
-        if want.requests {
-            eps_hi |= hi(AVS_REQ);
+        let mut eps = [0u16; 3];
+        let mut n = 0;
+        let mut add = |ep: u16| {
+            eps[n] = ep;
+            n += 1;
+        };
+        if want.accept {
+            add(AVS_LISTEN);
+        }
+        if let (true, Some((req, _))) = (want.requests, self.session) {
+            add(req);
         }
         if want.jack {
-            eps_hi |= hi(AVS_JACK);
+            add(AVS_JACK);
         }
+        // endpoints past the 128-endpoint wait set cannot be named (a shift past 63 would wait on a different one): refused by leaving them out
+        let (lo, hi) = ep_set(eps[..n].iter().copied()).unwrap_or((0, 0));
         let now = coralos_rt::ticks();
         let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
         let irq = if want.avs_irq && !self.irq_denied { self.irq.as_ref().map_or(0, |i| i.line) } else { 0 };
-        match coralos_rt::wait_any_irq(0, eps_hi, timeout, irq) {
+        match coralos_rt::wait_any_irq(lo, hi, timeout, irq) {
             WAIT_TIMEOUT => Wake::Deadline,
             WAIT_IRQ_FIRED => Wake::AvsIrq,
             WAIT_IRQ_DENIED => {
@@ -276,15 +288,15 @@ impl Machine for RtMachine {
                 Wake::Deadline
             }
             PEER_DEAD => {
-                // one dead word for two endpoints: ask the client's own which it was
-                let mut b = [0u8; 1];
-                if want.requests && coralos_rt::try_recv(AVS_REQ as u64, &mut b) == PEER_DEAD {
-                    Wake::PeerDead
-                } else {
-                    Wake::JackGone
+                // one dead word for two endpoints: ask the session's own which it was
+                let mut b = [0u8; 16];
+                match self.session {
+                    Some((req, _)) if want.requests && coralos_rt::try_recv(req as u64, &mut b) == PEER_DEAD => Wake::PeerDead,
+                    _ => Wake::JackGone,
                 }
             }
             ep if ep == AVS_JACK as u64 => Wake::Jack,
+            ep if ep == AVS_LISTEN as u64 => Wake::Accept,
             _ => Wake::Request,
         }
     }
@@ -305,18 +317,41 @@ impl Machine for RtMachine {
         coralos_rt::send(AVS_JACK_ACK as u64, &f);
     }
 
+    fn accept(&mut self) -> bool {
+        let mut b = [0u8; 32];
+        let n = coralos_rt::try_recv(AVS_LISTEN as u64, &mut b);
+        if n == 0 || n == PEER_DEAD || n > b.len() as u64 {
+            return false;
+        }
+        match decode_announce(&b[..n as usize]) {
+            Some(a) if self.session.is_none() => {
+                self.session = Some((a.req, a.evt));
+                true
+            }
+            _ => false,
+        }
+    }
+    fn release_session(&mut self) {
+        if let Some((req, evt)) = self.session.take() {
+            // false when the kernel still sees a live client side; the session is forgotten here either way and the pair is not reused
+            let _ = coralos_rt::session_release(req, evt);
+        }
+    }
     fn recv_request(&mut self, buf: &mut [u8]) -> Recv {
-        let n = coralos_rt::try_recv(AVS_REQ as u64, buf);
+        let Some((req, _)) = self.session else { return Recv::Empty };
+        let n = coralos_rt::try_recv(req as u64, buf);
         match n {
             0 => Recv::Empty,
             PEER_DEAD => Recv::PeerDead,
+            n if n <= buf.len() as u64 && is_tombstone(&buf[..n as usize]) => Recv::PeerDead,
             n if n <= buf.len() as u64 => Recv::Frame(n as usize),
             n if n < (1 << 32) => Recv::Oversized(n),
             n => Recv::Error(n),
         }
     }
     fn send_to_client(&mut self, frame: &[u8]) -> SendOutcome {
-        match coralos_rt::send(AVS_REPLY as u64, frame) {
+        let Some((_, evt)) = self.session else { return SendOutcome::PeerDead };
+        match coralos_rt::send(evt as u64, frame) {
             SEND_OK => SendOutcome::Sent,
             SEND_RING_FULL => SendOutcome::RingFull,
             PEER_DEAD => SendOutcome::PeerDead,

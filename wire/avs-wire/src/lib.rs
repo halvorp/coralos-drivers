@@ -21,7 +21,7 @@
 //! A REPLY has the request's opcode and request_id, and its payload begins with a `u32` [`Status`].
 //!
 //! SPEAKERS ARE NOT IN THIS PROTOCOL. The device plays to the headphone jack only; the speaker amplifiers are never addressed (the Astra audio
-//! ruling of 2026-10-12, headphones first: recorded in this repository's DECISIONS.md, D11 and D12). [`Cause::SpeakerProtectionUnavailable`] says so, always, in every STATUS.
+//! ruling of 2026-10-12, headphones first: recorded in this repository's DECISIONS.md, D11 and D13). [`Cause::SpeakerProtectionUnavailable`] says so, always, in every STATUS.
 //!
 //! PCM travels inline in [`msg::PcmWrite`] frames (at most [`MAX_PCM_BYTES`] each) until the kernel can map a client region; the region form
 //! ([`Opcode::StreamOpenRing`]) is DEFINED so Aura can be written against it, and is refused by name ([`Status::RingRegionUnavailable`]).
@@ -285,6 +285,10 @@ coded! {
     }
 }
 
+/// A cause's reply status is `CAUSE_STATUS_BASE + cause`: the arithmetic below is the one home of the mapping, and the compile-time asserts pin
+/// each [`Status`] cause variant to it, so the two enums cannot drift.
+pub const CAUSE_STATUS_BASE: u32 = 0x0F;
+
 impl Cause {
     /// The reply status a refusal because of this cause carries.
     pub const fn status(self) -> Status {
@@ -298,6 +302,14 @@ impl Cause {
         }
     }
 }
+
+const _: () = {
+    assert!(Status::BackendUnavailable as u32 == CAUSE_STATUS_BASE + Cause::BackendUnavailable as u32);
+    assert!(Status::FirmwareUnavailable as u32 == CAUSE_STATUS_BASE + Cause::FirmwareUnavailable as u32);
+    assert!(Status::InitFailed as u32 == CAUSE_STATUS_BASE + Cause::InitFailed as u32);
+    assert!(Status::HeadphoneDisconnected as u32 == CAUSE_STATUS_BASE + Cause::HeadphoneDisconnected as u32);
+    assert!(Status::SpeakerProtectionUnavailable as u32 == CAUSE_STATUS_BASE + Cause::SpeakerProtectionUnavailable as u32);
+};
 
 coded! {
     /// The device as a whole.
