@@ -360,7 +360,7 @@ fn two_sessions_cannot_touch_each_others_handles_leases_or_syncobjs() {
         assert_eq!((r.status, r.errno), (Status::StaleSession, -errno::ENODEV));
     }
     // PRIME is the one sanctioned way across: the token, not the handle
-    let tok = call(&mut w, a, Opcode::PrimeHandleToFd, &PrimeHandleToFdReq { handle: ha, flags: 0 }).body::<PrimeTokenRep>().token;
+    let tok = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
     let hb = call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle;
     assert_eq!(call(&mut w, b, Opcode::GemBusy, &GemBusyReq { handle: hb, ..Default::default() }).errno, 0);
     assert!(call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok + 100 }).is_err(errno::EINVAL));
@@ -373,7 +373,7 @@ fn prime_keeps_the_object_alive_after_the_exporter_closes_and_dies() {
     let ha = create(&mut w, a, 8192);
     let la = lease(&mut w, a, ha, 8192);
     w.gm.store32(la.grant_addr, 0x1234_5678).unwrap();
-    let tok = call(&mut w, a, Opcode::PrimeHandleToFd, &PrimeHandleToFdReq { handle: ha, flags: 0 }).body::<PrimeTokenRep>().token;
+    let tok = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
     let hb = call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle;
     // a kernel lease is page-exclusive: while A maps the object, B cannot CPU-map the same pages - refused BY NAME, and nothing half-made
     let off = call(&mut w, b, Opcode::GemMmapOffset, &GemMmapOffsetReq { handle: hb, flags: 2, ..Default::default() }).body::<GemMmapOffsetRep>();
@@ -403,7 +403,7 @@ fn a_kernel_lease_passes_to_another_session_only_once_the_first_maps_nothing_of_
     let (a, b) = (open(&mut w), open(&mut w));
     let ha = create(&mut w, a, 4096);
     let la = lease(&mut w, a, ha, 4096);
-    let tok = call(&mut w, a, Opcode::PrimeHandleToFd, &PrimeHandleToFdReq { handle: ha, flags: 0 }).body::<PrimeTokenRep>().token;
+    let tok = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
     let hb = call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle;
     // A unmaps: the kernel lease is still A's (it lives with the object), but A maps nothing, so B's mapping replaces it
     assert_eq!(call(&mut w, a, Opcode::GemMmapClose, &GemMmapCloseReq { lease: la.lease, ..Default::default() }).errno, 0);
@@ -874,4 +874,111 @@ fn a_hung_request_fails_its_fence_with_eio_charges_the_context_and_the_engine_re
     assert_eq!(stats.batch_active, 1, "the context that hung is charged");
     assert_eq!(w.svc.rig().epoch, 1, "the engine was reset");
     let _ = head;
+}
+
+// ---- grants to a NAMED session (wire ABI 1.4, D15): PRIME across processes and a wait-only fence ----------------------------
+
+#[test]
+fn a_prime_grant_is_redeemable_by_the_one_session_it_names_and_by_nobody_else() {
+    let mut w = world();
+    let (a, b, c) = (open(&mut w), open(&mut w), open(&mut w));
+    let ha = create(&mut w, a, 8192);
+    let tok = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
+    // a copied or stolen token: another session, and the exporter itself, are refused BY NAME - with the errno of an unknown token
+    assert!(call(&mut w, c, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-NOT-RECIPIENT"), "{:?}", w.log.0);
+    assert!(call(&mut w, a, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL));
+    assert_eq!(w.svc.gem().object_count(), 1, "nothing was imported");
+    // the recipient redeems it into its OWN handle on the same object
+    let hb = call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle;
+    assert_ne!(hb, 0);
+    assert_eq!(w.svc.gem().object_count(), 1, "one object, two handles");
+    // the exporter dies: the grant ends, the importer's handle does not
+    w.svc.session_dead(&mut hw!(w), a);
+    assert_eq!(w.svc.live_primes(), 0);
+    assert!(call(&mut w, b, Opcode::GemBusy, &GemBusyReq { handle: hb, ..Default::default() }).body::<GemBusyRep>().busy == 0, "the importer's handle names live memory");
+    w.svc.session_dead(&mut hw!(w), b);
+    w.svc.session_dead(&mut hw!(w), c);
+    poll(&mut w);
+    assert_eq!(w.svc.gem().object_count(), 0);
+}
+
+#[test]
+fn a_plain_export_token_is_redeemable_by_its_exporter_only_and_a_grant_needs_a_live_recipient() {
+    let mut w = world();
+    let (a, b) = (open(&mut w), open(&mut w));
+    let ha = create(&mut w, a, 4096);
+    let tok = call(&mut w, a, Opcode::PrimeHandleToFd, &PrimeHandleToFdReq { handle: ha, flags: 0 }).body::<PrimeTokenRep>().token;
+    assert!(call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL), "a number is not an authority");
+    assert!(refused(&w, "PRIME-NOT-RECIPIENT"));
+    assert_ne!(call(&mut w, a, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle, 0, "its exporter may re-import it");
+    for recipient in [0u64, 9_999] {
+        assert!(call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient }).is_err(errno::EINVAL), "recipient {recipient}");
+    }
+    assert!(refused(&w, "PRIME-NO-SUCH-RECIPIENT"));
+    // a grant addressed to a session that then dies can never be redeemed: it ends with it, and holds nothing
+    let live = w.svc.live_primes();
+    let _ = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>();
+    assert_eq!(w.svc.live_primes(), live + 1);
+    w.svc.session_dead(&mut hw!(w), b);
+    assert_eq!(w.svc.live_primes(), live, "the grant to the dead recipient ended with it");
+}
+
+/// A sync_file of `inc` over a fence that signals when the request `seqno` of `result` completes.
+fn pending_sync_file(w: &mut W, inc: u64) -> (u32, u32) {
+    let (batch, result) = (create(w, inc, 4096), create(w, inc, 4096));
+    let bl = lease(w, inc, batch, 4096);
+    write_batch(w, &bl);
+    let out = syncobj(w, inc, 0);
+    let head = submit(w, inc, &exec_payload(result, batch, &[(out, FENCE_SIGNAL)], None, 0)).1.unwrap();
+    let token = call(w, inc, Opcode::SyncobjHandleToFd, &SyncobjHandleToFdReq { handle: out, flags: sync::flags::HANDLE_TO_FD_EXPORT_SYNC_FILE, point: 0 }).body::<SyncobjTokenRep>().token as u32;
+    (token, head.seqno)
+}
+
+#[test]
+fn a_fence_grant_gives_the_recipient_a_wait_only_sync_file_that_outlives_the_exporters_copy() {
+    let mut w = world();
+    let (a, b, c) = (open(&mut w), open(&mut w), open(&mut w));
+    let (file, seqno) = pending_sync_file(&mut w, a);
+    let grant = call(&mut w, a, Opcode::SyncFileGrant, &SyncFileGrantReq { token: file, recipient: b, ..Default::default() }).body::<SyncFileGrantRep>().grant;
+    // the exporter's own sync_file may be closed at once: the grant holds the fence
+    let close = FdCloseReq { token: file as u64, kind: sync::fd_kind::SYNC_FILE, ..Default::default() };
+    assert_eq!(call(&mut w, a, Opcode::FdClose, &close).errno, 0);
+    // another session, and the exporter, cannot redeem it; the errno does not say whether the grant exists
+    assert!(call(&mut w, c, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant }).is_err(errno::EINVAL));
+    assert!(refused(&w, "SYNC-FILE-NOT-RECIPIENT"), "{:?}", w.log.0);
+    assert!(call(&mut w, a, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant }).is_err(errno::EINVAL));
+    assert!(call(&mut w, b, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant: grant + 77 }).is_err(errno::EINVAL));
+    // the recipient redeems into a sync_file of its OWN session and waits on it: parked until the GPU completes the work
+    let tok_b = call(&mut w, b, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant }).body::<SyncFileTokenRep>().token;
+    assert!(call(&mut w, b, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant }).is_err(errno::EINVAL), "a grant is spent by its redeem");
+    assert!(call(&mut w, b, Opcode::SyncFileWait, &SyncFileWaitReq { token: tok_b, timeout_ns: 0, ..Default::default() }).is_err(errno::ETIME), "still pending");
+    assert!(send_raw(&mut w, b, Opcode::SyncFileWait, &SyncFileWaitReq { token: tok_b, timeout_ns: -1, ..Default::default() }.to_payload_vec()).is_none(), "the wait parks");
+    let tl = w.svc.timeline_addrs()[0];
+    gpu_complete(&mut w, tl, seqno);
+    poll(&mut w);
+    let done = parse(&w.svc.take_ready().expect("the device's own event answers the parked wait"));
+    assert_eq!((done.status, done.errno), (Status::Ok, 0));
+    // the grant a session never redeemed ends with either party
+    let (file2, _) = pending_sync_file(&mut w, a);
+    let g2 = call(&mut w, a, Opcode::SyncFileGrant, &SyncFileGrantReq { token: file2, recipient: c, ..Default::default() }).body::<SyncFileGrantRep>().grant;
+    w.svc.session_dead(&mut hw!(w), c);
+    assert!(call(&mut w, a, Opcode::FdClose, &FdCloseReq { token: g2, kind: sync::fd_kind::SYNC_FILE_GRANT, ..Default::default() }).is_err(errno::EINVAL), "already gone with the recipient");
+    assert!(call(&mut w, a, Opcode::SyncFileGrant, &SyncFileGrantReq { token: file2, recipient: c, ..Default::default() }).is_err(errno::EINVAL), "no such recipient now");
+    let g3 = call(&mut w, a, Opcode::SyncFileGrant, &SyncFileGrantReq { token: file2, recipient: b, ..Default::default() }).body::<SyncFileGrantRep>().grant;
+    assert_eq!(call(&mut w, a, Opcode::FdClose, &FdCloseReq { token: g3, kind: sync::fd_kind::SYNC_FILE_GRANT, ..Default::default() }).errno, 0, "the exporter withdraws an unredeemed grant");
+    assert!(call(&mut w, b, Opcode::SyncFileRedeem, &SyncFileRedeemReq { grant: g3 }).is_err(errno::EINVAL));
+}
+
+#[test]
+fn an_unredeemed_grant_dies_with_its_exporter_and_frees_the_object() {
+    let mut w = world();
+    let (a, b) = (open(&mut w), open(&mut w));
+    let ha = create(&mut w, a, 4096);
+    let tok = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
+    w.svc.session_dead(&mut hw!(w), a);
+    poll(&mut w);
+    assert!(call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL), "the exporter is gone: nothing to redeem");
+    assert_eq!(w.svc.gem().object_count(), 0, "no grant keeps the exporter's pages alive");
+    assert_eq!(w.svc.live_primes(), 0);
 }

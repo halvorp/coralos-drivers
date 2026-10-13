@@ -161,15 +161,45 @@ impl UapiService {
                         let (_, err) = self.with_sink(hw, inc, |gem, sink| gem.prime_release(obj, sink));
                         err.map_or(Ok(()), Err)?;
                     }
-                    other => return Err(Fail { errno: errno::EINVAL, name: "FD-CLOSE-BAD-KIND", malformed: other > 2 }),
+                    fd_kind::SYNC_FILE_GRANT => {
+                        let i = self.fence_grants.iter().position(|g| g.grant == r.token && g.owner == inc).ok_or(Fail::new(errno::EINVAL, "SYNC-FILE-NO-SUCH-GRANT"))?;
+                        let g = self.fence_grants.swap_remove(i);
+                        self.sync.put_fence(g.fence);
+                    }
+                    other => return Err(Fail { errno: errno::EINVAL, name: "FD-CLOSE-BAD-KIND", malformed: other > 3 }),
                 }
                 ok_empty!()
+            }
+            Opcode::SyncFileGrant => {
+                let r = SyncFileGrantReq::from_payload(p)?;
+                if r.recipient == 0 || self.session_idx(r.recipient).is_none() {
+                    return Err(Fail::new(errno::EINVAL, "SYNC-FILE-NO-SUCH-RECIPIENT"));
+                }
+                self.fence_grants.try_reserve(1).map_err(|_| Fail::oom("fence-grants"))?;
+                let fence = self.sync.file_fence(inc, r.token)?;
+                self.sync.get_fence(fence); // the grant's own reference: the exporter may close its sync_file at once
+                let grant = self.next_fence_grant;
+                self.next_fence_grant += 1;
+                self.fence_grants.push(super::service::FenceGrant { grant, fence, owner: inc, recipient: r.recipient }); // reserved above
+                ok!(SyncFileGrantRep { grant })
+            }
+            Opcode::SyncFileRedeem => {
+                let r = SyncFileRedeemReq::from_payload(p)?;
+                let i = match self.fence_grants.iter().position(|g| g.grant == r.grant) {
+                    Some(i) if self.fence_grants[i].recipient == inc => i,
+                    Some(_) => return Err(Fail::new(errno::EINVAL, "SYNC-FILE-NOT-RECIPIENT")), // same errno as an unknown grant: no oracle
+                    None => return Err(Fail::new(errno::EINVAL, "SYNC-FILE-NO-SUCH-GRANT")),
+                };
+                let token = self.sync.file_from_fence(inc, self.fence_grants[i].fence)?; // a refusal leaves the grant for a retry
+                let g = self.fence_grants.swap_remove(i);
+                self.sync.put_fence(g.fence); // the recipient's sync_file holds its own reference now
+                ok!(SyncFileTokenRep { token, ..Default::default() })
             }
             Opcode::SyncFileMerge => {
                 let r = SyncFileMergeReq::from_payload(p)?;
                 ok!(SyncFileTokenRep { token: self.sync.file_merge(inc, r.a, r.b)?, ..Default::default() })
             }
-            _ => {
+            Opcode::SyncFileWait => {
                 let r = SyncFileWaitReq::from_payload(p)?;
                 match self.sync.file_status(inc, r.token)? {
                     FenceStatus::Signalled(e) => ok!(SyncFileWaitRep { fence_error: e, ..Default::default() }),
@@ -182,6 +212,8 @@ impl UapiService {
                     }
                 }
             }
+            // routed by `route_session` only; an opcode that reaches here is a routing bug, refused by name rather than taken for a wait
+            _ => Err(Fail::new(errno::EINVAL, "UNROUTED")),
         }
     }
 

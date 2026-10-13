@@ -48,7 +48,8 @@ pub const ABI_MAJOR: u16 = 1;
 /// 2: the payload region ([`FLAG_PAYLOAD_REGION`], [`region`]); additive - no opcode changed.
 /// 3: a region call may name a separate reply region ([`region::REPLY_ELSEWHERE`]) and `GEM-MMAP-OPEN`/`GEM-MMAP-LEGACY`'s reply carries the kernel
 /// lease handle and the offset to map ([`msg::gem::GemMmapRep`]); additive - no opcode changed.
-pub const ABI_MINOR: u16 = 3;
+/// 4: grants addressed to a NAMED session, for sharing across processes: `PRIME-GRANT`, `SYNC-FILE-GRANT`, `SYNC-FILE-REDEEM` (D15); additive.
+pub const ABI_MINOR: u16 = 4;
 pub const HEADER_BYTES: usize = 40;
 /// The largest payload a frame may declare (64 KiB): a submit carries object and dependency tables, never GPU data.
 pub const MAX_PAYLOAD: u32 = 64 * 1024;
@@ -148,6 +149,10 @@ opcodes! {
     PrimeFdToHandle = 0x161, 1, "PRIME-FD-TO-HANDLE";
     DmabufExportSyncFile = 0x162, 1, "DMABUF-EXPORT-SYNC-FILE";
     DmabufImportSyncFile = 0x163, 1, "DMABUF-IMPORT-SYNC-FILE";
+    // ---- grants to a named session (msg::prime, msg::sync; ABI 1.4)
+    PrimeGrant = 0x164, 4, "PRIME-GRANT";
+    SyncFileGrant = 0x165, 4, "SYNC-FILE-GRANT";
+    SyncFileRedeem = 0x166, 4, "SYNC-FILE-REDEEM";
 }
 
 /// The status word that opens a reply payload.

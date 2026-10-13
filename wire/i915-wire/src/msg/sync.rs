@@ -32,6 +32,8 @@ pub mod fd_kind {
     pub const SYNC_FILE: u32 = 1;
     /// A PRIME export token.
     pub const PRIME: u32 = 2;
+    /// An unredeemed `SYNC-FILE-GRANT` (ABI 1.4): the exporter withdraws it.
+    pub const SYNC_FILE_GRANT: u32 = 3;
 }
 
 msg!(SyncobjCreateReq { flags: u32, _pad: Pad32 });
@@ -72,6 +74,19 @@ msg!(
 
 msg!(FdCloseReq { token: u64, kind: u32, _pad: Pad32 });
 
+msg!(
+    /// `SYNC-FILE-GRANT` (ABI 1.4): offer the fence behind the caller's sync_file `token` to ONE named session (`recipient`, an
+    /// incarnation as in `PRIME-GRANT`). The answer is the grant to hand over; it is redeemed once, by `SYNC-FILE-REDEEM` arriving on
+    /// the recipient's own endpoint, and gives that session a sync_file of its own over the same fence. Wait-only by construction:
+    /// a sync_file can be waited on, merged and used as a dependency, and nothing can signal through it.
+    SyncFileGrantReq { token: u32, _pad: Pad32, recipient: u64 }
+);
+msg!(SyncFileGrantRep { grant: u64 });
+msg!(
+    /// `SYNC-FILE-REDEEM` (ABI 1.4): the recipient turns a grant into a sync_file token of ITS session (`SyncFileTokenRep`). The grant
+    /// is spent; another session's attempt, a second redeem and an unknown grant are all `EINVAL` (named `SYNC-FILE-NOT-RECIPIENT` / `SYNC-FILE-NO-SUCH-GRANT` on the device's log): the errno does not say whether a grant exists.
+    SyncFileRedeemReq { grant: u64 }
+);
 msg!(SyncFileMergeReq { a: u32, b: u32 });
 msg!(SyncFileTokenRep { token: u32, _pad: Pad32 });
 msg!(

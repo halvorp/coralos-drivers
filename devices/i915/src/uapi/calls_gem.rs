@@ -45,9 +45,10 @@ pub(crate) fn error_body_len(op: Opcode) -> usize {
         SyncobjQuery => sync::SyncobjQueryRepHead::SIZE,
         SyncobjHandleToFd => sync::SyncobjTokenRep::SIZE,
         SyncobjFdToHandle => sync::SyncobjHandleRep::SIZE,
-        SyncFileMerge => sync::SyncFileTokenRep::SIZE,
+        SyncFileMerge | SyncFileRedeem => sync::SyncFileTokenRep::SIZE,
+        SyncFileGrant => sync::SyncFileGrantRep::SIZE,
         SyncFileWait => sync::SyncFileWaitRep::SIZE,
-        PrimeHandleToFd => PrimeTokenRep::SIZE,
+        PrimeHandleToFd | PrimeGrant => PrimeTokenRep::SIZE,
         PrimeFdToHandle => PrimeHandleRep::SIZE,
         DmabufExportSyncFile => DmabufSyncFileRep::SIZE,
         _ => 0,
@@ -221,12 +222,28 @@ impl UapiService {
                 let obj = self.gem.prime_export(sid, r.handle)?;
                 let token = self.next_prime;
                 self.next_prime += 1;
-                self.primes.push(PrimeRec { token, obj, owner: inc });
+                self.primes.push(PrimeRec { token, obj, owner: inc, recipient: inc }); // a plain export is redeemable by its exporter only
+                ok!(PrimeTokenRep { token })
+            }
+            Opcode::PrimeGrant => {
+                let r = PrimeGrantReq::from_payload(p)?;
+                if r.recipient == 0 || self.session_idx(r.recipient).is_none() {
+                    return Err(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-RECIPIENT"));
+                }
+                self.primes.try_reserve(1).map_err(|_| Fail::oom("prime-grants"))?;
+                let obj = self.gem.prime_export(sid, r.handle)?;
+                let token = self.next_prime;
+                self.next_prime += 1;
+                self.primes.push(PrimeRec { token, obj, owner: inc, recipient: r.recipient });
                 ok!(PrimeTokenRep { token })
             }
             Opcode::PrimeFdToHandle => {
                 let r = PrimeFdToHandleReq::from_payload(p)?;
-                let obj = self.primes.iter().find(|g| g.token == r.token).map(|g| g.obj).ok_or(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-TOKEN"))?;
+                let g = self.primes.iter().find(|g| g.token == r.token).ok_or(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-TOKEN"))?;
+                if g.recipient != inc {
+                    return Err(Fail::new(errno::EINVAL, "PRIME-NOT-RECIPIENT")); // same errno as an unknown token: no oracle for which tokens exist
+                }
+                let obj = g.obj;
                 let handle = self.gem.prime_import(sid, obj)?;
                 ok!(PrimeHandleRep { handle, ..Default::default() })
             }

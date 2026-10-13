@@ -2,6 +2,13 @@
 //! shim hands the token to the importer's shim; PRIME-FD-TO-HANDLE gives the importing session its OWN handle on the same object.
 //! The token holds the object alive until FD-CLOSE (kind `PRIME`) or until its exporting session dies; handles already imported
 //! stay valid after that.
+//!
+//! WHO MAY REDEEM (ABI 1.4, D15). A token is a NUMBER, so it cannot be the authority: a token minted by `PRIME-HANDLE-TO-FD` is
+//! redeemable only by the session that minted it (its own re-import; the shim's in-process hand-over to another session asks for a
+//! grant to that session instead); a token minted by [`PrimeGrantReq`] is addressed to ONE session incarnation (`recipient`) and is
+//! redeemable only by a `PRIME-FD-TO-HANDLE` that ARRIVES on that session's own endpoint, which the kernel lets only that client
+//! use. A stolen or copied token is useless to anyone else (`EINVAL`, named `PRIME-NOT-RECIPIENT` on the device's log - the errno does not say whether a token exists), and the recipient's handle is
+//! independent of the exporter's: it survives the exporter's death.
 use super::{msg, Pad32};
 
 msg!(
@@ -9,6 +16,12 @@ msg!(
     PrimeHandleToFdReq { handle: u32, flags: u32 }
 );
 msg!(PrimeTokenRep { token: u64 });
+msg!(
+    /// `PRIME-GRANT` (ABI 1.4): export `handle` as a grant addressed to the session whose incarnation is `recipient` (non-zero, a live
+    /// session of this device; the recipient learned it from its own SESSION-OPEN reply and sent it to the exporter over whatever
+    /// channel the two processes share). The answer is the token to hand over. `flags` as `PRIME-HANDLE-TO-FD`.
+    PrimeGrantReq { handle: u32, flags: u32, recipient: u64 }
+);
 msg!(PrimeFdToHandleReq { token: u64 });
 msg!(PrimeHandleRep { handle: u32, _pad: Pad32 });
 
