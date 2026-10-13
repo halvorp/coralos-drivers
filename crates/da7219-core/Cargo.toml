@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "da7219-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The I2C transport is the repo's own: message flags and address validation (i2c-core-msg-core), and the controller's message type
+# with its restart/target rules (i2c-designware-master-core). Every transaction this crate plans is expressible as these messages.
+i2c-core-msg-core = { path = "../i2c-core-msg-core" }
+i2c-designware-master-core = { path = "../i2c-designware-master-core" }
+
+[workspace]

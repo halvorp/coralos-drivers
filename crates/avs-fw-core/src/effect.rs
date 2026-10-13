@@ -15,9 +15,12 @@ pub enum Space {
 }
 
 /// Access width. Linux mixes `readb`/`writeb` on `SD_CTL`/`SD_STS`/`SD_LVI` with 32-bit accesses on the rest.
+/// `W16` (`readw`/`writew`: `SD_FORMAT`, `SD_LVI`, `SD_FIFOSIZE`, `STATESTS`, `LLCH` of the HDA controller) was added by hda-ext-core:
+/// a 16-bit register must never be written through a 32-bit access, which would also write its neighbour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Width {
     B8,
+    W16,
     D32,
 }
 

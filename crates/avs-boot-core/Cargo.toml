@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "avs-boot-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+avs-fw-core = { path = "../avs-fw-core" }
+avs-ipc-core = { path = "../avs-ipc-core" }
+avs-topology-core = { path = "../avs-topology-core" }
+hda-ext-core = { path = "../hda-ext-core" }
+
+[workspace]
