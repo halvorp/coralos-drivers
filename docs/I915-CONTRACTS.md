@@ -229,13 +229,20 @@ with the reason `INCREMENT-NOT-ENABLED` (`uapi::frame`); with `p3-exec` the `Uap
 syncobj-core and the executor. Blocking calls (GEM-WAIT, SYNCOBJ-WAIT, SYNC-FILE-WAIT) are PARKED and answered by `poll()` with the
 same request id.
 
-**The live loop (`devices/i915/src/live`, same feature).** `Live` serves the service on the device's endpoints (`EP_I915_REQ` 65 /
-`EP_I915_REPLY` 66). It BLOCKS on exactly: a request, the engine interrupt (when armed), the deadline `UapiService::next_deadline_ms`
-reports (a parked timed wait; and only while the engine has submitted work in flight, its stall check plus - with no interrupt armed - a
-completion poll), and peer death. An idle device passes no deadline: there is no fixed-period poll. The receive buffer is a whole inline frame
-(`MAX_FRAME_BYTES`); a larger one is refused by name (`WIRE-PAYLOAD-TOO-LARGE`). Peer death (a wait, a receive or a reply send) `session_dead`s every
-session of the connection. A full reply ring keeps the reply, takes no new request, and retries on a timer that exists only while a reply is unsent.
-`service()` (the library's own entry) still answers parked; `service_with(UapiHost)` is the entry that assembles and serves, because
+**The live loop (`devices/i915/src/live`, same feature).** `Live` serves the service over CONNECTIONS (`devices/i915/src/conn`): `EP_I915_REQ` 65
+is a LISTEN endpoint; a client `connect()`s and the kernel mints it a private (request, event) pair, so a reply goes to exactly the client that asked
+(the old static `EP_I915_REPLY` 66 pair could not route per process and is no longer used). One connection opens at most one uAPI session and may
+name only that one (another connection's incarnation is refused as an unknown session). It BLOCKS on exactly: a connect announce, a message
+on any connection, the engine interrupt (when armed), the deadline `UapiService::next_deadline_ms` reports (a parked timed wait; and only while the engine
+has submitted work in flight, its stall check plus - with no interrupt armed - a completion poll). An idle device passes no deadline: there is no
+fixed-period poll. FRAMES travel as consecutive 4096-byte messages ending where the header says (`i915_wire::frag`, the one definition both ends
+compile; at most 15 messages = 61440 bytes, a larger call uses a payload region): per connection a reassembly buffer reserved at the first
+message, nothing executes until the frame is whole, and a short, overlong, interleaved or too-long sequence is refused by name
+(`FRAG-SHORT-FRAGMENT`, `FRAG-OVERLONG`, `FRAG-INTERLEAVED`, `FRAG-TOO-MANY-MESSAGES`). The connection table grows with memory; a row is reserved BEFORE a connect
+is accepted (no room: the loop stops listening and the kernel refuses the connect). Peer death (a receive or a reply send on that connection)
+`session_dead`s that connection's session and releases its endpoints; no other connection is touched. A full event ring keeps the reply for that
+connection, takes no new request from it, and retries on a timer that exists only while a reply is unsent. `service()` (the library's own entry)
+answers parked over the same connections (`conn::Parked`); `service_with(UapiHost)` is the entry that assembles and serves, because
 the CPU view of granted memory needs `unsafe` this library forbids and the aperture size / machine memory come from the host.
 
 **ABI 1.2 - the payload region** (`i915-wire/src/region.rs`). A call larger than one inline frame (a full EXECBUFFER2 is ~84 KiB) names its

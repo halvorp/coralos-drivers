@@ -194,7 +194,7 @@ fn refusal_names_are_distinct_and_stable() {
 #[test]
 fn wire_answers_everything_and_supports_nothing_but_hello() {
     use i915_device::wire::*;
-    assert_eq!((SERVICE_EP, REPLY_EP, REQ_MARKER, REP_MARKER, VERSION, REPLY_LEN), (65, 66, 0x49, 0x69, 1, 4));
+    assert_eq!((SERVICE_EP, REQ_MARKER, REP_MARKER, VERSION, REPLY_LEN), (65, 0x49, 0x69, 1, 4));
     // HELLO is OK; every other defined op is explicitly UNSUPPORTED, with its op echoed
     assert_eq!(answer(&[b'I', 1, op::HELLO]), [b'i', 1, 0, status::OK]);
     for (o, name) in [(op::GET_READOUT, 1u8), (op::SET_MODE, 2), (op::PAGE_FLIP, 3), (op::ALLOC_SCANOUT, 4), (op::SUBMIT_BATCH, 5)] {
@@ -334,10 +334,10 @@ fn a_line_longer_than_the_buffer_is_cut_but_still_ends_in_a_newline() {
 #[test]
 fn slots_sizes_and_exit_codes_are_the_documented_values() {
     use i915_device::regio::{BAR0_SLOT, CFG_HEADER_BYTES, CFG_SLOT};
-    use i915_device::wire::{exit_code, handle, PACE_MS, REQUEST_BUF};
+    use i915_device::wire::{exit_code, handle, REQUEST_BUF};
     assert_eq!((BAR0_SLOT, CFG_SLOT, CFG_HEADER_BYTES, READOUT_WINDOW_BYTES), (0, 1, 0x40, 0x80000));
     assert_eq!((exit_code::NO_WINDOW, exit_code::STARTUP_FAILED, exit_code::PANIC), (1, 2, 3));
-    assert_eq!((REQUEST_BUF, PACE_MS), (64, 10));
+    assert_eq!(REQUEST_BUF, 64);
     // handle(): nothing usable -> None; a request -> its answer; a count past the buffer is an error word, not a length
     let mut buf = [0u8; REQUEST_BUF];
     buf[0] = b'I';

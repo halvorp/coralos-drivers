@@ -6,7 +6,7 @@ mod exec_common;
 use coralos_hal::fake::FakeDma;
 use exec_common::*;
 use i915_device::exec::dma::ObjKind;
-use i915_device::live::{Live, PayloadRegions, Recv, RegionError, SendOutcome, Step, Transport, Wake, REPLY_RETRY_MS};
+use i915_device::live::{ConnId, Live, LiveStats, PayloadRegions, RegionError, Step, Wake, REPLY_RETRY_MS};
 use i915_device::uapi::{bring_up_render, Hw, RenderConfig, COMPLETION_POLL_MS};
 use i915_devinfo_core::clock::{gen9_clock_from_ctc, Gen9Clock};
 use i915_devinfo_core::sseu::gen9_sseu_info;
@@ -19,9 +19,9 @@ use i915_wire::msg::gem::*;
 use i915_wire::msg::session::*;
 use i915_wire::msg::Body;
 use i915_wire::region::{RegionRef, MAX_REGION_PAYLOAD};
-use i915_wire::{errno, Header, Opcode, Status, FLAG_PAYLOAD_REGION, HEADER_BYTES, MAX_FRAME_BYTES, MAX_PAYLOAD};
+use i915_wire::{errno, Header, Opcode, Status, FLAG_PAYLOAD_REGION, HEADER_BYTES, MAX_PAYLOAD};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 const GIB: u64 = 1 << 30;
@@ -31,84 +31,8 @@ const RESULT_VA: u64 = 0x2000_0000;
 const MI_STORE_DWORD_IMM_GEN4: u32 = (0x20 << 23) | 2; // intel_gpu_commands.h:136
 const MI_BATCH_BUFFER_END: u32 = 0x0a << 23; // intel_gpu_commands.h:62
 
-// ---- the fake endpoint pair ------------------------------------------------------------------------------------------------------
-
-enum Ev {
-    /// A request arrives: queued, and the wait returns `Request`.
-    Req(Vec<u8>),
-    /// The wait returns this wake; time is unchanged.
-    Wake(Wake),
-    /// The wait returns this wake at the absolute time `.1` (a timer firing).
-    At(Wake, u64),
-}
-
-#[derive(Default)]
-struct S {
-    now: u64,
-    script: VecDeque<Ev>,
-    inbound: VecDeque<Vec<u8>>,
-    sent: Vec<Vec<u8>>,
-    /// Every wait: `(deadline asked for, accepting requests)`.
-    waits: Vec<(Option<u64>, bool)>,
-    irq: bool,
-    ring_full: usize,
-    dead_on_send: bool,
-    /// The buffer length the loop handed to `recv` last time.
-    recv_buf: usize,
-}
-
-#[derive(Clone, Default)]
-struct FakeT(Rc<RefCell<S>>);
-
-impl Transport for FakeT {
-    fn now_ms(&mut self) -> u64 {
-        self.0.borrow().now
-    }
-    fn irq_armed(&self) -> bool {
-        self.0.borrow().irq
-    }
-    fn wait(&mut self, deadline_ms: Option<u64>, accept: bool) -> Wake {
-        let mut s = self.0.borrow_mut();
-        s.waits.push((deadline_ms, accept));
-        match s.script.pop_front() {
-            None => Wake::Closed,
-            Some(Ev::Req(f)) => {
-                assert!(accept, "a request was delivered to a loop that said it takes none");
-                s.inbound.push_back(f);
-                Wake::Request
-            }
-            Some(Ev::Wake(w)) => w,
-            Some(Ev::At(w, t)) => {
-                s.now = t;
-                w
-            }
-        }
-    }
-    fn recv(&mut self, buf: &mut [u8]) -> Recv {
-        let mut s = self.0.borrow_mut();
-        s.recv_buf = buf.len();
-        match s.inbound.pop_front() {
-            None => Recv::Empty,
-            Some(f) if f.len() > buf.len() => Recv::Oversized(f.len() as u64),
-            Some(f) => {
-                buf[..f.len()].copy_from_slice(&f);
-                Recv::Frame(f.len())
-            }
-        }
-    }
-    fn send(&mut self, frame: &[u8]) -> SendOutcome {
-        let mut s = self.0.borrow_mut();
-        if s.dead_on_send {
-            return SendOutcome::PeerDead;
-        }
-        if s.ring_full > 0 {
-            s.ring_full -= 1;
-            return SendOutcome::RingFull;
-        }
-        s.sent.push(frame.to_vec());
-        SendOutcome::Sent
-    }
-}
+mod net_common;
+use net_common::*;
 
 #[derive(Default)]
 struct R {
@@ -152,6 +76,8 @@ struct W {
     t: FakeT,
     regions: FakeRegions,
     mem: Mem,
+    /// The client every helper talks as.
+    cid: ConnId,
     rid: u64,
     csb: u32,
 }
@@ -169,41 +95,16 @@ fn world() -> W {
     let t = FakeT::default();
     t.0.borrow_mut().now = 1;
     let regions = FakeRegions::default();
-    let live = Live::new(t.clone(), regions.clone(), svc, ex, gm, log).unwrap();
+    let mut live = Live::new(t.clone(), regions.clone(), svc, ex, gm, log).unwrap();
     let _ = chip;
-    W { live, t, regions, mem, rid: 0, csb: 0 }
-}
-
-struct Resp {
-    hdr: Header,
-    status: Status,
-    errno: i32,
-    body: Vec<u8>,
-    payload: Vec<u8>,
-}
-
-impl Resp {
-    fn body<B: Body>(&self) -> B {
-        assert_eq!((self.status, self.errno), (Status::Ok, 0), "the call failed: {:?} errno {}", self.status, self.errno);
-        B::from_payload(&self.body).unwrap()
-    }
-    fn is_err(&self, e: i32) -> bool {
-        self.status == Status::Ok && self.errno == -e
-    }
-}
-
-fn parse(frame: &[u8]) -> Resp {
-    let (hdr, p) = Header::decode(frame).unwrap();
-    assert!(hdr.is_reply());
-    let (status, errno) = (Status::from_u32(u32::from_le_bytes(p[0..4].try_into().unwrap())).unwrap(), i32::from_le_bytes(p[4..8].try_into().unwrap()));
-    Resp { hdr, status, errno, body: p[8..].to_vec(), payload: p.to_vec() }
-}
-
-fn frame(op: Opcode, id: u64, inc: u64, payload: &[u8]) -> Vec<u8> {
-    let mut f = vec![0u8; HEADER_BYTES + payload.len()];
-    f[HEADER_BYTES..].copy_from_slice(payload);
-    Header::request(op, id, inc, payload.len() as u32).encode(&mut f).unwrap();
-    f
+    // a client connects and the loop accepts it; the counters then start from zero so each test counts only its own wakes
+    let cid = t.connect();
+    t.0.borrow_mut().default = Some(cid);
+    t.0.borrow_mut().script.push_back(Ev::Wake(Wake::Accept));
+    assert_eq!(live.step(), Step::Woke(Wake::Accept));
+    assert_eq!(live.stats.conns_accepted, 1);
+    live.stats = LiveStats::default();
+    W { live, t, regions, mem, cid, rid: 0, csb: 0 }
 }
 
 fn region_frame(op: Opcode, id: u64, inc: u64, rr: &RegionRef) -> Vec<u8> {
@@ -217,15 +118,23 @@ fn region_frame(op: Opcode, id: u64, inc: u64, rr: &RegionRef) -> Vec<u8> {
 
 impl W {
     fn sent(&self) -> usize {
-        self.t.0.borrow().sent.len()
+        self.t.messages_sent(self.cid)
     }
     fn last_reply(&self) -> Resp {
-        parse(self.t.0.borrow().sent.last().expect("a reply was sent"))
+        parse(self.t.0.borrow().clients[&self.cid].sent.last().expect("a reply was sent"))
     }
-    /// Deliver one request frame and run the loop through exactly that wake.
+    /// The client sends one request frame (as the messages it travels as) and the loop runs through exactly one wake per message.
     fn deliver(&mut self, f: Vec<u8>) -> Step {
-        self.t.0.borrow_mut().script.push_back(Ev::Req(f));
-        self.live.step()
+        let msgs: Vec<Vec<u8>> = match i915_wire::frag::split(&f, i915_wire::frag::Limits::KERNEL) {
+            Ok(c) => c.map(|m| m.to_vec()).collect(),
+            Err(_) => vec![f],
+        };
+        let mut last = Step::Closed;
+        for m in msgs {
+            self.t.0.borrow_mut().script.push_back(Ev::To(self.cid, m));
+            last = self.live.step();
+        }
+        last
     }
     fn wake(&mut self, w: Wake) -> Step {
         self.t.0.borrow_mut().script.push_back(Ev::Wake(w));
@@ -353,36 +262,46 @@ fn a_whole_session_runs_over_the_live_loop_one_wake_per_request() {
 }
 
 #[test]
-fn the_receive_buffer_holds_the_largest_inline_frame_and_a_bigger_frame_is_refused_by_name() {
+fn the_largest_fragmentable_frame_is_served_and_bigger_or_broken_ones_are_refused_by_name() {
     let mut w = world();
-    // exactly the largest inline frame (header + 64 KiB): a HELLO that declares the full payload
-    let hello = frame(Opcode::Hello, 1, 0, &vec![0u8; MAX_PAYLOAD as usize]);
-    assert_eq!(hello.len(), MAX_FRAME_BYTES);
+    // the most that travels as messages: 15 full messages = 61440 bytes, a HELLO that declares 61400 payload bytes
+    let hello = frame(Opcode::Hello, 1, 0, &vec![0u8; 61440 - HEADER_BYTES]);
+    assert_eq!(hello.len(), 61440);
     w.deliver(hello);
-    assert_eq!(w.t.0.borrow().recv_buf, MAX_FRAME_BYTES, "the buffer the loop receives into is a whole inline frame, not 64 bytes");
+    assert_eq!(w.t.0.borrow().recv_buf, 4096, "the buffer the loop receives into is ONE message, not a whole frame and not 64 bytes");
+    assert_eq!(w.live.stats.request_wakes, 15, "one wake per message of the frame");
     let r = w.last_reply();
     assert_eq!((r.status, r.errno), (Status::Ok, 0), "the full-size frame was served");
-    // one byte more than the buffer: the receive path reports it oversized; the loop answers with a frame that names the refusal
-    let mut over = frame(Opcode::Hello, 2, 0, &vec![0u8; MAX_PAYLOAD as usize]);
-    over.push(0);
-    w.deliver(over);
+    assert_eq!(w.live.stats.calls, 1, "once, only when the whole frame was in");
+    assert_eq!(w.live.stats.refused, 0);
+
+    // a header that needs a 16th message: refused by name at the FIRST message (nothing is kept), and the request is answered
+    let over = frame(Opcode::Hello, 2, 0, &vec![0u8; 61441 - HEADER_BYTES]);
+    w.t.0.borrow_mut().script.push_back(Ev::To(w.cid, over[..4096].to_vec()));
+    w.live.step();
     let r = w.last_reply();
     assert_eq!(r.status, Status::Malformed);
     assert_eq!(r.errno, -errno::ENOMEM);
-    assert!(w.live.log.has("frame refused name=WIRE-PAYLOAD-TOO-LARGE"), "{:?}", w.live.log.0.last());
+    assert!(w.live.log.has("frame refused name=FRAG-TOO-MANY-MESSAGES"), "{:?}", w.live.log.0.last());
     assert_eq!(w.live.stats.refused, 1);
-    // a header that declares more than an inline frame may carry is refused by name too (the 40-byte frame is all that arrives)
+
+    // a header that declares more than the wire's own payload bound is refused with the wire's name
     let mut h = vec![0u8; HEADER_BYTES];
-    let mut hd = Header::request(Opcode::Hello, 3, 0, 0);
-    hd.payload_bytes = 0;
-    hd.encode(&mut h).unwrap();
+    Header::request(Opcode::Hello, 3, 0, 0).encode(&mut h).unwrap();
     h[32..36].copy_from_slice(&(MAX_PAYLOAD + 1).to_le_bytes());
     w.deliver(h);
     assert_eq!(w.last_reply().status, Status::Malformed);
-    assert!(w.live.log.has("name=WIRE-PAYLOAD-TOO-LARGE got_bytes="));
+    assert!(w.live.log.has("frame refused name=WIRE-PAYLOAD-TOO-LARGE"));
+
+    // a message longer than the kernel can deliver is reported oversized by the receive path and answered by name
+    w.t.0.borrow_mut().script.push_back(Ev::To(w.cid, vec![0u8; 4097]));
+    w.live.step();
+    assert_eq!(w.last_reply().status, Status::Malformed);
+    assert!(w.live.log.has("frame refused name=WIRE-PAYLOAD-TOO-LARGE frame_bytes=4097"), "{:?}", w.live.log.0.last());
+
     // and the first generation's four-byte protocol still answers
     w.deliver(vec![b'I', 1, 0]);
-    assert_eq!(w.t.0.borrow().sent.last().unwrap(), &vec![b'i', 1, 0, 0]);
+    assert_eq!(w.t.0.borrow().clients[&w.cid].sent.last().unwrap(), &vec![b'i', 1, 0, 0]);
 }
 
 /// A 1000-object / 1024-relocation EXECBUFFER2 payload: far larger than one inline frame.
@@ -456,9 +375,15 @@ fn a_reply_that_does_not_fit_a_frame_goes_to_the_clients_reply_area_and_is_refus
 }
 
 impl W {
+    /// A new client connects (the old one is gone) and the loop accepts it.
+    fn reconnect(&mut self) {
+        self.cid = self.t.connect();
+        self.t.0.borrow_mut().default = Some(self.cid);
+        self.wake(Wake::Accept);
+    }
     fn last_reply_header_only(&self) -> (Header, Vec<u8>) {
         let s = self.t.0.borrow();
-        let (h, p) = Header::decode(s.sent.last().unwrap()).unwrap();
+        let (h, p) = Header::decode(s.clients[&self.cid].sent.last().unwrap()).unwrap();
         (h, p.to_vec())
     }
 }
@@ -499,7 +424,8 @@ fn a_peer_that_dies_mid_execbuffer_frees_everything_once_the_work_retires() {
     assert_eq!(w.live.svc.requests_in_flight(), 1);
     assert!(w.snapshot() != base);
     // the peer dies with the request on the engine
-    w.wake(Wake::PeerDead);
+    w.t.kill(w.cid);
+    w.wake(Wake::Request(w.cid));
     assert_eq!(w.live.svc.live_sessions(), 0, "the session is dead the moment the peer is");
     assert_eq!(w.live.stats.sessions_freed_by_peer_death, 1);
     assert_eq!(w.live.svc.requests_in_flight(), 1, "the request is still on the engine");
@@ -510,13 +436,13 @@ fn a_peer_that_dies_mid_execbuffer_frees_everything_once_the_work_retires() {
     w.wake(Wake::Deadline);
     assert_eq!(w.snapshot(), base, "nothing is left: objects, contexts, address space, pages");
     // and the same on a SEND that reports the peer dead
+    w.reconnect();
     let (_inc2, tl2, seqno2) = start_work(&mut w);
-    w.t.0.borrow_mut().dead_on_send = true;
+    w.t.0.borrow_mut().clients.get_mut(&w.cid).unwrap().send_dead = true;
     w.rid += 1;
     let rid = w.rid;
     w.deliver(frame(Opcode::GemCreate, rid, _inc2, &GemCreateReq { size: 4096 }.to_payload_vec()));
     assert_eq!(w.live.svc.live_sessions(), 0, "a reply that finds the peer dead frees its sessions too");
-    w.t.0.borrow_mut().dead_on_send = false;
     w.gpu_complete(tl2, seqno2);
     w.wake(Wake::Deadline);
     assert_eq!(w.snapshot(), base);
@@ -574,7 +500,7 @@ fn the_loop_blocks_without_a_deadline_when_idle_and_wakes_only_for_what_it_asked
     }
     while w.live.step() != Step::Closed {}
     assert_eq!(w.live.stats.waits, waits_so_far + n + 1, "one sleep per event, plus the one that saw the close - never a spin");
-    assert_eq!(w.live.stats.request_wakes + w.live.stats.interrupt_wakes + w.live.stats.deadline_wakes + w.live.stats.peer_dead_wakes, w.live.stats.waits - 1, "every sleep ended in a named wake");
+    assert_eq!(w.live.stats.request_wakes + w.live.stats.interrupt_wakes + w.live.stats.deadline_wakes, w.live.stats.waits - 1, "every sleep ended in a named wake");
 }
 
 #[test]
@@ -599,7 +525,7 @@ fn a_full_reply_ring_holds_the_reply_and_the_requests_until_it_drains_and_keeps_
     let inc = w.open();
     let sent0 = w.sent();
     // the ring refuses the next two sends
-    w.t.0.borrow_mut().ring_full = 3; // the delivery's own send, the same step's retry, and one timer retry all find the ring full
+    w.t.0.borrow_mut().clients.get_mut(&w.cid).unwrap().ring_full = 3; // the delivery's own send, the same step's retry, and one timer retry all find the ring full
     w.rid += 1;
     let id1 = w.rid;
     w.deliver(frame(Opcode::GemCreate, id1, inc, &GemCreateReq { size: 4096 }.to_payload_vec()));
@@ -610,7 +536,8 @@ fn a_full_reply_ring_holds_the_reply_and_the_requests_until_it_drains_and_keeps_
     let n_waits = w.waits().len();
     w.wake(Wake::Deadline); // the retry: the ring refuses once more
     assert_eq!(w.sent(), sent0);
-    assert_eq!(w.waits()[n_waits], (Some(w.t.0.borrow().now + REPLY_RETRY_MS), false), "the wait does not accept requests while a reply is unsent");
+    assert_eq!(w.waits()[n_waits].0, Some(w.t.0.borrow().now + REPLY_RETRY_MS));
+    assert_eq!(w.t.0.borrow().held_at_wait[n_waits], vec![w.cid], "the wait takes no request from a connection whose reply is unsent");
     w.wake(Wake::Deadline); // the ring has room now
     assert_eq!(w.sent(), sent0 + 1, "delivered");
     assert_eq!(w.last_reply().hdr.request_id, id1);

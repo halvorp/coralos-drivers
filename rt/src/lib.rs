@@ -8,7 +8,7 @@
 //!
 //! WHAT IS HERE (every fact this crate makes public):
 //!   numbers  WRITE 0 · EXIT 1 · SEND 3 · RECV 4 · MMIO_MAP 8 · IRQ_WAIT 10 · TRY_RECV 20 · CONNECT 21 · TICKS 24 ·
-//!            MMAP 25 · PORT_IO 52 · WAIT_ANY_IRQ 80 · MMIO_LEN 90 · DMA_ALLOC_TYPED 103 · DMA_QUOTA 105 · IRQ_LINE 109 · IRQ_ARM 110
+//!            MMAP 25 · PORT_IO 52 · SESSION_RELEASE 100 · WAIT_ANY_IRQ 80 · MMIO_LEN 90 · DMA_ALLOC_TYPED 103 · DMA_QUOTA 105 · IRQ_LINE 109 · IRQ_ARM 110
 //!   words    SYSCALL_ERR / SEND_DENIED / WAIT_TIMEOUT = u64::MAX · WAIT_IRQ_FIRED = MAX-1 · WAIT_IRQ_DENIED = MAX-2 ·
 //!            PEER_DEAD = MAX-6 · SEND_OK 0 · SEND_RING_FULL 1 · DMA_ALLOC_TYPED refusals MAX-120..=MAX-127 (8, named)
 //!   layout   the DMA out-record `{ uva: u64, phys: u64 }` (repr C, 16 bytes) · DMA cache argument: low byte WB 0 / WC 1 /
@@ -21,6 +21,10 @@
 //!   write-allow-listed MMIO (2026-10-12; mmio.rs) `WriteWindow`: a window readable everywhere and writable ONLY at the `&'static`
 //!            `WriteRange` list given at open; one 32-bit `write32` at an OFFSET checked against the length, alignment and the list
 //!            (a write outside it is `MMIO-WRITE-NOT-ALLOWED` and touches nothing); no 8/16-bit write. No new system call or number.
+//!   session wire (2026-10-13; session.rs) SERVING connect(): the announce `[0xC0, req u16, evt u16, client u64]` posted on a LISTEN
+//!            endpoint, the end-of-session tombstone `[0xDD, client u64]` on a session's request endpoint, the 128-endpoint wait set
+//!            (`ep_set`), and SESSION_RELEASE 100 (`session_release(req, evt)`) to give a dead session's endpoints back. `connect` is the
+//!            client half and was already here.
 //!   key wire (2026-10-11; keywire.rs) the physical key event frame `[0x90, HID usage, state]` on endpoint 12 (KEY_EP);
 //!            state RELEASE 0 · PRESS 1 · REPEAT 2 · ALL_UP 3
 //!   heap     (2026-10-12; heap.rs) `LazyHeap`: a `GlobalAlloc` over a chain of demand-zero `MMAP` reservations, grown on demand; no new call.
@@ -40,6 +44,7 @@ pub mod heap;
 pub mod keywire;
 pub mod mmio;
 pub mod portio;
+pub mod session;
 
 /// The syscall numbers.
 pub mod nr {
@@ -55,6 +60,7 @@ pub mod nr {
     pub const MMAP: u64 = 25;
     pub const PORT_IO: u64 = 52;
     pub const WAIT_ANY_IRQ: u64 = 80;
+    pub const SESSION_RELEASE: u64 = 100;
     pub const MMIO_LEN: u64 = 90;
     pub const DMA_ALLOC_TYPED: u64 = 103;
     pub const DMA_QUOTA: u64 = 105;
@@ -132,6 +138,13 @@ pub fn try_recv(ep: u64, buf: &mut [u8]) -> u64 {
 pub fn connect(listen_ep: u16) -> Option<(u16, u16)> {
     let w = unsafe { sc(nr::CONNECT, listen_ep as u64, 0, 0, 0) };
     (w != word::SYSCALL_ERR).then_some(((w >> 16) as u16, w as u16))
+}
+/// A SERVER drops its side of a session whose client is gone (SESSION_RELEASE, 100): `true` when the kernel took it. The kernel
+/// checks that the pair is one recorded session, that the caller holds RECV(`req`) and SEND(`evt`), and that no client side is left
+/// anywhere; a live session, a stranger's call, a mismatched pair or a second release is refused and changes nothing. Without it a
+/// served session's two endpoints stay held until the server exits (the shared pool leaks).
+pub fn session_release(req: u16, evt: u16) -> bool {
+    unsafe { sc(nr::SESSION_RELEASE, req as u64, evt as u64, 0, 0) == 0 }
 }
 /// Monotonic milliseconds since boot.
 pub fn ticks() -> u64 {

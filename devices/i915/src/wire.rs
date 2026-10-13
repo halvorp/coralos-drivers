@@ -6,14 +6,14 @@
 //!   request  `[ REQ_MARKER 'I', version, op, payload… ]`
 //!   reply    `[ REP_MARKER 'i', version, op, status ]`      (the op is echoed so replies match requests)
 //!
-//! The endpoint numbers [`SERVICE_EP`] / [`REPLY_EP`] are the CoralOS loader's registry entries `EP_I915_REQ` / `EP_I915_REPLY`
-//! (65 / 66; the 13 / 14 of the first draft were `EP_LAUNCH` / `EP_DRM_SURFACE`, already taken). Nothing but [`crate::service`]
-//! reads these two constants, so a renumbering is a two-line change.
+//! [`SERVICE_EP`] is the CoralOS loader's registry entry `EP_I915_REQ` (65; the 13 / 14 of the first draft were `EP_LAUNCH` /
+//! `EP_DRM_SURFACE`, already taken). Since 2026-10-13 it is a LISTEN endpoint: a client `connect()`s and the kernel mints it a private
+//! (request, event) pair from the dynamic pool, so replies are routed per client. The old static reply endpoint 66 (`EP_I915_REPLY`) is
+//! no longer used by the device (the registry row for 65 is RECV only; 66 can be freed). Nothing but [`crate::service`] reads this
+//! constant, so a renumbering is a one-line change.
 
-/// The request endpoint (the device RECVs here): the loader's `EP_I915_REQ`.
+/// The LISTEN endpoint (the device RECVs connect announces here): the loader's `EP_I915_REQ`.
 pub const SERVICE_EP: u16 = 65;
-/// The reply endpoint (the device SENDs here): the loader's `EP_I915_REPLY`.
-pub const REPLY_EP: u16 = 66;
 
 pub const REQ_MARKER: u8 = b'I';
 pub const REP_MARKER: u8 = b'i';
@@ -81,7 +81,5 @@ pub mod exit_code {
     pub const UAPI_FAILED: u64 = 5;
 }
 
-/// Bytes of request the parked loop accepts.
+/// Bytes of first-generation request [`handle`] reads (the old 64-byte buffer; the parked service now receives whole messages).
 pub const REQUEST_BUF: usize = 64;
-/// Milliseconds the parked loop waits when `recv` gave nothing usable.
-pub const PACE_MS: u64 = 10;
