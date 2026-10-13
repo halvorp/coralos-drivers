@@ -72,12 +72,15 @@ pub struct RenderConfig {
 pub(crate) struct ClientSession {
     pub inc: u64,
     pub caps: u32,
+    /// Who the client is (the connect announce): the recipient of its mapping leases. None until the loop records it.
+    pub peer: Option<crate::conn::Peer>,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LeaseRec {
     pub lease: u32,
     pub inc: u64,
+    pub obj: ObjId,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,6 +162,11 @@ pub struct UapiService {
     /// Fences imported onto objects with DMA_BUF_IOCTL_IMPORT_SYNC_FILE: `(object, fence, importing session)`. Work that uses the object
     /// waits for them.
     pub(crate) implicit: Vec<(ObjId, FenceId, u64)>,
+    /// The kernel's DMA leases this device holds over object pages (one per object; see `mmap_lease`).
+    pub(crate) kleases: Vec<super::mmap_lease::KLease>,
+    pub(crate) lease_sys: alloc::boxed::Box<dyn super::kernel_lease::LeaseSys>,
+    /// Pages never reused because the kernel would not confirm their lease ended.
+    pub(crate) quarantined: usize,
 }
 
 /// Bring up the render engine and the GGTT and return the service: the window, the scratch page, the GGTT, the status page, the
@@ -227,6 +235,9 @@ impl UapiService {
             waiters: Vec::new(),
             ready: Vec::new(),
             implicit: Vec::new(),
+            kleases: Vec::new(),
+            lease_sys: alloc::boxed::Box::new(super::kernel_lease::NoLeaseSys),
+            quarantined: 0,
         }
     }
 
@@ -440,8 +451,8 @@ impl UapiService {
         }
         self.record_vm(base, init.pml4);
         match self.sessions.iter().position(|s| s.is_none()) {
-            Some(i) => self.sessions[i] = Some(ClientSession { inc, caps: req.caps }),
-            None => self.sessions.push(Some(ClientSession { inc, caps: req.caps })), // reserved above
+            Some(i) => self.sessions[i] = Some(ClientSession { inc, caps: req.caps, peer: None }),
+            None => self.sessions.push(Some(ClientSession { inc, caps: req.caps, peer: None })), // reserved above
         }
         emit(hw.log, format_args!("[I915-UAPI session open inc={} caps={:#x}]", inc, req.caps));
         let n = msg::encode_reply(out, Status::Ok, 0, Some(&SessionOpenRep { incarnation: inc }))?;
@@ -454,6 +465,8 @@ impl UapiService {
         let Some(i) = self.session_idx(inc) else { return };
         // parked calls of this session are dropped silently: nobody is left to read the answer
         self.waiters.retain(|w| w.hdr.session_incarnation != inc);
+        // the kernel leases first: this session's CPU access ends before anything it held is freed
+        self.revoke_session_leases(hw.log, inc);
         let mine: Vec<u32> = self.leases.iter().filter(|l| l.inc == inc).map(|l| l.lease).collect();
         for lease in mine {
             let _ = self.with_sink(hw, inc, |gem, sink| gem.mmap_close(lease, sink));

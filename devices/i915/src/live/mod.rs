@@ -5,6 +5,7 @@
 //! |---|---|
 //! | [`crate::conn`] | the connections: the listen endpoint, one endpoint pair per client, the clock and the wait, behind a trait (the production binding is `conn::RtTransport`), and each connection's frame reassembly |
 //! | [`regions`] | where a call too large for one inline frame is read from, and a large reply written to (`i915_wire::region`) |
+//! | [`session_regions`] / `rt_regions` | the production binding of `regions`: the kernel's session-scoped REGION_MAP, one snapshot copy per call, no mapping kept |
 //! | `serve` | [`Live`]: one `step` = one wake, handled; `run` = steps until the transport closes |
 //! | [`assemble`] | bringing the service up from what the proof of life learned and what the host supplies |
 //!
@@ -28,8 +29,12 @@
 //! Every other connection is untouched.
 pub mod assemble;
 pub mod regions;
+#[cfg(target_arch = "x86_64")]
+pub mod rt_regions;
 mod serve;
+pub mod session_regions;
 
-pub use crate::conn::{Accepted, ConnId, Recv, SendOutcome, Transport, Wake, REPLY_RETRY_MS};
+pub use crate::conn::{Accepted, ConnId, Peer, Recv, SendOutcome, Transport, Wake, REPLY_RETRY_MS};
 pub use regions::{NoRegions, PayloadRegions, RegionError};
+pub use session_regions::{RegionSys, SessionRegions, SysRefusal};
 pub use serve::{Live, LiveError, LiveStats, Step};

@@ -46,7 +46,9 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"I915");
 pub const ABI_MAJOR: u16 = 1;
 /// 1: the uAPI messages (opcodes `0x100..`). Every opcode records the minor that introduced it ([`Opcode::since_minor`]).
 /// 2: the payload region ([`FLAG_PAYLOAD_REGION`], [`region`]); additive - no opcode changed.
-pub const ABI_MINOR: u16 = 2;
+/// 3: a region call may name a separate reply region ([`region::REPLY_ELSEWHERE`]) and `GEM-MMAP-OPEN`/`GEM-MMAP-LEGACY`'s reply carries the kernel
+/// lease handle and the offset to map ([`msg::gem::GemMmapRep`]); additive - no opcode changed.
+pub const ABI_MINOR: u16 = 3;
 pub const HEADER_BYTES: usize = 40;
 /// The largest payload a frame may declare (64 KiB): a submit carries object and dependency tables, never GPU data.
 pub const MAX_PAYLOAD: u32 = 64 * 1024;

@@ -77,10 +77,14 @@ impl UapiService {
             match e {
                 Effect::FreePages { obj } => {
                     if let Some(p) = self.objs.take(obj) {
-                        self.pool.release(p.run);
+                        // closed, idle, unbound: the kernel lease over the pages ends BEFORE they can be anyone else's
+                        self.release_object_pages(hw.log, obj, p.run);
                     }
                 }
-                Effect::ObjectFreed { .. } | Effect::AwaitRequest { .. } | Effect::RevokeMmap { .. } => {}
+                Effect::RevokeMmap { obj } => {
+                    let _ = self.revoke_object_leases(hw.log, obj);
+                }
+                Effect::ObjectFreed { .. } | Effect::AwaitRequest { .. } => {}
                 Effect::Clflush { obj } => {
                     if let Some(p) = self.objs.get(obj) {
                         let (mut at, mut left) = (p.run.dev, p.run.bytes());

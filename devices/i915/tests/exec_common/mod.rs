@@ -253,3 +253,87 @@ pub fn built() -> (Chip, Mem, Executor<Chip>, Gm) {
     let ex = Executor::new(chip.clone(), &kbl()).unwrap();
     (chip, mem, ex, gm)
 }
+
+#[cfg(feature = "p3-exec")]
+#[allow(unused_imports)]
+pub use kernel_fakes::*;
+#[cfg(feature = "p3-exec")]
+mod kernel_fakes {
+    // ---- the kernel's DMA lease, as a fake that enforces what the kernel enforces ---------------------------------------------------
+
+    use i915_device::conn::Peer;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use i915_device::uapi::kernel_lease::{LeaseFail, LeaseSpec, LeaseSys, Revoked};
+
+    /// What the fake kernel holds: live leases (handle, spec), the ordered events, and the failures a test can arm.
+    #[derive(Default)]
+    pub struct KernelLeases {
+        pub next: u64,
+        pub live: Vec<(u64, LeaseSpec)>,
+        /// `create 0x..` / `revoke 0x..`, in order.
+        pub events: Vec<String>,
+        /// Every revoke is refused (an unproven teardown): the kernel will not say the lease ended.
+        pub revoke_fails: bool,
+        /// The next create is refused with this.
+        pub create_fails: Option<LeaseFail>,
+        /// Every spec ever accepted.
+        pub created: Vec<LeaseSpec>,
+    }
+
+    /// The fake kernel's lease table, shared between the device (as its `LeaseSys`) and the test.
+    #[derive(Clone, Default)]
+    pub struct FakeLeases(pub Rc<RefCell<KernelLeases>>);
+
+    impl FakeLeases {
+        pub fn live_count(&self) -> usize {
+            self.0.borrow().live.len()
+        }
+        pub fn events(&self) -> Vec<String> {
+            self.0.borrow().events.clone()
+        }
+    }
+
+    impl LeaseSys for FakeLeases {
+        fn create(&mut self, s: &LeaseSpec) -> Result<u64, LeaseFail> {
+            let mut k = self.0.borrow_mut();
+            if let Some(f) = k.create_fails.take() {
+                return Err(f);
+            }
+            if s.offset % 4096 != 0 || s.length % 4096 != 0 || s.length == 0 {
+                return Err(LeaseFail::Refused { name: "LEASE-NOT-PAGE-EXACT", word: 0 });
+            }
+            assert_eq!(s.coherence, coralos_hal::Coherence::NonSnooped, "one cache type across every alias: object pages are write-combining");
+            let (lo, hi) = (s.alloc_va + s.offset, s.alloc_va + s.offset + s.length);
+            // the kernel's page-exclusivity: a page under a live lease cannot be leased again
+            if k.live.iter().any(|(_, o)| lo < o.alloc_va + o.offset + o.length && o.alloc_va + o.offset < hi) {
+                return Err(LeaseFail::Refused { name: "LEASE-PAGE-ALREADY-LEASED", word: 0 });
+            }
+            k.next += 1;
+            let h = coralos_rt::region::LEASE_CAP_TAG | k.next;
+            k.live.push((h, *s));
+            k.created.push(*s);
+            k.events.push(format!("create {h:#x}"));
+            Ok(h)
+        }
+        fn revoke(&mut self, handle: u64) -> Result<Revoked, LeaseFail> {
+            let mut k = self.0.borrow_mut();
+            if k.revoke_fails {
+                return Err(LeaseFail::Refused { name: "LEASE-UNKNOWN-WORD", word: 1 });
+            }
+            match k.live.iter().position(|(h, _)| *h == handle) {
+                Some(i) => {
+                    k.live.remove(i);
+                    k.events.push(format!("revoke {handle:#x}"));
+                    Ok(Revoked::Ended)
+                }
+                None => Ok(Revoked::AlreadyGone),
+            }
+        }
+    }
+
+    /// The client every session of the tests is: a request endpoint and a node derived from the incarnation.
+    pub fn peer_for(inc: u64) -> Peer {
+        Peer { req_ep: 100 + inc as u16, node: 0x7000 + inc }
+    }
+}

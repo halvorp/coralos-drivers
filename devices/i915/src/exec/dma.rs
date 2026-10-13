@@ -64,6 +64,11 @@ pub trait CpuMem {
     fn flush(&mut self, cpu: u64, bytes: u32);
 }
 
+/// The cache coherence of EVERY page this allocator grants (so of every GEM object's pages): the GPU does not snoop them, so the CPU sees
+/// them write-combining. A CPU mapping lease must carry the same type on every alias, so this is what a lease is made with and what the
+/// mmap reply says it is.
+pub const BO_COHERENCE: Coherence = Coherence::NonSnooped;
+
 /// The allocator.
 pub struct GpuAlloc<D: Dma> {
     dma: D,
@@ -105,7 +110,7 @@ impl<D: Dma> GpuAlloc<D> {
         if self.grants.try_reserve(1).is_err() {
             return Err(ExecError::GrantTableFull { have: self.grants.len() });
         }
-        let req = DmaRequest { size: rounded, align: PAGE, addr_width: self.addr_width, cache: Coherence::NonSnooped, budget: self.left };
+        let req = DmaRequest { size: rounded, align: PAGE, addr_width: self.addr_width, cache: BO_COHERENCE, budget: self.left };
         let DmaGrant { cpu_mapping, device_addr, len } = self.dma.alloc(req)?;
         let g = Grant { kind, cpu_mapping, device_addr, len };
         self.left = self.left.saturating_sub(len.div_ceil(PAGE) * PAGE);

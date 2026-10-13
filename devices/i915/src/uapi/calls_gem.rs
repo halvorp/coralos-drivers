@@ -5,13 +5,13 @@ use super::adapt::Pages;
 use super::fail::Fail;
 use super::service::{Done, Hw, LeaseRec, PrimeRec, WaitKind};
 use super::UapiService;
-use crate::exec::dma::CpuMem;
+use crate::exec::dma::{CpuMem, BO_COHERENCE};
 use crate::log::Log;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use coralos_hal::{Dma, Mmio};
 use i915_common_core::Reg;
-use i915_gem_core::{CpuCache, CreateExt, Wait, WaitTimeout, SessionId};
+use i915_gem_core::{CreateExt, Wait, WaitTimeout, SessionId};
 use i915_wire::msg::device::*;
 use i915_wire::msg::gem::*;
 use i915_wire::msg::prime::*;
@@ -54,11 +54,11 @@ pub(crate) fn error_body_len(op: Opcode) -> usize {
     }
 }
 
-fn cache_of(c: CpuCache) -> u32 {
-    match c {
-        CpuCache::Wb => cache::WRITE_BACK,
-        CpuCache::Wc | CpuCache::Aperture => cache::WRITE_COMBINING,
-        CpuCache::Uc => cache::UNCACHED,
+/// The cache attribute every object page carries (`exec::dma::BO_COHERENCE`): what a mapping lease IS, whatever mmap type was asked for.
+fn cache_of_coherence() -> u32 {
+    match BO_COHERENCE {
+        coralos_hal::Coherence::Snooped => cache::WRITE_BACK,
+        coralos_hal::Coherence::NonSnooped => cache::WRITE_COMBINING,
     }
 }
 
@@ -145,7 +145,7 @@ impl UapiService {
             Opcode::GemMmapOffset => {
                 let r = GemMmapOffsetReq::from_payload(p)?;
                 let g = self.gem.mmap_offset(sid, r.handle, r.flags)?;
-                ok!(GemMmapOffsetRep { offset: g.offset, kind: g.kind as u32, cache: cache_of(g.cache) })
+                ok!(GemMmapOffsetRep { offset: g.offset, kind: g.kind as u32, cache: cache_of_coherence() })
             }
             Opcode::GemMmapOpen | Opcode::GemMmapLegacy => {
                 self.leases.try_reserve(1).map_err(|_| Fail::oom("leases"))?;
@@ -157,8 +157,16 @@ impl UapiService {
                     self.with_pages(hw, |gem, pages| gem.mmap_legacy(sid, r.handle, r.offset, r.size, r.flags, pages))?
                 };
                 let run = self.objs.get(l.obj).map(|o| o.run).ok_or(Fail::new(errno::EFAULT, "MMAP-OBJECT-NO-PAGES"))?;
-                self.leases.push(LeaseRec { lease: l.lease, inc });
-                ok!(GemMmapRep { lease: l.lease, cache: cache_of(l.cache), grant_addr: run.dev + l.start, len: l.len })
+                // the CPU maps it through the kernel: mint (or find) the object's lease; if the kernel will not, the GEM mapping is undone
+                let region_cap = match self.kernel_lease_for(hw.log, inc, l.obj) {
+                    Ok(h) => h,
+                    Err(f) => {
+                        let _ = self.with_sink(hw, inc, |gem, sink| gem.mmap_close(l.lease, sink));
+                        return Err(f);
+                    }
+                };
+                self.leases.push(LeaseRec { lease: l.lease, inc, obj: l.obj });
+                ok!(GemMmapRep { lease: l.lease, cache: cache_of_coherence(), grant_addr: run.dev + l.start, len: l.len, region_cap, region_offset: l.start })
             }
             Opcode::GemMmapClose => {
                 let r = GemMmapCloseReq::from_payload(p)?;

@@ -110,7 +110,8 @@ fn parked(mut lg: TaskLog) -> ! {
 
 #[cfg(feature = "p3-exec")]
 fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
-    use crate::live::{assemble::{assemble, UapiFacts}, Live, NoRegions};
+    use crate::live::{assemble::{assemble, UapiFacts}, rt_regions::RtRegionSys, Live, SessionRegions};
+    use crate::uapi::rt_lease::RtLeaseSys;
     let mut lg = TaskLog;
     let (bar, mut cfg, proof) = start(&mut lg);
     let gmch_ctl = match RegRead::read32(&mut cfg, GMCH_CTRL_DWORD) {
@@ -133,21 +134,23 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
         quirks: host.quirks,
         stall_bound_ms: host.stall_bound_ms,
     };
-    let a = match assemble(bar, coralos_rt::RtDma, host.mem, &proof, &facts, &mut lg) {
+    let mut a = match assemble(bar, coralos_rt::RtDma, host.mem, &proof, &facts, &mut lg) {
         Ok(a) => a,
         Err(f) => {
             emit(&mut lg, format_args!("[I915-KBL-DEV FAIL step=UAPI-ASSEMBLE why={} errno={}]", f.name, f.errno));
             exit(exit_code::UAPI_FAILED)
         }
     };
-    let mut live = match Live::new(RtTransport::new(SERVICE_EP, None), NoRegions, a.svc, a.ex, a.gm, TaskLog) {
+    // GEM CPU mappings are kernel DMA leases (revoked after the GPU retires the object, or when the session ends)
+    a.svc.set_lease_sys(alloc::boxed::Box::new(RtLeaseSys));
+    let mut live = match Live::new(RtTransport::new(SERVICE_EP, None), SessionRegions::new(RtRegionSys), a.svc, a.ex, a.gm, TaskLog) {
         Ok(l) => l,
         Err(e) => {
             emit(&mut lg, format_args!("[I915-KBL-DEV FAIL step=LIVE-LOOP why={}]", e.name()));
             exit(exit_code::UAPI_FAILED)
         }
     };
-    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {} (one connect() session per client); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: unavailable", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP));
+    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {} (one connect() session per client); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: session REGION_MAP (request snapshotted, reply written); GEM mmap: DMA leases", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP));
     live.run();
     emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE END waits={}]", live.stats.waits));
     exit(0)

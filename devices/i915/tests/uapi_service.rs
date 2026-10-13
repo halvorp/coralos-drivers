@@ -44,6 +44,7 @@ struct W {
     gm: Gm,
     log: Lines,
     svc: UapiService,
+    leases: FakeLeases,
     now: u64,
     csb: u32,
     rid: u64,
@@ -74,8 +75,10 @@ fn world_on(dma: FakeDma, endowment: usize) -> W {
     let dev = UapiDevice::new(kbl(), 0x09, sseu, hz, 8 * GIB).unwrap();
     let geom = GgttGeometry::probe(1 << 6, 16 << 20, 256 << 20).unwrap();
     let cfg = RenderConfig { quirks: FlushQuirks { vf_flush_wa: true, dc_flush_wa_kbl: false }, stall_bound_ms: 1000 };
-    let svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log: &mut log, now_ms: 0 }, dev, &geom, cfg).unwrap();
-    W { chip, mem, ex, gm, log, svc, now: 1, csb: 0, rid: 0 }
+    let mut svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log: &mut log, now_ms: 0 }, dev, &geom, cfg).unwrap();
+    let leases = FakeLeases::default();
+    svc.set_lease_sys(Box::new(leases.clone()));
+    W { chip, mem, ex, gm, log, svc, leases, now: 1, csb: 0, rid: 0 }
 }
 
 impl W {
@@ -141,7 +144,9 @@ fn call<B: Body>(w: &mut W, inc: u64, op: Opcode, req: &B) -> Resp {
 fn open(w: &mut W) -> u64 {
     let r = call(w, 0, Opcode::SessionOpen, &SessionOpenReq::default());
     assert_eq!(r.hdr.session_incarnation, r.body::<SessionOpenRep>().incarnation, "the reply header carries the new incarnation");
-    r.body::<SessionOpenRep>().incarnation
+    let inc = r.body::<SessionOpenRep>().incarnation;
+    w.svc.set_session_peer(inc, peer_for(inc)); // what the live loop does from the connect announce
+    inc
 }
 
 fn create(w: &mut W, inc: u64, size: u64) -> u32 {
@@ -230,8 +235,14 @@ fn a_session_stores_a_dword_through_execbuffer2_and_reads_it_back_through_its_le
     let inc = open(&mut w);
     let (batch, result) = (create(&mut w, inc, 4096), create(&mut w, inc, 4096));
     let (bl, rl) = (lease(&mut w, inc, batch, 4096), lease(&mut w, inc, result, 4096));
-    assert_eq!((bl.len, rl.len, bl.cache), (4096, 4096, cache::WRITE_BACK));
+    // the pages are non-snooped (write-combining for the CPU): that is what the lease IS, even though WB was asked for
+    assert_eq!((bl.len, rl.len, bl.cache, rl.cache), (4096, 4096, cache::WRITE_COMBINING, cache::WRITE_COMBINING));
     assert_ne!(bl.grant_addr, rl.grant_addr);
+    // each object has its own kernel lease: a handle the client redeems with REGION_MAP at the offset where its mapping starts
+    assert!(bl.region_cap & coralos_rt::region::LEASE_CAP_TAG != 0 && rl.region_cap & coralos_rt::region::LEASE_CAP_TAG != 0);
+    assert_ne!(bl.region_cap, rl.region_cap);
+    assert_eq!((bl.region_offset, rl.region_offset), (0, 0));
+    assert_eq!(w.leases.live_count(), 2);
     write_batch(&mut w, &bl);
     assert_eq!(w.gm.load32(rl.grant_addr).unwrap(), 0, "a new object reads as zeroes");
 
@@ -364,22 +375,58 @@ fn prime_keeps_the_object_alive_after_the_exporter_closes_and_dies() {
     w.gm.store32(la.grant_addr, 0x1234_5678).unwrap();
     let tok = call(&mut w, a, Opcode::PrimeHandleToFd, &PrimeHandleToFdReq { handle: ha, flags: 0 }).body::<PrimeTokenRep>().token;
     let hb = call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle;
-    let lb = lease(&mut w, b, hb, 8192);
-    assert_eq!(lb.grant_addr, la.grant_addr, "one object, one memory: the importer maps the same pages");
+    // a kernel lease is page-exclusive: while A maps the object, B cannot CPU-map the same pages - refused BY NAME, and nothing half-made
+    let off = call(&mut w, b, Opcode::GemMmapOffset, &GemMmapOffsetReq { handle: hb, flags: 2, ..Default::default() }).body::<GemMmapOffsetRep>();
+    let live_before = w.svc.live_leases();
+    let r = call(&mut w, b, Opcode::GemMmapOpen, &GemMmapOpenReq { offset: off.offset, len: 8192 });
+    assert!(r.is_err(errno::EBUSY), "errno {}", r.errno);
+    assert!(refused(&w, "MMAP-OBJECT-LEASED-TO-ANOTHER-SESSION"));
+    assert_eq!(w.svc.live_leases(), live_before, "the refused mapping left no GEM lease behind");
     w.svc.session_dead(&mut hw!(w), a);
     assert_eq!(w.svc.live_primes(), 0, "the token died with its exporter");
     assert!(call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL));
+    // the exporter is gone and so is its lease: the importer maps the same pages now
+    let lb = call(&mut w, b, Opcode::GemMmapOpen, &GemMmapOpenReq { offset: off.offset, len: 8192 }).body::<GemMmapRep>();
+    assert_eq!(lb.grant_addr, la.grant_addr, "one object, one memory: the importer maps the same pages");
     assert_eq!(w.gm.load32(lb.grant_addr).unwrap(), 0x1234_5678, "B's handle still names live memory");
     assert_eq!(w.svc.gem().object_count(), 1);
     w.svc.session_dead(&mut hw!(w), b);
     poll(&mut w);
     assert_eq!(w.svc.gem().object_count(), 0);
     assert_eq!(w.svc.live_object_pages(), 0);
+    assert_eq!(w.leases.live_count(), 0, "every kernel lease ended");
+}
+
+#[test]
+fn a_kernel_lease_passes_to_another_session_only_once_the_first_maps_nothing_of_the_object() {
+    let mut w = world();
+    let (a, b) = (open(&mut w), open(&mut w));
+    let ha = create(&mut w, a, 4096);
+    let la = lease(&mut w, a, ha, 4096);
+    let tok = call(&mut w, a, Opcode::PrimeHandleToFd, &PrimeHandleToFdReq { handle: ha, flags: 0 }).body::<PrimeTokenRep>().token;
+    let hb = call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).body::<PrimeHandleRep>().handle;
+    // A unmaps: the kernel lease is still A's (it lives with the object), but A maps nothing, so B's mapping replaces it
+    assert_eq!(call(&mut w, a, Opcode::GemMmapClose, &GemMmapCloseReq { lease: la.lease, ..Default::default() }).errno, 0);
+    assert_eq!(w.leases.live_count(), 1);
+    let lb = lease(&mut w, b, hb, 4096);
+    assert_ne!(lb.region_cap, la.region_cap);
+    assert_eq!(w.leases.events(), vec![format!("create {:#x}", la.region_cap), format!("revoke {:#x}", la.region_cap), format!("create {:#x}", lb.region_cap)], "A's lease ended BEFORE B's was minted over the same pages");
+    assert_eq!((w.leases.live_count(), w.svc.live_kernel_leases()), (1, 1));
+    assert_eq!(w.leases.0.borrow().created[1].peer, peer_for(b), "the recipient is B's client");
+    // a session with no known client cannot be given a lease at all
+    let c = {
+        let r = call(&mut w, 0, Opcode::SessionOpen, &SessionOpenReq::default());
+        r.body::<SessionOpenRep>().incarnation
+    };
+    let hc = create(&mut w, c, 4096);
+    let off = call(&mut w, c, Opcode::GemMmapOffset, &GemMmapOffsetReq { handle: hc, flags: 2, ..Default::default() }).body::<GemMmapOffsetRep>();
+    assert!(call(&mut w, c, Opcode::GemMmapOpen, &GemMmapOpenReq { offset: off.offset, len: 4096 }).is_err(errno::ENODEV));
+    assert!(refused(&w, "MMAP-NO-RECIPIENT"));
 }
 
 // ---- death and leaks -----------------------------------------------------------------------------------------------------------
 
-fn snapshot(w: &W) -> [usize; 14] {
+fn snapshot(w: &W) -> [usize; 15] {
     let s = &w.svc;
     [
         s.live_sessions(),
@@ -396,6 +443,7 @@ fn snapshot(w: &W) -> [usize; 14] {
         s.sync().live_fences(),
         s.sync().live_exports(),
         s.pool().pages_out(),
+        s.live_kernel_leases(),
     ]
 }
 
