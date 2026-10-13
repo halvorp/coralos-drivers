@@ -102,8 +102,7 @@ justified in a comment"); the comment sits at the top of the crate's `lib.rs`. W
 context tags, fence registers) or by an ABI width, and says so where it is declared.
 
 **D11 — Atlas audio wave 2: the codec, the controller and the boot are PLANS; the speakers are unreachable by construction (2026-10-13).**
-`da7219-core` builds only transactions to the DA7219 (0x1A); the single place a wire message is made (`bus::check_target`) refuses the MAX98373
-amplifiers (0x31/0x32) by name, and a test runs every plan builder through a fake codec asserting it. The codec's SAFE STATE (outputs driven
+`da7219-core` builds only transactions to the codec of a `Wiring` (the board's I2C addresses, handed in from the board row - none lives in a core crate); the single place a wire message is made refuses the speaker amplifiers on the same bus by name (Atlas: MAX98373 0x31/0x32), `avs-boot-core` refuses a back end on any of the board's speaker SSPs before a pipeline exists, and tests run every plan builder through a fake codec asserting it. The codec's SAFE STATE (outputs driven
 off, amplifier then DAC muted, stages powered down) is proven by register readback, and `avs-boot-core` asks for that proof (`Action::AskCodecSafe`)
 BEFORE the host DMA starts or any pipeline leaves RESET: the I2S clocks cannot start on a codec of unknown state. DAPM power-up leaves every
 mute bit set (a checked precondition and postcondition) and the jack output enable is the accessory detect's, as in Linux; unmute is a separate
