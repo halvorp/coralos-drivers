@@ -27,6 +27,9 @@
 //! `status: u32`, `errno: i32` (`0` or `-errno`, exactly what the ioctl returned), then a body of fixed size per opcode (zeroes when
 //! `errno != 0`), except the variable replies the message modules name.
 //!
+//! FRAMING ([`frag`]): the kernel's IPC message is 4096 bytes, so a longer frame travels as consecutive messages that end where its own header
+//! says; `frag::split` and `frag::Joiner` are the one definition both ends compile.
+//!
 //! This crate is MIT OR Apache-2.0 because the closed CoralOS shim compiles against it; it holds no Linux-derived code.
 
 #![no_std]
@@ -34,6 +37,7 @@
 
 pub mod codec;
 pub mod errno;
+pub mod frag;
 pub mod msg;
 pub mod region;
 

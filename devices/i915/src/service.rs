@@ -5,9 +5,10 @@ use crate::regio::{BarMmio, Clock, BAR0_NEED_BYTES, BAR0_SLOT, BAR0_WRITE_RANGES
 #[cfg(feature = "p3-exec")]
 use crate::regio::{RegRead, GMCH_CTRL_DWORD};
 use crate::startup::bringup;
-use crate::wire::{exit_code, handle, PACE_MS, REPLY_EP, REQUEST_BUF, SERVICE_EP};
+use crate::conn::RtTransport;
+use crate::wire::{exit_code, SERVICE_EP};
 use coralos_rt::mmio::{Kernel, ReadWindow, WriteWindow};
-use coralos_rt::{exit, recv, send, write};
+use coralos_rt::{exit, write};
 
 /// The kernel's `TICKS` (system call 24), read as milliseconds (kernel/src/arch/x86_64/apic.rs documents `TIMER_TICKS` as ms).
 struct Ticks;
@@ -63,66 +64,10 @@ pub struct UapiHost<M: crate::exec::dma::CpuMem> {
 }
 
 /// The device with the uAPI service LIVE on its endpoints (feature `p3-exec`): proof of life, then [`crate::live::Live`] on
-/// `EP_I915_REQ`/`EP_I915_REPLY`, until the task ends.
+/// `EP_I915_REQ` (the LISTEN endpoint), until the task ends.
 #[cfg(feature = "p3-exec")]
 pub fn service_with<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
     serve(host)
-}
-
-/// The production [`crate::live::Transport`]: the request endpoint [`SERVICE_EP`], the reply endpoint [`REPLY_EP`], the kernel clock, and
-/// `WAIT_ANY_IRQ` as the one blocking wait (a request, the engine line if one is held, or the deadline). Nothing here polls.
-#[cfg(feature = "p3-exec")]
-pub struct RtTransport {
-    /// The engine interrupt line, if the device has armed one. None today: the interrupt-enable registers are not on the write
-    /// allow-list until the owner-attended silicon increment, so completion is found by the service's own timer while work is in flight.
-    pub irq: Option<u32>,
-}
-
-#[cfg(feature = "p3-exec")]
-impl crate::live::Transport for RtTransport {
-    fn now_ms(&mut self) -> u64 {
-        coralos_rt::ticks()
-    }
-    fn irq_armed(&self) -> bool {
-        self.irq.is_some()
-    }
-    fn wait(&mut self, deadline_ms: Option<u64>, accept_requests: bool) -> crate::live::Wake {
-        use coralos_rt::word::{PEER_DEAD, WAIT_IRQ_DENIED, WAIT_IRQ_FIRED, WAIT_TIMEOUT};
-        // the endpoint set is a 128-bit mask; endpoint 65 is bit 1 of the high word
-        let eps_hi = if accept_requests { 1u64 << (SERVICE_EP as u32 - 64) } else { 0 };
-        let now = coralos_rt::ticks();
-        let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
-        match coralos_rt::wait_any_irq(0, eps_hi, timeout, self.irq.unwrap_or(0)) {
-            WAIT_TIMEOUT => crate::live::Wake::Deadline,
-            WAIT_IRQ_FIRED => crate::live::Wake::Interrupt,
-            WAIT_IRQ_DENIED => {
-                self.irq = None; // the line is not ours: stop asking, and let the deadline logic carry completion
-                crate::live::Wake::Deadline
-            }
-            PEER_DEAD => crate::live::Wake::PeerDead,
-            _ => crate::live::Wake::Request,
-        }
-    }
-    fn recv(&mut self, buf: &mut [u8]) -> crate::live::Recv {
-        use crate::live::Recv;
-        let n = coralos_rt::try_recv(SERVICE_EP as u64, buf);
-        match n {
-            0 => Recv::Empty,
-            coralos_rt::word::PEER_DEAD => Recv::PeerDead,
-            n if n <= buf.len() as u64 => Recv::Frame(n as usize),
-            n if n < (1 << 32) => Recv::Oversized(n),
-            n => Recv::Error(n),
-        }
-    }
-    fn send(&mut self, frame: &[u8]) -> crate::live::SendOutcome {
-        use crate::live::SendOutcome;
-        match send(REPLY_EP as u64, frame) {
-            coralos_rt::word::SEND_OK => SendOutcome::Sent,
-            coralos_rt::word::SEND_RING_FULL => SendOutcome::RingFull,
-            coralos_rt::word::PEER_DEAD => SendOutcome::PeerDead,
-            _ => SendOutcome::Denied,
-        }
-    }
 }
 
 /// Open the windows and run the read-only bring-up and the forcewake proof of life; exits (named) on any refusal.
@@ -151,31 +96,16 @@ fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof) {
     }
 }
 
-/// The parked loop: every request is answered, none is served.
+/// The parked loop: every request is answered, none is served. The device's endpoint is a LISTEN endpoint; each client `connect()`s and is
+/// answered on its own pair, frames reassembled from messages exactly as the live loop does ([`crate::conn::Parked`]).
 fn parked(mut lg: TaskLog) -> ! {
-    emit(&mut lg, format_args!("[I915-KBL-DEV PARKED] every request is answered UNSUPPORTED (HELLO excepted); request ep {} reply ep {}", SERVICE_EP, REPLY_EP));
-    let mut buf = [0u8; REQUEST_BUF];
-    loop {
-        let n = recv(SERVICE_EP as u64, &mut buf);
-        // An ABI-1.1 frame (magic "I915"): the uAPI service is not wired to this endpoint yet (src/uapi is driven by its own tests), so
-        // every such request gets the named answer - Unsupported, reason INCREMENT-NOT-ENABLED - instead of the old protocol's BAD_VERSION.
-        if n >= 4 && n <= buf.len() as u64 && buf[..4] == *b"I915" {
-            let mut out = [0u8; 96];
-            if let Ok(len) = crate::uapi::frame::answer_without_service(&buf[..n as usize], &mut out) {
-                let _ = send(REPLY_EP as u64, &out[..len]);
-            }
-            continue;
-        }
-        match handle(n, &buf) {
-            Some(reply) => {
-                let _ = send(REPLY_EP as u64, &reply);
-            }
-            // nothing usable arrived: pace the loop with a timed wait on nothing instead of spinning
-            None => {
-                coralos_rt::wait_any_irq(0, 0, PACE_MS, 0);
-            }
-        }
-    }
+    emit(&mut lg, format_args!("[I915-KBL-DEV PARKED] every request is answered UNSUPPORTED (HELLO excepted); connect() sessions on LISTEN ep {}", SERVICE_EP));
+    let Some(mut p) = crate::conn::Parked::new(RtTransport::new(SERVICE_EP, None), lg) else {
+        write(b"[I915-KBL-DEV FAIL step=PARKED-BUFFERS why=LIVE-NOMEM]\n");
+        exit(exit_code::STARTUP_FAILED)
+    };
+    p.run();
+    exit(0)
 }
 
 #[cfg(feature = "p3-exec")]
@@ -210,14 +140,14 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
             exit(exit_code::UAPI_FAILED)
         }
     };
-    let mut live = match Live::new(RtTransport { irq: None }, NoRegions, a.svc, a.ex, a.gm, TaskLog) {
+    let mut live = match Live::new(RtTransport::new(SERVICE_EP, None), NoRegions, a.svc, a.ex, a.gm, TaskLog) {
         Ok(l) => l,
         Err(e) => {
             emit(&mut lg, format_args!("[I915-KBL-DEV FAIL step=LIVE-LOOP why={}]", e.name()));
             exit(exit_code::UAPI_FAILED)
         }
     };
-    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on request ep {} reply ep {}; blocks on request|deadline only (no engine interrupt armed); payload regions: unavailable", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP, REPLY_EP));
+    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {} (one connect() session per client); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: unavailable", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP));
     live.run();
     emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE END waits={}]", live.stats.waits));
     exit(0)

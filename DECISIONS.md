@@ -100,3 +100,25 @@ no `collect`, no `vec!` on a request path); exhaustion is a NAMED refusal (`GEM-
 exists, with nothing half-created. This is the justification PORT_CONVENTIONS section 7 asks for ("No `alloc` unless unavoidable and
 justified in a comment"); the comment sits at the top of the crate's `lib.rs`. What stays fixed is fixed by HARDWARE (engines on the part,
 context tags, fence registers) or by an ABI width, and says so where it is declared.
+
+**D11 — A `.device` serves clients over `connect()` sessions; a frame travels as messages that end where its header says (2026-10-13).**
+Two gaps on the path to iris, found by the CoralOS shim worker. (1) PER-CLIENT SESSIONS: a static request/reply endpoint pair cannot route a
+reply to the process that asked. `devices/i915` now RECVs connect announces on a LISTEN endpoint (`EP_I915_REQ` 65); a client's `connect()` mints
+it a private (request, event) pair from the kernel's dynamic pool and the device serves it as one connection (`src/conn`): at most one uAPI
+session per connection, naming another connection's incarnation is refused by name (`SESSION-NOT-ON-THIS-CONNECTION`), PEER_DEAD on a
+connection's request endpoint (or a send that finds it dead) is `session_dead` for that session only, and the pair is given back with
+SESSION_RELEASE. `coralos-rt` gains the minimal wrappers for SERVING a session, no new authority: `session_release(req, evt)` (system call 100,
+capability-checked by the kernel against the caller's recorded serving set) and `rt::session` (the announce `[0xC0, req, evt, client]` and tombstone
+`[0xDD, client]` layouts, restated from the kernel's `session_wire`, and the 128-endpoint wait-set words, which refuse an endpoint a shift would wrap
+onto another). `connect` was already there. The connection table grows with memory and a row is reserved BEFORE a connect is accepted: with no room
+the loop stops listening, so the kernel's listen ring fills and the kernel refuses the connect - a named refusal before a session exists
+(RUNTIME-TABLES-HAVE-NO-CAP, D10). The wait set is the listen endpoint plus every connection's request endpoint (kernel width: 128 endpoints).
+The kernel wakes the LOWEST ready endpoint first, so a client that keeps its ring full can delay higher-numbered ones; not addressed here.
+(2) FRAME REASSEMBLY: the kernel's message is 4096 bytes (`send` truncates), a ring holds 16 (a full ring drops the newest). `i915_wire::frag` is
+the ONE definition (MIT OR Apache-2.0, so the closed shim compiles the same code): a frame is cut into consecutive full messages, the last holding
+the remainder, and ends where its own header says; at most 15 messages = 61440 bytes (a larger call travels as a payload region). `split` is the
+sender, `Joiner` the receiver (three counters, no bytes, so each side keeps the frame in its own buffer: the device reserves exactly the header's
+declared length per connection, after the wire has bounded it). Refusals are named: `FRAG-FIRST-SHORT`, `FRAG-TOO-MANY-MESSAGES`,
+`FRAG-SHORT-FRAGMENT`, `FRAG-INTERLEAVED`, `FRAG-OVERLONG`, plus the wire's own header names; the request a half-received frame belonged to is
+answered. The kernel's tombstone is told from data only BETWEEN frames. The device's parked `service()` uses the same connections and the same
+reassembly (`conn::Parked`). Retired: the static reply endpoint 66 (`EP_I915_REPLY`) and the parked loop's 10 ms pace.
