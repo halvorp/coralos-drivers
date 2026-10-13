@@ -90,7 +90,6 @@ region and a request larger than a chunk; null on a refused first or later reser
 `Vec` under it as the global allocator. The CoralOS-side wrapper of `i915.device` must declare the same `#[global_allocator]` (as
 `devices/i915/src/main.rs` does). The mechanism is the ABI's `MMAP` only (no new call); the policy was written from the design
 idea, not copied from the proprietary tree.
-||||||| merged common ancestors
 
 **D10 — Core crates may use `alloc` for runtime-growing tables; fallible growth only; named refusal.** Owner ruling 2026-10-12: "if we are
 a real OS, there cannot be a hard cap" (doctrine RUNTIME-TABLES-HAVE-NO-CAP). A table that tracks a runtime-growing population
