@@ -20,6 +20,12 @@ pub trait TransIo {
     fn prph_read(&mut self, addr: u32) -> u32;
     /// `iwl_write_prph`.
     fn prph_write(&mut self, addr: u32, val: u32);
+    /// `iwl_read_prph_no_grab` = `iwl_trans_read_prph` (`iwl_trans_pcie_read_prph`): the indirect read WITHOUT a
+    /// MAC_ACCESS_REQ handshake. For callers that either already hold the grab or run before the MAC is up
+    /// (INIT_DONE not yet set), where a grab would time out. // iwl-io.c:111-116; trans.c:1889-1896
+    fn prph_read_no_grab(&mut self, addr: u32) -> u32;
+    /// `iwl_write_prph_no_grab`. // iwl-io.c:118-122; trans.c:1898-1905
+    fn prph_write_no_grab(&mut self, addr: u32, val: u32);
     /// `udelay` / `usleep_range(us, …)` / `msleep`: at least `us` microseconds.
     fn sleep_us(&mut self, us: u32);
 }

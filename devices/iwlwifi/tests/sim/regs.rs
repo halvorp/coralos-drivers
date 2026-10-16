@@ -88,6 +88,13 @@ fn is_fh(off: u32) -> bool {
     (0x1000..0x2000).contains(&off)
 }
 
+/// HPM_DEBUG (0xA03440) and PREG_PRPH_WPROT_9000 (0xA04CE0) are WFPM registers Linux touches with the `_no_grab`
+/// accessors BEFORE INIT_DONE, with the MAC asleep (`iwl_trans_pcie_clear_persistence_bit`, trans.c:1749-1759).
+/// The sim lets exactly those through; every other periphery access needs the MAC awake.
+fn wfpm_without_mac(a: u32) -> bool {
+    matches!(a & 0xfffff, 0x3440 | 0x4CE0)
+}
+
 pub fn read32(w: &mut World, off: u32) -> u32 {
     if is_fh(off) && !(0x1c80..0x1d00).contains(&off) && !w.awake() {
         w.violation(format!("FH read {off:#x} without MAC access"));
@@ -112,7 +119,7 @@ pub fn read32(w: &mut World, off: u32) -> u32 {
         }
         CSR_RESET => *w.csr.get(&CSR_RESET).unwrap_or(&0),
         HBUS_TARG_PRPH_RDAT => {
-            if !w.awake() {
+            if !w.awake() && !wfpm_without_mac(w.prph_raddr) {
                 w.violation(format!("PRPH read {:#x} without MAC access", w.prph_raddr));
             }
             let a = w.prph_raddr;
@@ -178,7 +185,7 @@ pub fn write32(w: &mut World, off: u32, val: u32) {
         HBUS_TARG_PRPH_WADDR => w.prph_waddr = val & 0xfffff,
         HBUS_TARG_PRPH_RADDR => w.prph_raddr = val & 0xfffff,
         HBUS_TARG_PRPH_WDAT => {
-            if !w.awake() {
+            if !w.awake() && !wfpm_without_mac(w.prph_waddr) {
                 w.violation(format!("PRPH write {:#x} <- {val:#x} without MAC access", w.prph_waddr));
             }
             let a = w.prph_waddr;

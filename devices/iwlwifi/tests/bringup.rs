@@ -424,3 +424,20 @@ fn no_nic_access_is_requested_before_init_done_and_the_silicon_gp_cntrl_never_ap
     assert_eq!(fault, None);
     no_violations(&sim);
 }
+
+/// The wrapper narrows BAR0 to `BAR0_WRITE_RANGES`; a refused write would silently leave the card in a half-programmed state.
+/// Every BAR0 write the whole bring-up makes must fall inside the allow-list (`devices/iwlwifi/src/rt.rs`, which the
+/// driver notes called unverified: this is the verification, against the sim's record of every write).
+#[test]
+fn every_bar0_write_of_a_full_bring_up_is_inside_the_write_allow_list() {
+    use iwlwifi_device::rt::BAR0_WRITE_RANGES;
+    let (sim, _d, _) = up();
+    let outside: Vec<_> = sim
+        .w()
+        .writes
+        .iter()
+        .filter(|(_, kind, off, _)| *kind != "prph" && !BAR0_WRITE_RANGES.iter().any(|(o, l)| *off >= *o && *off < *o + *l))
+        .cloned()
+        .collect();
+    assert_eq!(outside, vec![], "BAR0 writes the allow-list would refuse");
+}

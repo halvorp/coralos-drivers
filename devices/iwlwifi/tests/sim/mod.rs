@@ -253,9 +253,9 @@ impl World {
         }
     }
 
-    /// Whether the MAC is awake: MAC_ACCESS_REQ held (and the clock running).
+    /// Whether the MAC is awake: MAC_ACCESS_REQ held AND the clock running (INIT_DONE, not wedged).
     pub fn awake(&self) -> bool {
-        self.gp_cntrl & regs::GP_MAC_ACCESS_REQ != 0
+        self.gp_cntrl & regs::GP_MAC_ACCESS_REQ != 0 && self.gp_cntrl & regs::GP_INIT_DONE != 0 && !self.wedge_mac_access
     }
 }
 
