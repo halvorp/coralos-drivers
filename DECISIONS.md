@@ -179,3 +179,9 @@ descriptors have byte and halfword registers; a narrow write inside an allowed d
 pipeline latency from host DMA to the pin is reported as UNMEASURED (`u32::MAX`), never guessed; the audio clock is the host stream's `LPIB`, not
 submitted bytes. UNVERIFIED ON SILICON (named, not claimed): the SSP/codec clock order (the codec is powered up AFTER the pipelines run, because the SRM PLL
 locks to the word clock), MSI vs INTx for the cAVS line, the I2C controller's fast-mode counts, the pad community window layout, `GPP_F10`'s interrupt route.
+
+**D16 — the avs.device endpoint numbers are the CoralOS registry's: 70..=74 (2026-10-16).**
+The five numbers of `devices/avs/src/wire.rs` were proposed as 67..=71 (D14). The CoralOS registry gave the static endpoints below 70 to other services before the audio
+integration landed (the touchpad-prefs batch, matrix.connector, messages.service's reader lane, and storage's vault compartment: `EP_FS_VAULT` = 69), so the device carries
+`AVS_LISTEN` 70, `AVS_FW_REQ` 71, `AVS_FW_REPLY` 72, `AVS_JACK` 73, `AVS_JACK_ACK` 74 and the registry's dynamic base is 75. Nothing else changes: the device reads them only
+in `rt`, and the wait mask already covers endpoints above 63. A later registry reshuffle renumbers this file again, in the same change that moves the loader's grants.
