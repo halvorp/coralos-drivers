@@ -77,6 +77,29 @@ fn add_sta_for_the_aux_station_matches_the_v10_layout() {
 }
 
 #[test]
+fn mac_context_add_for_an_unassociated_station_is_148_bytes() {
+    let mut b = [0xaau8; 160];
+    let mac = [0x12, 0x22, 0x33, 0x44, 0x55, 0x66];
+    assert_eq!(encode_mac_ctxt_sta_add(0, mac, &mut b), Ok(148));
+    // struct iwl_mac_ctx_cmd (fw/api/mac.h), offsets counted from the struct, expected values from the Linux enums:
+    let mut want = [0u8; 148];
+    want[4] = 1; // action = FW_CTXT_ACTION_ADD
+    want[8] = 5; // mac_type = FW_MAC_TYPE_BSS_STA (FIRST=AUX=1, LISTENER, PIBSS, IBSS, BSS_STA)
+    // tsf_id TSF_ID_A = 0 ; id_and_color = id 0 | color 0
+    want[16..22].copy_from_slice(&mac); // node_addr ; bssid_addr@24 stays zero
+    want[32] = 0x0f; // cck_rates: 1,2,5.5,11 (IWL_RATE_*_INDEX 0..3)
+    want[36] = 0x15; // ofdm_rates: 6 (bit 0), 12 (bit 2), 24 (bit 4) of IWL_FIRST_OFDM_RATE = 4
+    want[52] = 0x44; // filter_flags = ACCEPT_GRP BIT(2) | IN_BEACON BIT(6)
+    want[132] = 10; // listen_interval = IWL_MVM_CONN_LISTEN_INTERVAL
+    assert_eq!(&b[..148], &want[..]);
+    assert_eq!(b[148], 0xaa);
+    // another id lands in id_and_color's low byte
+    encode_mac_ctxt_sta_add(2, mac, &mut b).unwrap();
+    assert_eq!(b[0], 2);
+    assert_eq!(encode_mac_ctxt_sta_add(0, mac, &mut [0u8; 147]), Err(EncodeError::BufferTooSmall { need: 148, have: 147 }));
+}
+
+#[test]
 fn phy_db_header_and_buffer_refusal() {
     assert_eq!(encode_phy_db_hdr(4, 0x0123), [4, 0, 0x23, 0x01]);
     let mut small = [0u8; 3];
@@ -93,4 +116,6 @@ fn id_constants_are_pinned_by_value() {
     assert_eq!((ADD_STA, SCD_QUEUE_CFG, FW_PAGING_BLOCK_CMD), (0x18, 0x1d, 0x4f));
     assert_eq!((CALIB_RES_NOTIF_PHY_DB, PHY_DB_CMD, POWER_TABLE_CMD, BT_CONFIG, MCC_UPDATE_CMD, REPLY_RX_MPDU_CMD), (0x6b, 0x6c, 0x77, 0x9b, 0xc8, 0xc1));
     assert_eq!((DQA_ENABLE_CMD, SOC_CONFIGURATION_CMD, TEMP_REPORTING_THRESHOLDS_CMD), (0, 1, 4));
+    assert_eq!((MAC_CONTEXT_CMD, FW_CTXT_ACTION_ADD, FW_MAC_TYPE_BSS_STA, TSF_ID_A), (0x28, 1, 5, 0)); // commands.h:208, context.h:42, mac.h:64-86
+    assert_eq!((MAC_FILTER_ACCEPT_GRP, MAC_FILTER_IN_BEACON, MAC_CTX_CMD_LEN, IWL_MVM_CONN_LISTEN_INTERVAL), (4, 0x40, 148, 10));
 }

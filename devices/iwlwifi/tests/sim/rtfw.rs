@@ -86,6 +86,8 @@ pub struct RtFw {
     pub power_done: bool,
     pub mcc_done: bool,
     pub scan_cfg: Option<Vec<u8>>,
+    /// The MAC context the host added (its id). A scan names one in `scan_start_mac_id`; without one the firmware asserts.
+    pub mac_ctxt: Option<u8>,
     pub running_uid: Option<u32>,
     pub scans: Vec<Vec<u8>>,
     pub aborts: Vec<u32>,
@@ -124,6 +126,7 @@ impl RtFw {
             power_done: false,
             mcc_done: false,
             scan_cfg: None,
+            mac_ctxt: None,
             running_uid: None,
             scans: vec![],
             aborts: vec![],
@@ -149,6 +152,7 @@ impl RtFw {
         self.power_done = false;
         self.mcc_done = false;
         self.scan_cfg = None;
+        self.mac_ctxt = None;
         self.running_uid = None;
     }
 
@@ -211,6 +215,8 @@ struct Out {
     posts: Vec<(u64, u8, u8, u16, Vec<u8>)>,
     /// The scan whose completion frees its id when it is posted.
     complete_uid: Option<u32>,
+    /// The firmware asserted: nothing is answered.
+    asserted: bool,
 }
 
 impl Out {
@@ -228,7 +234,7 @@ fn want_len(o: &mut Out, c: &SeenCmd, n: usize, what: &str) -> bool {
 
 /// One host command to the RT image. Replies are scheduled here; violations are recorded.
 pub fn handle(w: &mut World, c: &SeenCmd) {
-    let mut o = Out { viol: vec![], posts: vec![], complete_uid: None };
+    let mut o = Out { viol: vec![], posts: vec![], complete_uid: None, asserted: false };
     let mut reply: Vec<u8> = vec![];
     let key = (c.group, c.cmd);
     w.fw.rt.cmd_log.push(format!("{}.{:#x}", c.group, c.cmd));
@@ -337,6 +343,24 @@ pub fn handle(w: &mut World, c: &SeenCmd) {
             w.fw.rt.mcc_done = true;
             reply = mcc_resp(&w.fw.rt);
         }
+        (0, 0x28) => {
+            // iwl_mvm_mac_ctxt_add for an unassociated station (mvm/mac-ctxt.c iwl_mvm_mac_ctxt_cmd_sta), after iwl_mvm_up
+            if want_len(&mut o, c, 148, "MAC_CONTEXT_CMD") {
+                let p = &c.payload;
+                let mut want = [0u8; 148];
+                want[4] = 1; // ADD
+                want[8] = 5; // BSS_STA
+                want[16..22].copy_from_slice(&w.fw.rt.mac);
+                want[32] = 0x0f;
+                want[36] = 0x15;
+                want[52] = 0x44;
+                want[132] = 10;
+                o.need(p[..] == want[..], || format!("MAC_CONTEXT_CMD is not the unassociated-station ADD: {:02x?}", p));
+                o.need(w.fw.rt.mac_ctxt.is_none(), || "MAC_CONTEXT_CMD ADD of a MAC that is already active".into());
+                w.fw.rt.mac_ctxt = Some(p[0]);
+            }
+            o.need(w.fw.rt.scan_cfg.is_some(), || "MAC_CONTEXT_CMD before iwl_mvm_up finished (SCAN_CFG_CMD)".into());
+        }
         (1, 0x0c) => scan_cfg(w, c, &mut o),
         (1, 0x0d) => scan_req(w, c, &mut o),
         (1, 0x0e) => {
@@ -348,7 +372,9 @@ pub fn handle(w: &mut World, c: &SeenCmd) {
         _ => o.viol.push(format!("RT firmware: unexpected command {}.{:#x} ({} bytes)", c.group, c.cmd, c.payload.len())),
     }
     // the reply (every host command is answered with its sequence number)
-    o.posts.push((80, c.group, c.cmd, c.seq, reply));
+    if !o.asserted {
+        o.posts.push((80, c.group, c.cmd, c.seq, reply));
+    }
     if w.fw.rt.chatter && key == (0, 0x98) {
         // an unsolicited notification the driver has no use for, between its replies
         w.fw.notif_counter += 1;
@@ -357,6 +383,9 @@ pub fn handle(w: &mut World, c: &SeenCmd) {
     }
     for v in o.viol {
         w.violation(v);
+    }
+    if o.asserted {
+        return;
     }
     for (d, g, cmd, seq, p) in o.posts {
         if g == 0 && cmd == 0x0f {
@@ -453,6 +482,22 @@ fn scan_req(w: &mut World, c: &SeenCmd, o: &mut Out) {
     }
     let p = &c.payload;
     let uid = le32(p, 4);
+    // scan_start_mac_id names the MAC context the scan runs for (mvm/scan.c:2330). With none added, or a different id, the
+    // firmware dereferences a context that does not exist and asserts (struct iwl_error_event_table at the ALIVE's pointer).
+    if w.fw.rt.mac_ctxt != Some(p[15]) {
+        o.viol.push(format!("SCAN_REQ_UMAC names MAC context {} but the host added {:?}: the firmware asserts", p[15], w.fw.rt.mac_ctxt));
+        let mut t = vec![0u32; 38];
+        t[0] = 1;
+        t[1] = 0x35; // SYSASSERT
+        t[20] = 0x0040_cafe;
+        t[23] = 0x0d; // hcmd = SCAN_REQ_UMAC
+        let bytes: Vec<u8> = t.iter().flat_map(|v| v.to_le_bytes()).collect();
+        w.sram_write(0x0080_0100, &bytes);
+        w.fw.state = fm::FwState::Dead;
+        w.raise(super::regs::INT_SW_ERR);
+        o.asserted = true;
+        return;
+    }
     o.need(w.fw.rt.running_uid != Some(uid), || format!("SCAN_REQ_UMAC reuses the running scan id {uid}"));
     o.need(le32(p, 0) == 0, || format!("SCAN_REQ_UMAC flags {:#x}: a regular scan is not preemptive", le32(p, 0)));
     o.need(le32(p, 8) == 6, || "SCAN_REQ_UMAC ooc_priority is not IWL_SCAN_PRIORITY_EXT_6".into());

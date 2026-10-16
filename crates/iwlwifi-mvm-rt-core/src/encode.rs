@@ -131,3 +131,30 @@ pub fn encode_phy_db_hdr(ty: u16, length: u16) -> [u8; 4] {
     let l = length.to_le_bytes();
     [t[0], t[1], l[0], l[1]]
 }
+
+/// `iwl_mvm_mac_ctxt_add` -> `iwl_mvm_mac_ctxt_cmd_sta` for the first station interface, UNASSOCIATED: `struct iwl_mac_ctx_cmd`
+/// with `id_and_color = FW_CMD_ID_AND_COLOR(mac_id, 0)`, `action = ADD`, `mac_type = BSS_STA`, TSF A, the node address, a zero
+/// BSSID (mac80211 points `bss_conf.bssid` at the all-zero `u.mgd.bssid` until it associates), the ACK rates of a station
+/// with no basic rates (`iwl_mvm_ack_rates` on the 2.4 GHz band: no PHY context yet), no protection, long preamble and
+/// slot, `filter_flags = ACCEPT_GRP | IN_BEACON` (beacons pass while not associated), zero QoS (mac80211 sets the EDCA
+/// parameters only after the add and the firmware gets them with BSS_CHANGED_QOS, which an unassociated station never sees),
+/// and the station data: `is_assoc 0`, `bi 0`, `dtim_interval 0`, `listen_interval = 10`, `assoc_id 0`.
+/// // mvm/mac80211.c:1687-1760 (iwl_mvm_mac_add_interface); mvm/mac-ctxt.c (iwl_mvm_mac_ctxt_add, iwl_mvm_mac_ctxt_cmd_sta,
+/// // iwl_mvm_mac_ctxt_cmd_common, iwl_mvm_mac_ctxt_init, iwl_mvm_ack_rates); mvm/mac80211.c (iwl_mvm_mac_conf_tx: no command)
+pub fn encode_mac_ctxt_sta_add(mac_id: u8, node_addr: [u8; 6], buf: &mut [u8]) -> Result<usize, EncodeError> {
+    check(buf, MAC_CTX_CMD_LEN)?;
+    // layout: id_and_color@0 action@4 mac_type@8 tsf_id@12 node_addr@16 (+2) bssid_addr@24 (+2) cck_rates@32 ofdm_rates@36
+    // protection_flags@40 cck_short_preamble@44 short_slot@48 filter_flags@52 qos_flags@56 ac[5]@60 then the station data
+    // @100: is_assoc dtim_time dtim_tsf(8) bi reserved1 dtim_interval data_policy listen_interval@132 assoc_id
+    // assoc_beacon_arrive_time@140, p2p ctwin@144.
+    put32(buf, 0, mac_id as u32); // FW_CMD_ID_AND_COLOR(id, color 0)
+    put32(buf, 4, FW_CTXT_ACTION_ADD);
+    put32(buf, 8, FW_MAC_TYPE_BSS_STA);
+    put32(buf, 12, TSF_ID_A);
+    buf[16..22].copy_from_slice(&node_addr);
+    put32(buf, 32, ACK_RATES_CCK_NO_BASIC);
+    put32(buf, 36, ACK_RATES_OFDM_NO_BASIC);
+    put32(buf, 52, MAC_FILTER_ACCEPT_GRP | MAC_FILTER_IN_BEACON);
+    put32(buf, 132, IWL_MVM_CONN_LISTEN_INTERVAL);
+    Ok(MAC_CTX_CMD_LEN)
+}

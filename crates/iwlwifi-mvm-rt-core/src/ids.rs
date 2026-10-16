@@ -30,6 +30,8 @@ pub const SCAN_ABORT_UMAC: u8 = 0xe;
 pub const SCAN_COMPLETE_UMAC: u8 = 0xf;
 /// `SCAN_ITERATION_COMPLETE_UMAC`. // fw/api/commands.h:99
 pub const SCAN_ITERATION_COMPLETE_UMAC: u8 = 0xb5;
+/// `MAC_CONTEXT_CMD`. // fw/api/commands.h:208
+pub const MAC_CONTEXT_CMD: u8 = 0x28;
 /// `ADD_STA`. // fw/api/commands.h:140
 pub const ADD_STA: u8 = 0x18;
 /// `SCD_QUEUE_CFG`. // fw/api/commands.h:174
@@ -236,3 +238,24 @@ pub const IWL_RX_MPDU_STATUS_OVERRUN_OK: u32 = 1 << 1;
 pub const IWL_RX_MPDU_MFLG1_MIC_CRC_LEN_MASK: u8 = 0xf0;
 /// `IWL_RX_MPDU_MFLG2_PAD`. // fw/api/rx.h:187
 pub const IWL_RX_MPDU_MFLG2_PAD: u8 = 0x20;
+
+// ---- MAC context (iwl_mvm_mac_ctxt_add for an unassociated station) ----------------------------------------------
+/// `FW_CTXT_ACTION_ADD`. // fw/api/context.h:42 (INVALID = 0, ADD = 1)
+pub const FW_CTXT_ACTION_ADD: u32 = 1;
+/// `FW_MAC_TYPE_BSS_STA`: FIRST = AUX = 1, LISTENER 2, PIBSS 3, IBSS 4, BSS_STA 5. // fw/api/mac.h:64-69
+pub const FW_MAC_TYPE_BSS_STA: u32 = 5;
+/// `TSF_ID_A`. // fw/api/mac.h:86
+pub const TSF_ID_A: u32 = 0;
+/// `MAC_FILTER_ACCEPT_GRP`. // fw/api/mac.h:242
+pub const MAC_FILTER_ACCEPT_GRP: u32 = 1 << 2;
+/// `MAC_FILTER_IN_BEACON`. // fw/api/mac.h:245
+pub const MAC_FILTER_IN_BEACON: u32 = 1 << 6;
+/// `sizeof(struct iwl_mac_ctx_cmd)`: 100 bytes of common data and QoS (`AC_NUM + 1` = 5 `iwl_ac_qos` of 8) then the union,
+/// whose largest member is `struct iwl_mac_data_p2p_sta` (44 + 4 = 48). // fw/api/mac.h (struct iwl_mac_ctx_cmd)
+pub const MAC_CTX_CMD_LEN: usize = 148;
+/// `IWL_MVM_CONN_LISTEN_INTERVAL`: mac80211's `hw.conf.listen_interval` is `hw->max_listen_interval`. // mvm/constants.h:62; mvm/mac80211.c:565
+pub const IWL_MVM_CONN_LISTEN_INTERVAL: u32 = 10;
+/// The ACK-rate bitmaps `iwl_mvm_ack_rates` yields with no basic rates set (an unassociated station): CCK 1/2/5.5/11 and
+/// OFDM 6/12/24. // mvm/mac-ctxt.c (iwl_mvm_ack_rates); fw/api/rs.h:367-407
+pub const ACK_RATES_CCK_NO_BASIC: u32 = 0xF;
+pub const ACK_RATES_OFDM_NO_BASIC: u32 = 0x15;
