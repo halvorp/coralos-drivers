@@ -41,6 +41,8 @@ pub enum SpkFail {
     Plan(PlanError),
     /// The reset line could not be released and read back high.
     Release,
+    /// Enabling was asked for before the protection set was written and read back: refused here, whatever the caller meant.
+    NotProtected,
     /// The reset line could not be driven low and read back low.
     Hold,
     /// The stream's interrupt service, run between steps of a long sequence, failed.
@@ -63,6 +65,7 @@ impl SpkFail {
             SpkFail::Step { label, .. } => label,
             SpkFail::Plan(e) => e.name(),
             SpkFail::Release => "speaker-reset-release",
+            SpkFail::NotProtected => "speaker-not-protected",
             SpkFail::Hold => "speaker-hold",
             SpkFail::Stream(e) => e.name(),
             SpkFail::OutOfMemory => "speaker-out-of-memory",
@@ -242,7 +245,7 @@ impl Speakers {
     pub fn power_up<M: Machine>(&mut self, rig: &mut Rig<M>, tick: Tick<'_, M>) -> Result<(), SpkFail> {
         if !self.protected {
             // unreachable from the device (it orders the calls); refused here too, so no caller can enable an unprotected part
-            return Err(SpkFail::Plan(PlanError::Ctl { ctl: "power-up-before-protection", why: max98373_core::ctl::CtlError::Unknown }));
+            return Err(SpkFail::NotProtected);
         }
         for amp in self.amps {
             let p = plan::power_up().map_err(SpkFail::Plan)?;

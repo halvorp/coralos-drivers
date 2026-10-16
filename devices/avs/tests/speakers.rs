@@ -13,6 +13,7 @@ use max98373_core::gain::{CEILING_LINEAR, LEVEL_MAX};
 use sim::dsp::Act;
 use sim::harness::*;
 use sim::ucm_image::{DEVICE_IMAGE, VERB_IMAGE};
+use sim::world::atlas_board;
 use sim::Sim;
 use std::collections::BTreeMap;
 
@@ -703,4 +704,21 @@ fn without_the_pad_grant_there_is_no_speaker_path() {
     let (s, _, _) = call(&mut dev, &mut c, Opcode::StreamOpen, &s16_open_route(Route::Speakers));
     assert_eq!(s, Status::SpeakerProtectionUnavailable);
     assert_eq!(dev.rig.m.amp_touches(), 0);
+}
+
+#[test]
+fn a_part_whose_protection_was_not_proven_cannot_be_enabled_by_any_caller() {
+    use avs_device::allow::{Allow, PadAllow};
+    use avs_device::rig::Rig;
+    use avs_device::speakers::{Speakers, SpkFail};
+    let Some(sim) = atlas_with_speakers() else { return };
+    let board = atlas_board();
+    let mut rig = Rig::new(sim, Allow::read_only(), I2cAllow::new(0x1a, &[RIGHT, LEFT]).unwrap(), PadAllow::none());
+    let mut spk = Speakers::for_board(&[RIGHT, LEFT], board.spkr_rst_pad).unwrap().expect("the Pixelbook Go's amplifiers");
+    // never begun: no bus traffic, no enable
+    assert_eq!(spk.power_up(&mut rig, &mut |_| Ok(())), Err(SpkFail::NotProtected));
+    assert_eq!(rig.m.amp_touches(), 0);
+    // a board that lists other amplifiers has no speakers at all
+    assert!(Speakers::for_board(&[0x34, 0x35], board.spkr_rst_pad).unwrap().is_none());
+    assert!(Speakers::for_board(&[RIGHT], board.spkr_rst_pad).unwrap().is_none());
 }
