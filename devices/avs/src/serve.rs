@@ -5,14 +5,15 @@
 //! One stream at a time (a second OPEN is STREAM-BUSY, never queued behind the first); the format is the one the topology offers
 //! (S16 / 48 kHz / stereo, everything else FORMAT-REFUSED so Aura converts); PCM is written inline and accepted in whole frames up to the
 //! queue's room (a short write, never a block); the region form of PCM is defined and refused by name until the kernel can map a client
-//! region; the SPEAKER route is refused by name with SPEAKER-PROTECTION-UNAVAILABLE and touches nothing.
+//! region; the SPEAKER route is served only as the protected path (DECISIONS D17) and is refused by name - SPEAKER-PROTECTION-UNAVAILABLE, or
+//! FIRMWARE-UNAVAILABLE naming the topology - when the board cannot offer it, touching no hardware.
 use crate::codec::dac_code_for;
 use crate::device::{Device, Stream};
 use crate::machine::{Machine, Recv};
 use crate::session::{self, FORMAT, PERIODS, PERIOD_FRAMES};
 use crate::stream::FIFO_PERIODS;
 use avs_wire::msg::{self, Caps, Format, HelloReply, Open, OpenReply, OpenRing, PcmReply, PcmWrite, PhaseReply, SetVolume, StreamRef, Subscribe, VolumeReply, LATENCY_UNMEASURED, MAX_CAPS_FORMATS};
-use avs_wire::{Header, Opcode, Route, Status, MAX_FRAME_BYTES};
+use avs_wire::{Header, Opcode, Output, Route, Status, MAX_FRAME_BYTES};
 
 impl<M: Machine> Device<M> {
     fn reply(&mut self, op: Opcode, id: u64, status: Status, body: &[u8]) {
@@ -116,8 +117,8 @@ impl<M: Machine> Device<M> {
     fn on_open(&mut self, id: u64, payload: &[u8]) {
         let op = Opcode::StreamOpen;
         let Ok(o) = Open::decode(payload) else { return self.reply(op, id, Status::Malformed, &[]) };
-        if o.route == Route::Speakers {
-            // refused before anything else is looked at, and nothing is touched: the speakers are not served in any state
+        if o.route == Route::Speakers && !self.speakers_on_board() {
+            // a board this port has no speaker record for: refused before anything else is looked at, and nothing is touched
             return self.reply(op, id, Status::SpeakerProtectionUnavailable, &[]);
         }
         if o.format != FORMAT || (o.period_frames != 0 && o.period_frames != PERIOD_FRAMES) {
@@ -131,10 +132,15 @@ impl<M: Machine> Device<M> {
             let st = self.cause_status();
             return self.reply(op, id, if st == Status::Ok { Status::InitFailed } else { st }, &[]);
         }
+        if o.route == Route::Speakers && !self.speaker_ready() {
+            // the board has the amplifiers but the path is not offered: the topology file says why, else the protection (the reset line)
+            let st = if self.speaker_fw_fail.is_some() { Status::FirmwareUnavailable } else { Status::SpeakerProtectionUnavailable };
+            return self.reply(op, id, st, &[]);
+        }
         let Some(fifo) = Self::new_fifo() else { return self.reply(op, id, Status::NoMemory, &[]) };
         let sid = self.next_stream;
         self.next_stream = self.next_stream.wrapping_add(1).max(1);
-        self.stream = Some(Stream { id: sid, fifo, want_running: false, played_base: 0, consumed_base: 0, underruns_base: 0 });
+        self.stream = Some(Stream { id: sid, route: o.route, fifo, want_running: false, played_base: 0, consumed_base: 0, underruns_base: 0 });
         self.publish();
         let r = OpenReply { stream: sid, period_frames: PERIOD_FRAMES, periods: PERIODS, fifo_bytes: session::RING_BYTES * FIFO_PERIODS };
         let mut body = [0u8; 32];
@@ -186,8 +192,9 @@ impl<M: Machine> Device<M> {
             let st = self.cause_status();
             return self.phase_reply(op, id, if st == Status::Ok { Status::InitFailed } else { st });
         }
-        if self.jack == avs_wire::Jack::Absent {
-            // accepted, and held: the stream runs the moment headphones are in. The cause says why it is not running.
+        if self.desired_output().is_none() {
+            // accepted, and held: the stream runs the moment there is somewhere for it to play (headphones in, or the speakers offered).
+            // The cause says why it is not running.
             return self.phase_reply(op, id, Status::Ok);
         }
         match self.start_session() {
@@ -229,7 +236,20 @@ impl<M: Machine> Device<M> {
         let Ok(v) = SetVolume::decode(payload) else { return self.reply(op, id, Status::Malformed, &[]) };
         self.level = Some(v.level);
         self.mute = v.mute;
-        let applied = if self.dsp.is_some() {
+        // the path the level means something on: the one that is running, else the one that would
+        let out = self.dsp.as_ref().map(|d| d.out).or_else(|| self.desired_output()).unwrap_or(Output::Headphones);
+        let applied = if out == Output::Speakers {
+            // the DSP's volume stage, under the hard ceiling: `speaker_gain_for` is the only place a speaker gain is derived
+            let gain = session::speaker_gain_for(Some(v.level), v.mute);
+            if let Some(dsp) = self.dsp.as_mut() {
+                if let Err(e) = session::set_speaker_gain(&mut self.rig, dsp, gain) {
+                    // a volume change that cannot be applied leaves the output at an unknown gain: the safe state
+                    self.fault(e.name(), 0);
+                    return self.reply(op, id, Status::VolumeRefused, &[]);
+                }
+            }
+            crate::codec::Applied { dac_code: max98373_core::gain::steps_below(v.level) as u8, hp_code: 0, muted: gain == 0 }
+        } else if self.dsp.is_some() {
             let Some(c) = self.codec.as_mut() else { return self.reply(op, id, Status::InitFailed, &[]) };
             match c.set_level(&mut self.rig, v.level, v.mute) {
                 Ok(a) => a,
@@ -253,4 +273,3 @@ impl<M: Machine> Device<M> {
         self.reply(op, id, Status::Ok, &body[..n]);
     }
 }
-

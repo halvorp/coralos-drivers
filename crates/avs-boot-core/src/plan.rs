@@ -20,6 +20,11 @@ use avs_topology_core::model::{Binding, Module, Path, Pipeline};
 use avs_topology_core::nhlt::NhltError;
 use avs_topology_core::topology::{ModuleKind, Topology};
 
+/// The copier "gateway type" the upstream AVS topologies give a copier that has no gateway (`CprDMAType 0xFFFFFFFF`, avs-topology-xml@221e4a6
+/// `i2s/max98373-tplg.xml`, ModuleConfigExt id 2). It is not an enumerator of `enum avs_dma_type` (messages.h:745-753); Linux's
+/// `avs_nhlt_config_or_default` and `avs_init_node_id` fall through to their defaults for it.
+pub const AVS_DMA_NO_GATEWAY: u32 = 0xFFFF_FFFF;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlanError {
     /// No widget of that name in the topology.
@@ -42,8 +47,15 @@ pub enum PlanError {
     ModuleKindNotSupported { kind: ModuleKind },
     /// A module that carries initial configs (`avs_path_module_send_init_configs`, path.c:839-864): not needed for headphones.
     InitConfigsNotSupported,
-    /// A back end on one of the board's speaker SSPs. THE SPEAKER AMPLIFIERS ARE NEVER PLANNED.
+    /// A back end on one of the board's speaker SSPs, asked for as a headphone path. A speaker path is planned only when the caller names
+    /// the protected speaker ceiling ([`PlaybackSel::speaker_ceiling`], DECISIONS D17).
     SpeakerPathRefused { ssp_instance: u32 },
+    /// The protected speaker path's back end is on an SSP the board does not list as an amplifier link.
+    NotASpeakerSsp { ssp_instance: u32 },
+    /// The protected speaker path holds no peakvol module, so nothing in the DSP could enforce its ceiling.
+    SpeakerPathWithoutVolume,
+    /// The speaker ceiling the caller named is zero or above unity.
+    SpeakerCeilingInvalid { ceiling: u32 },
     /// An I2S gateway on an SSP other than the one the playback path is for.
     SspInstanceNotAllowed { found: u32, wanted: u32 },
     /// A copier gateway type a playback path may not hold (capture, DMIC, HDA link).
@@ -214,6 +226,7 @@ struct Ctx<'a, 'b> {
     mods: &'a ModulesInfo<'a>,
     ssp: u32,
     speaker_ssp: &'a [u32],
+    speaker_ceiling: Option<u32>,
     dma_id: u32,
 }
 
@@ -275,13 +288,19 @@ fn module(c: &Ctx<'_, '_>, role: Role, p: &Pipeline, ppl: u8, m: &Module, al: &m
                 (Role::FrontEnd, AVS_DMA_HDA_HOST_OUTPUT) => {}
                 (Role::BackEnd, AVS_DMA_I2S_LINK_OUTPUT) => {
                     let inst = (ext.copier.vindex >> 4) as u32;
-                    if c.speaker_ssp.contains(&inst) {
+                    if c.speaker_ceiling.is_none() && c.speaker_ssp.contains(&inst) {
                         return Err(PlanError::SpeakerPathRefused { ssp_instance: inst });
+                    }
+                    if c.speaker_ceiling.is_some() && !c.speaker_ssp.contains(&inst) {
+                        return Err(PlanError::NotASpeakerSsp { ssp_instance: inst });
                     }
                     if inst != c.ssp {
                         return Err(PlanError::SspInstanceNotAllowed { found: inst, wanted: c.ssp });
                     }
                 }
+                // the front end's closing copier: no gateway of its own, it hands the stream to the back end's link copier. Linux treats every
+                // type it does not list as gateway-less (a default blob, path.c:271-276 / an invalid node id, :268-269).
+                (Role::FrontEnd, AVS_DMA_NO_GATEWAY) => {}
                 (Role::FrontEnd, AVS_DMA_I2S_LINK_OUTPUT) | (Role::BackEnd, AVS_DMA_HDA_HOST_OUTPUT) => {
                     return Err(PlanError::WrongGatewayForRole { dma_type: dt, role: if role == Role::FrontEnd { "front end" } else { "back end" } });
                 }
@@ -299,10 +318,15 @@ fn module(c: &Ctx<'_, '_>, role: Role, p: &Pipeline, ppl: u8, m: &Module, al: &m
         }
         ModuleKind::Peakvol => {
             let declared = ext.peakvol.target_volume;
-            if declared == 0 || declared > VOLUME_UNITY {
+            if declared > VOLUME_UNITY || (declared == 0 && c.speaker_ceiling.is_none()) {
                 return Err(PlanError::PeakvolCeilingUnset { module_id: entry.module_id, declared });
             }
-            ceiling = Some(declared);
+            // the speaker path: the caller's ceiling, lowered (never raised) by what the topology declares
+            ceiling = Some(match c.speaker_ceiling {
+                Some(cap) if declared == 0 => cap,
+                Some(cap) => declared.min(cap),
+                None => declared,
+            });
             let base = ipc_base(c.topo, m, &in_fmt)?;
             // initialised SILENT (Linux: S32_MAX, path.c:589-593); the user volume is set below the ceiling afterwards
             let vol = VolumeCfg { channel_id: AVS_ALL_CHANNELS_MASK, target_volume: 0, curve_type: ext.peakvol.curve_type, curve_duration: ext.peakvol.curve_duration as u64 };
@@ -373,11 +397,19 @@ pub fn plan_playback(sel: &PlaybackSel<'_>, dma_id: u32, topo: &Topology<'_>, nh
     }
     let mut plan = PathPlan { create: Vec::new(), bind: Vec::new(), pipelines: Vec::new(), modules: Vec::new(), peakvols: Vec::new(), dma_id };
     let mut al = Alloc { next_ppl: 0, max_ppl: fw.max_ppl_count, inst: Vec::new() };
-    let c = Ctx { topo, nhlt, mods, ssp: sel.ssp_instance, speaker_ssp: sel.speaker_ssp, dma_id };
+    if let Some(cap) = sel.speaker_ceiling {
+        if cap == 0 || cap > VOLUME_UNITY {
+            return Err(PlanError::SpeakerCeilingInvalid { ceiling: cap });
+        }
+    }
+    let c = Ctx { topo, nhlt, mods, ssp: sel.ssp_instance, speaker_ssp: sel.speaker_ssp, speaker_ceiling: sel.speaker_ceiling, dma_id };
     // the back end is created first, as DPCM calls the back end's hw_params before the front end's (pcm.c:659-697)
     build_path(&c, Role::BackEnd, be_p, &mut al, &mut plan)?;
     let fe_first = plan.pipelines.len();
     build_path(&c, Role::FrontEnd, fe_p, &mut al, &mut plan)?;
     bindings(&c, fe_p, be_t.id, &mut plan, fe_first)?;
+    if sel.speaker_ceiling.is_some() && plan.peakvols.is_empty() {
+        return Err(PlanError::SpeakerPathWithoutVolume);
+    }
     Ok(plan)
 }

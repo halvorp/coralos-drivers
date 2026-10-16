@@ -231,23 +231,50 @@ fn across_a_whole_life_the_amplifiers_are_never_addressed_and_their_reset_is_hel
 }
 
 #[test]
-fn the_speaker_route_is_refused_by_name_and_touches_nothing() {
+fn the_speaker_route_without_its_topology_is_refused_by_name_and_touches_no_hardware() {
+    // this Atlas has no max98373-tplg.bin on the broker: the amplifiers are the board's, but the path is not offered
     let Some(mut dev) = started(true) else { return };
+    let mut c = Client::new();
+    let mut b = [0u8; 32];
+    let n = Open { format: Format::S16_48K_STEREO, route: Route::Speakers, period_frames: 0 }.encode(&mut b).unwrap();
+    let (w0, i0, p0, d0) = (dev.rig.m.writes.len(), dev.rig.m.i2c.len(), dev.rig.m.pad_writes.len(), dev.rig.m.regions.len());
+    let (s, body, _) = call(&mut dev, &mut c, Opcode::StreamOpen, &b[..n]);
+    assert_eq!((s, body.len()), (Status::FirmwareUnavailable, 0), "the file is what is missing, and the status says so");
+    assert!(dev.stream.is_none());
+    // refused again in another state (headphones just pulled), and nothing is touched by the refusals themselves
+    dev.rig.m.codec.unplug();
+    dev.rig.m.poke_jack_line();
+    settle(&mut dev);
+    let (w1, i1) = (dev.rig.m.writes.len(), dev.rig.m.i2c.len());
+    let (s, _, _) = call(&mut dev, &mut c, Opcode::StreamOpen, &b[..n]);
+    assert_eq!(s, Status::FirmwareUnavailable);
+    assert_eq!((dev.rig.m.writes.len(), dev.rig.m.i2c.len(), dev.rig.m.pad_writes.len(), dev.rig.m.regions.len()), (w1, i1, p0, d0), "a refused speaker open changed nothing");
+    assert_eq!((w0, i0), (w0.min(w1), i0.min(i1)));
+    assert_eq!(dev.rig.m.amp_touches(), 0);
+    assert_eq!(get_status(&mut dev, &mut c).speaker, Speaker::Refused);
+}
+
+#[test]
+fn a_board_without_the_pixelbook_go_amplifiers_has_no_speaker_path() {
+    // a board record that lists other amplifier addresses: the speaker route is SPEAKER-PROTECTION-UNAVAILABLE and the amplifiers are not ours
+    let Some(mut sim) = atlas_with_speakers() else { return };
+    let mut board = atlas_board();
+    board.amps = [0x34, 0x35, 0, 0];
+    sim.files.insert("board.bin".into(), board_bytes(&board));
+    sim.codec.plug(false);
+    let mut dev = avs_device::Device::new(sim);
+    dev.start();
     let mut c = Client::new();
     let mut b = [0u8; 32];
     let n = Open { format: Format::S16_48K_STEREO, route: Route::Speakers, period_frames: 0 }.encode(&mut b).unwrap();
     let (s, body, _) = call(&mut dev, &mut c, Opcode::StreamOpen, &b[..n]);
     assert_eq!((s, body.len()), (Status::SpeakerProtectionUnavailable, 0));
-    // refused again whatever the device's state (here: headphones just pulled), and nothing is touched by the refusals themselves
-    dev.rig.m.codec.unplug();
-    dev.rig.m.poke_jack_line();
-    settle(&mut dev);
-    let (w0, i0, p0, d0) = (dev.rig.m.writes.len(), dev.rig.m.i2c.len(), dev.rig.m.pad_writes.len(), dev.rig.m.regions.len());
-    let (s, _, _) = call(&mut dev, &mut c, Opcode::StreamOpen, &b[..n]);
-    assert_eq!(s, Status::SpeakerProtectionUnavailable);
-    assert!(dev.stream.is_none());
-    assert_eq!((dev.rig.m.writes.len(), dev.rig.m.i2c.len(), dev.rig.m.pad_writes.len(), dev.rig.m.regions.len()), (w0, i0, p0, d0), "a refused speaker open changed nothing");
     assert_eq!(get_status(&mut dev, &mut c).speaker, Speaker::Refused);
+    assert_eq!(dev.rig.m.amp_touches(), 0);
+    // and the headphones still work
+    let id = open_stream(&mut dev, &mut c);
+    let (s, ph) = start_stream(&mut dev, &mut c, id);
+    assert_eq!((s, ph.phase), (Status::Ok, StreamPhase::Running));
 }
 
 #[test]

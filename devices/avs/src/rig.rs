@@ -91,23 +91,25 @@ impl<M: Machine> Rig<M> {
     }
 
     pub fn i2c_write(&mut self, addr: u16, data: &[u8]) -> Result<(), I2cFault> {
-        self.gate_i2c(addr)?;
+        self.gate_i2c(addr, data, 0)?;
         self.m.i2c_write(addr, data)
     }
 
     pub fn i2c_write_read(&mut self, addr: u16, wr: &[u8], rd: &mut [u8]) -> Result<(), I2cFault> {
-        self.gate_i2c(addr)?;
+        self.gate_i2c(addr, wr, rd.len())?;
         self.m.i2c_write_read(addr, wr, rd)
     }
 
-    fn gate_i2c(&mut self, addr: u16) -> Result<(), I2cFault> {
-        match self.i2c.check(addr) {
+    fn gate_i2c(&mut self, addr: u16, wr: &[u8], read_len: usize) -> Result<(), I2cFault> {
+        match self.i2c.check_msg(addr, wr, read_len) {
             Ok(()) => Ok(()),
             Err(r) => {
                 self.refused.i2c += 1;
                 self.note(match r {
                     I2cRefusal::SpeakerAmplifier { .. } => "I2C-SPEAKER-AMPLIFIER-REFUSED",
                     I2cRefusal::NotTheCodec { .. } => "I2C-NOT-THE-CODEC",
+                    I2cRefusal::AmplifierRegister { .. } => "I2C-AMPLIFIER-REGISTER-REFUSED",
+                    I2cRefusal::AmplifierShape { .. } => "I2C-AMPLIFIER-SHAPE-REFUSED",
                 });
                 Err(I2cFault::AddressRefused { addr })
             }
