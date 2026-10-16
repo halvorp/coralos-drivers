@@ -13,6 +13,13 @@
 //! image - or the firmware's own framebuffer, kept until the FIRST replacement is proven latched - becomes FREE again only when a NEWER
 //! surface is proven latched. A latch that never shows is counted (`latch_timeouts`) and RELEASES NOTHING: the old surface stays
 //! SCANNING_OUT, the new one stays COMMITTED, further presents are refused until a later read shows the latch after all.
+//!
+//! THE AUTHORITY'S END. When the display authority's session ends with one of its images on the glass, the pair is ORPHANED
+//! ([`ScanoutPair::orphan`]) and the plane is put back on the FIRMWARE's framebuffer - the surface the readout found, whose GGTT extent
+//! stays reserved for the life of the device - by the same one-register flip, confirmed by the same bounded latch read
+//! ([`ScanoutPair::ready_to_restore`]). The CPU compositor that replaces a dead GPU compositor draws into that framebuffer (the boot
+//! framebuffer the kernel maps), so without the restore its frames would never reach the glass. The images stay allocated and are
+//! FREE once the restore is latched; a new authority takes them over as before.
 use i915_display_modeset_core::adopt::{plan_surface_replacement, AdoptPlan, AdoptSession, FirmwareScanout, LatchState, ReplacementSurface};
 use i915_display_modeset_core::initial::AdoptedDisplay;
 use i915_display_modeset_core::ModesetError;
@@ -100,8 +107,12 @@ enum Phase {
     Unconfirmed(AdoptSession),
 }
 
+/// The flip's target index that names the firmware's framebuffer (the restore), never an image.
+const FIRMWARE_IDX: usize = usize::MAX;
+
 #[derive(Clone, Debug)]
 struct Flip {
+    /// The image flipped to, or [`FIRMWARE_IDX`] for the restore.
     idx: usize,
     seq: u64,
     plan: AdoptPlan,
@@ -125,6 +136,8 @@ pub enum LatchStep {
     Latched { seq: u64, released: Released },
     /// The bounded confirmation ran out (counted once per flip): nothing is released.
     TimedOut { seq: u64, got: u32 },
+    /// The restore is proven on the glass: the firmware's framebuffer is scanned again and every image is FREE.
+    Restored,
 }
 
 /// What a `SCANOUT-WAIT` on `seq` can answer now.
@@ -155,8 +168,12 @@ pub struct ScanoutPair {
     images: [Image; 2],
     /// What the plane scans NOW, as the planner sees it: the firmware's surface until the first latch, each latched image after.
     live: FirmwareScanout,
+    /// The firmware's own scanout, as the readout found it: what the restore puts back.
+    firmware: FirmwareScanout,
     template: ReplacementSurface,
     firmware_live: bool,
+    /// The authority ended with an image on the glass: put the firmware's framebuffer back when no flip is in flight.
+    restore_wanted: bool,
     next_seq: u64,
     latched_seq: u64,
     latch_timeouts: u32,
@@ -182,7 +199,7 @@ impl ScanoutPair {
             rotation: Rotation::R0,
         };
         let img = |(handle, key, ggtt): (u32, u64, u32)| Image { handle, key, ggtt, state: ImageState::Free };
-        ScanoutPair { owner, images: [img(images[0]), img(images[1])], live, template, firmware_live: true, next_seq: 1, latched_seq: 0, latch_timeouts: 0, flip: None }
+        ScanoutPair { owner, images: [img(images[0]), img(images[1])], live, firmware: live, template, firmware_live: true, restore_wanted: false, next_seq: 1, latched_seq: 0, latch_timeouts: 0, flip: None }
     }
 
     pub const fn owner(&self) -> u64 {
@@ -199,6 +216,57 @@ impl ScanoutPair {
             if img.state == ImageState::Rendering {
                 img.state = ImageState::Free;
             }
+        }
+    }
+
+    /// The authority's session ended: no session may call the pair (`owner` 0), an image it was drawing into is FREE, a flip it had not
+    /// yet armed is dropped (nothing reached the glass), and - when an image is on the glass, or a flip to one is in flight - the plane
+    /// goes back to the firmware's framebuffer ([`ScanoutPair::ready_to_restore`]).
+    pub fn orphan(&mut self) {
+        self.rebind_owner(0, [0, 0]);
+        if let Some(Flip { idx, phase: Phase::AwaitGpu, .. }) = &self.flip {
+            let i = *idx;
+            self.flip = None;
+            self.images[i].state = ImageState::Free;
+        }
+        self.restore_wanted = !self.firmware_live || self.flip.is_some();
+    }
+
+    /// Is a restore of the firmware's framebuffer owed or in flight?
+    pub fn restoring(&self) -> bool {
+        self.restore_wanted || matches!(&self.flip, Some(Flip { idx: FIRMWARE_IDX, .. }))
+    }
+
+    /// The restore's one-register flip, to execute NOW - once the pair is orphaned and no flip is in flight (an armed one finishes
+    /// first, so the planner works from what the plane really scans). `None`: nothing to restore yet. A plan the planner refuses
+    /// drops the restore (the error is returned for the log; nothing was written).
+    pub fn ready_to_restore(&mut self) -> Option<Result<AdoptPlan, ScanoutError>> {
+        if !self.restore_wanted || self.owner != 0 || self.flip.is_some() {
+            return None;
+        }
+        self.restore_wanted = false;
+        if self.firmware_live {
+            return None; // the in-flight flip that wanted it never latched over the firmware: nothing to put back
+        }
+        let fw = ReplacementSurface { gtt_addr: self.firmware.plane.surf, ..self.template };
+        match plan_surface_replacement(&self.live, &fw) {
+            Ok(plan) => {
+                self.flip = Some(Flip { idx: FIRMWARE_IDX, seq: 0, plan: plan.clone(), phase: Phase::AwaitLatch(AdoptSession::begin(&plan)) });
+                Some(Ok(plan))
+            }
+            Err(e) => Some(Err(ScanoutError::Plan(e))),
+        }
+    }
+
+    /// The firmware framebuffer's GGTT address (what the restore writes).
+    pub const fn firmware_surf(&self) -> u32 {
+        self.firmware.plane.surf
+    }
+
+    /// The restore's write could not be executed: nothing changed on the glass, and it is not retried.
+    pub fn restore_failed(&mut self) {
+        if matches!(&self.flip, Some(Flip { idx: FIRMWARE_IDX, .. })) {
+            self.flip = None;
         }
     }
 
@@ -296,6 +364,9 @@ impl ScanoutPair {
     /// The caller could not execute the armed write (its guard refused, the window faulted): the image goes back to RENDERING, the
     /// flip is dropped, nothing on the glass changed. Returns the dropped present's sequence.
     pub fn arm_failed(&mut self) -> Option<u64> {
+        if matches!(&self.flip, Some(Flip { idx: FIRMWARE_IDX, .. })) {
+            return None; // the restore is not an armed present: restore_failed drops it
+        }
         let f = self.flip.take()?;
         self.images[f.idx].state = ImageState::Rendering;
         Some(f.seq)
@@ -331,6 +402,16 @@ impl ScanoutPair {
     /// The flip is proven on the glass: the new image SCANNING_OUT, the surface before it released.
     fn latched(&mut self) -> LatchStep {
         let Some(f) = self.flip.take() else { return LatchStep::Idle };
+        if f.idx == FIRMWARE_IDX {
+            for img in self.images.iter_mut() {
+                if matches!(img.state, ImageState::ScanningOut { .. }) {
+                    img.state = ImageState::Free;
+                }
+            }
+            self.live = self.firmware;
+            self.firmware_live = true;
+            return LatchStep::Restored;
+        }
         let released = match self.images.iter().position(|i| matches!(i.state, ImageState::ScanningOut { .. })) {
             Some(prev) => {
                 self.images[prev].state = ImageState::Free;

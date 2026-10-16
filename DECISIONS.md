@@ -219,8 +219,16 @@ transport on a capability only the compositor holds - never a request flag; `SES
 `-EACCES DISPLAY-NOT-AUTHORIZED`; the binding ends with its session. (5) THE LIFECYCLE - `devices/i915/src/display/scanout.rs`: FREE / RENDERING / COMMITTED /
 SCANNING_OUT; only the owner begins / presents / waits; drawing into a COMMITTED or SCANNING_OUT image is `SCANOUT-REUSE-VIOLATION` (also as a GPU write);
 a flip is `plan_surface_replacement`'s one `PLANE_SURF` write, armed only after the GPU work is complete, confirmed only by `PLANE_SURFLIVE`; the firmware's
-framebuffer is kept until the first replacement is proven latched; a suppressed latch is counted and releases NOTHING. PENDING (named, not claimed): the
-presentation increment's service glue - the pair's GEM backing (`prime_export` hold, `set_framebuffer`), its 256 KiB-aligned mappable GGTT pin at `I915_CACHE_NONE`,
-the `PLANE_SURF` write through the executor under a `p4-present` allow-list, `SURFLIVE` polling in `poll`, the parked `SCANOUT-WAIT`, the EXECBUFFER2 write
-check - until which `SCANOUT-*` answer `-EOPNOTSUPP SCANOUT-INCREMENT-NOT-ENABLED`; the transport's display-authority endpoint; interrupt, forcewake and
-power-well ownership for display; native modeset; `initial_plane_phys` (the PTE check).
+framebuffer is kept until the first replacement is proven latched; a suppressed latch is counted and releases NOTHING. (6) SERVED - feature `p4-present`
+(implies `p3-exec`; the live wrapper enables it): the transport binds the authority on a session opened over the DISPLAY listen endpoint (`wire::DISPLAY_EP`,
+75 - CoralOS `EP_I915_DISPLAY`, SEND held by the compositor's row alone); `uapi/calls_scanout.rs` makes the pair two GEM objects of the authority's session at
+the adopted layout (`set_caching(NONE)`, pages pinned, a `surf_alignment`-aligned mappable GGTT pin read back before use, a `prime_export` hold), so iris
+imports them as dma-buf descriptors through the ordinary PRIME path (D15); the EXECBUFFER2 write check refuses a GPU write into a held image
+(`[SCANOUT-REUSE VIOLATION]`); `poll` arms a committed flip once `object_busy` clears and reads `PLANE_SURFLIVE` while one is in flight
+(`[I915-PRESENT latched seq=N released=firmware|image ...]`, `[I915-SCANOUT-LIVE]` on the first); a later authority takes the same pair over. THE AUTHORITY'S
+END: its images' owner becomes nobody, a flip it had not armed is dropped, and - when an image is on the glass - the plane goes back to the FIRMWARE's
+framebuffer by the same one-register flip, confirmed by the same latch read (`[I915-SCANOUT-RESTORED]`): the CPU compositor that replaces a dead GPU
+compositor draws into that boot framebuffer, whose GGTT extent stays reserved. `PLANE_SURF` joins the executor's allow-list only under `p4-present`
+(`exec/allow.rs`, `P4_PRESENT_REGS = ADOPT_WRITE_ALLOWLIST`). PENDING (named, not claimed): silicon - none of (6) has run on the Pixelbook Go; vblank
+interrupts (the latch is polled at the device loop's 1 ms cadence); forcewake and power-well ownership for display; native modeset; `initial_plane_phys` (the PTE
+check).

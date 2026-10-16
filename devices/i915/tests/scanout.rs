@@ -182,3 +182,40 @@ fn an_image_that_is_not_the_adopted_layout_is_refused_by_the_planner() {
     p.begin(OWNER, H1).unwrap();
     assert_eq!(p.present(OWNER, H1).unwrap_err(), ScanoutError::Plan(ModesetError::SameSurface), "the surface on the glass is not a flip");
 }
+
+/// The authority's session ends with an image on the glass: the plane goes back to the FIRMWARE's framebuffer - one PLANE_SURF write of
+/// the readout's address, confirmed by the latch - and both images are FREE for the next authority (the CPU compositor draws into the
+/// boot framebuffer, so without this its frames never reach the glass).
+#[test]
+fn an_orphaned_pair_puts_the_firmware_framebuffer_back_on_the_glass() {
+    let mut p = pair();
+    let (seq, _) = present_armed(&mut p, H0);
+    assert_eq!(p.observe(G0), LatchStep::Latched { seq, released: Released::Firmware });
+    p.begin(OWNER, H1).unwrap();
+    p.orphan();
+    assert_eq!((p.owner(), p.images()[1].state), (0, ImageState::Free), "nobody owns it; the half-drawn image is FREE");
+    assert!(p.restoring());
+    let plan = p.ready_to_restore().expect("owed").expect("planned");
+    assert_eq!(plan.write[0], Effect::Write { reg: ADOPT_WRITE_ALLOWLIST[0], value: FW }, "PLANE_SURF = the firmware's own address");
+    assert_eq!((plan.old_surf, plan.new_surf), (G0, FW));
+    assert!(p.ready_to_restore().is_none(), "planned once");
+    assert_eq!(p.images()[0].state, ImageState::ScanningOut { seq }, "the image stays held until the restore is proven latched");
+    assert_eq!(p.observe(G0), LatchStep::StillWaiting);
+    assert_eq!(p.observe(FW), LatchStep::Restored);
+    assert!(p.firmware_live() && !p.restoring());
+    assert_eq!(p.status().free_mask, 0b11);
+}
+
+/// RED: an orphaned pair whose firmware framebuffer is still on the glass (no present ever latched) writes nothing; a flip the dead
+/// authority had not armed is dropped, never armed for nobody.
+#[test]
+fn an_orphaned_pair_with_the_firmware_still_live_writes_nothing() {
+    let mut p = pair();
+    p.begin(OWNER, H0).unwrap();
+    p.present(OWNER, H0).unwrap(); // COMMITTED, waiting for its GPU work
+    p.orphan();
+    assert_eq!(p.images()[0].state, ImageState::Free);
+    assert_eq!(p.ready_to_arm(), None, "the dead authority's flip is never armed");
+    assert!(p.ready_to_restore().is_none());
+    assert!(!p.restoring() && p.firmware_live());
+}
