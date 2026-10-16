@@ -188,6 +188,32 @@ impl ScanoutPair {
     pub const fn owner(&self) -> u64 {
         self.owner
     }
+
+    /// A NEW display authority takes the pair over (the previous one's session ended): its own handles for the same two images. Nothing
+    /// on the glass moves - a flip in flight goes on, the image scanned out stays SCANNING_OUT - and an image the dead authority was
+    /// drawing into is FREE again (its half-drawn content is never presented). `owner` 0 orphans the pair: nobody may call it.
+    pub fn rebind_owner(&mut self, owner: u64, handles: [u32; 2]) {
+        self.owner = owner;
+        for (img, h) in self.images.iter_mut().zip(handles) {
+            img.handle = h;
+            if img.state == ImageState::Rendering {
+                img.state = ImageState::Free;
+            }
+        }
+    }
+
+    /// The register whose reads [`ScanoutPair::observe`] wants while a flip is armed (`PLANE_SURFLIVE` of the adopted plane).
+    pub fn latch_reg(&self) -> Option<i915_common_core::Reg> {
+        self.flip.as_ref().map(|f| f.plan.latch.reg)
+    }
+
+    /// The handle of the image the armed flip waits for the GPU on, with its key.
+    pub fn awaiting_gpu_image(&self) -> Option<Image> {
+        match &self.flip {
+            Some(Flip { idx, phase: Phase::AwaitGpu, .. }) => Some(self.images[*idx]),
+            _ => None,
+        }
+    }
     pub fn images(&self) -> &[Image; 2] {
         &self.images
     }

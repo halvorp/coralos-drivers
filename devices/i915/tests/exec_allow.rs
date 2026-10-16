@@ -50,7 +50,7 @@ fn p2_adds_exactly_the_ggtt_invalidate_register_and_the_ggtt_window() {
     assert_eq!(i915_device::regio::BAR0_NEED_BYTES, 16 << 20);
 }
 
-#[cfg(feature = "p3-exec")]
+#[cfg(all(feature = "p3-exec", not(feature = "p4-present")))]
 #[test]
 fn p3_adds_exactly_the_execlist_and_reset_registers() {
     let mut want = FORCEWAKE_SET.to_vec();
@@ -134,11 +134,40 @@ mod planner_write_sets {
         // P3: the reset planner, both scopes
         writes.extend(reset_writes(ResetScope::Engines, &[rcs]));
         writes.extend(reset_writes(ResetScope::AllEngines, engines.as_slice()));
+        // P4: the scanout pair's flip - the adoption planner's own write set, run on the Pixelbook Go's firmware layout
+        #[cfg(feature = "p4-present")]
+        writes.extend(p4_flip_writes());
         let mut set: Vec<u32> = writes.iter().map(|r| r.offset()).chain(FORCEWAKE_SET).collect();
         set.sort();
         set.dedup();
         assert_eq!(offsets(&ALLOW), set, "ALLOW must equal forcewake + the planners' write sets, no more and no less");
     }
+}
+
+/// The P4 flip's writes, found by running the planner (`plan_surface_replacement`) on a firmware layout - never restated.
+#[cfg(feature = "p4-present")]
+fn p4_flip_writes() -> Vec<i915_common_core::Reg> {
+    use i915_display_modeset_core::adopt::{plan_surface_replacement, FirmwareScanout, ReplacementSurface};
+    use i915_kbl_display_core::plane::{decode_plane, PlaneFormat, Rotation, Tiling};
+    use i915_kbl_display_core::types::Pipe;
+    let plane = decode_plane(0, 0x8400_2000, 120, 0x0437_077f, 0, 0, 0).unwrap();
+    let fw = FirmwareScanout { pipe: Pipe::A, plane, surf_raw: 0 };
+    let new = ReplacementSurface { gtt_addr: 0x80_0000, format: PlaneFormat::Xrgb8888, rgb_order: false, alpha: false, tiling: Tiling::Linear, stride_bytes: 7680, width: 1920, height: 1080, offset_x: 0, offset_y: 0, rotation: Rotation::R0 };
+    plan_surface_replacement(&fw, &new).unwrap().written()
+}
+
+#[cfg(feature = "p4-present")]
+#[test]
+fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
+    let mut want = FORCEWAKE_SET.to_vec();
+    want.push(0x101008);
+    want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
+    want.push(0x7019c); // PLANE_SURF(PIPE_A, PLANE_1), skl_universal_plane_regs.h:153
+    want.sort();
+    assert_eq!(offsets(&ALLOW), want);
+    assert_eq!(p4_flip_writes().iter().map(|r| r.offset()).collect::<Vec<_>>(), [0x7019c], "the flip writes that one register and no other");
+    assert_eq!(BAR0_WRITE_RANGES.len(), want.len() + 1, "the window grant is the allow-list plus the GGTT window");
+    assert!(P4_ON && P3_ON && P2_ON);
 }
 
 #[test]

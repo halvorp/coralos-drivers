@@ -173,3 +173,16 @@ pub fn proof_of_life<M: Mmio, L: Log>(mmio: &mut M, desc: &PlatformDescriptor, i
     emit(log, format_args!("[I915-FORCEWAKE domains=GT,RENDER,MEDIA ack=ok released=1 writes={} refused={}]", g.writes(), g.refusals()));
     Ok(Proof { desc: *desc, fuse2, eu_disable: eu, rpm_config0: rpm0, ctc_mode: ctc, rp_state_cap: cap, sseu, ts_hz, writes: g.writes() })
 }
+
+/// The flush workarounds of this part (`gen9_emit_flush`'s quirks, `i915-gt-core::emit::FlushQuirks::for_context`), from the devinfo
+/// row and the stepping the PCI revision names (`intel_step_init`, intel_step.c:228-251 - only Kaby Lake has a revid table here; any
+/// other platform is `STEP_NONE`, outside every Kaby Lake range). The host never supplies them: a per-generation fact is a table's.
+pub fn flush_quirks(desc: &PlatformDescriptor, revision: u8) -> i915_gt_core::emit::FlushQuirks {
+    use i915_gt_core::step::{kbl_graphics_step, Step};
+    let step = match desc.platform() {
+        i915_devinfo_core::Platform::Kabylake => kbl_graphics_step(revision),
+        _ => Step::NONE,
+    };
+    let ctx = i915_gt_core::wa_tables::WaContext { platform: desc.platform(), graphics_ver: desc.gen(), has_llc: desc.info.has_llc, step };
+    i915_gt_core::emit::FlushQuirks::for_context(&ctx)
+}

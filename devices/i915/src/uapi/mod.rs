@@ -30,6 +30,8 @@ mod adapt;
 mod calls_ctx;
 #[cfg(feature = "p3-exec")]
 mod calls_display;
+#[cfg(feature = "p4-present")]
+mod calls_scanout;
 #[cfg(feature = "p3-exec")]
 mod calls_gem;
 #[cfg(feature = "p3-exec")]

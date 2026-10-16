@@ -35,6 +35,9 @@ pub struct UapiFacts {
     pub stall_bound_ms: u64,
     /// The firmware display as startup judged it (D18): an adopted framebuffer's GGTT range is kept through bring-up.
     pub adoption: crate::display::Adoption,
+    /// What the plane scans as the readout found it (PLANE_SURF's address bits stand for the raw word: a flip never rolls back to it) - the
+    /// scanout pair's flip planner starts from it. `None` when nothing was adopted.
+    pub firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
 }
 
 /// The executor, the granted memory and the service, brought up.
@@ -54,5 +57,6 @@ pub fn assemble<B: Mmio, D: Dma, M: CpuMem, L: Log>(bar: B, dma: D, mem: M, proo
     let cfg = RenderConfig { quirks: facts.quirks, stall_bound_ms: facts.stall_bound_ms, keep: facts.adoption.keep() };
     let mut svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log, now_ms: 0 }, dev, &geom, cfg)?;
     svc.set_display(facts.adoption);
+    svc.set_firmware_scanout(facts.firmware);
     Ok(Assembled { ex, gm, svc })
 }

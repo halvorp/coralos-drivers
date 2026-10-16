@@ -36,6 +36,10 @@ impl UapiService {
     pub(crate) fn call_exec<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, inc: u64, p: &[u8], out: &mut [u8]) -> Result<Done, Fail> {
         let sid = SessionId(inc);
         let req = decode_execbuf2(p, &ExecLimits::DEFAULT)?;
+        // D18: a write into a scanout image the display holds (COMMITTED / SCANNING_OUT) or the authority never began is refused before
+        // anything is reserved
+        #[cfg(feature = "p4-present")]
+        self.check_scanout_writes(hw.log, sid, req.objects.iter().map(|o| (o.handle, o.flags)))?;
         let ctx_id = req.context_id();
         self.ensure_hw_ctx(hw, inc, ctx_id)?;
         let vm = self.gem.context_vm(sid, ctx_id)?;
@@ -191,6 +195,8 @@ impl UapiService {
             }
             self.observe_and_complete(hw);
         }
+        #[cfg(feature = "p4-present")]
+        self.advance_scanout(hw);
         self.poll_waiters(hw);
         self.trim_pool(hw);
     }

@@ -146,6 +146,9 @@ pub(crate) enum WaitKind {
     Gem { handle: u32, timeout_ns: i64 },
     Syncobj { handles: Vec<u32>, points: Option<Vec<u64>>, flags: u32, timeline: bool, first: u32 },
     SyncFile { token: u32 },
+    /// A SCANOUT-WAIT (D18): until present `seq` is latched.
+    #[cfg(feature = "p4-present")]
+    Scanout { seq: u64 },
 }
 
 /// A parked call.
@@ -187,6 +190,11 @@ pub struct UapiService {
     /// The display this device adopted from the firmware (D18), and which session, if any, is its AUTHORITY.
     pub(crate) display: crate::display::Adoption,
     pub(crate) authority: Option<u64>,
+    /// The firmware's scanout as the readout found it: where the scanout pair's flips start (D18).
+    pub(crate) firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
+    /// The display authority's scanout pair (D18, feature `p4-present`).
+    #[cfg(feature = "p4-present")]
+    pub(crate) scanout: Option<super::calls_scanout::PairRec>,
 }
 
 /// Bring up the render engine and the GGTT and return the service: the window, the scratch page, the GGTT, the status page, the
@@ -266,7 +274,15 @@ impl UapiService {
             quarantined: 0,
             display: crate::display::Adoption::NoReadout,
             authority: None,
+            firmware: None,
+            #[cfg(feature = "p4-present")]
+            scanout: None,
         }
+    }
+
+    /// The firmware's scanout as startup read it (the scanout pair's first flip replaces it).
+    pub fn set_firmware_scanout(&mut self, f: Option<i915_display_modeset_core::adopt::FirmwareScanout>) {
+        self.firmware = f;
     }
 
     /// The display startup adopted (or refused): `DISPLAY-QUERY` answers from it, the authority calls act on it.
@@ -419,6 +435,11 @@ impl UapiService {
                 want(d);
             }
         }
+        // a flip in flight (waiting for its GPU work or for the latch) is read for every millisecond until it settles; never at idle
+        #[cfg(feature = "p4-present")]
+        if self.scanout_wants_time() {
+            want(now.saturating_add(1));
+        }
         if let Some(stall) = self.rig.next_stall_check(now) {
             want(stall);
             if !irq_armed {
@@ -559,7 +580,9 @@ impl UapiService {
         let _ = self.close_gem_session(hw, inc);
         self.sessions[i] = None;
         if self.authority == Some(inc) {
-            // the display keeps scanning out what it last latched; the next authority binds afresh
+            // the display keeps scanning out what it last latched; the next authority binds afresh and takes the same pair over
+            #[cfg(feature = "p4-present")]
+            self.scanout_owner_dead(inc);
             self.authority = None;
             emit(hw.log, format_args!("[I915-DISPLAY authority ended inc={}]", inc));
         }
