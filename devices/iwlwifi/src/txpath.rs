@@ -19,9 +19,9 @@ use iwlwifi_pcie_trans_core::regs::{CSR_RESET, IWL_KW_SIZE};
 use iwlwifi_pcie_trans_core::tx_init::tx_init;
 
 /// `TFD_QUEUE_SIZE_MAX + TFD_QUEUE_SIZE_BC_DUP`: the byte-count table has this many entries per queue.
-/// // iwl-fh.h:@TFD_QUEUE_SIZE_BC_DUP, :590-594
+/// // iwl-fh.h:590-594
 pub const TFD_QUEUE_BC_SIZE: usize = 256 + 64;
-/// `sizeof(struct iwl_bc_tbl_entry)`. // iwl-fh.h:@iwl_bc_tbl_entry
+/// `sizeof(struct iwl_bc_tbl_entry)`. // iwl-fh.h:719-725
 pub const BC_ENTRY_BYTES: usize = 2;
 
 impl<H: Host> Transport<H> {

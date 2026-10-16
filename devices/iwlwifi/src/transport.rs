@@ -34,8 +34,8 @@ use iwlwifi_pcie_trans_core::tx_init::TxInitError;
 /// buffer as soon as its packets are copied out. 128 x 4 KiB is 512 KiB of the DMA budget.
 pub const RX_POOL_BUFS: usize = 128;
 /// The step gate: only silicon steps B and C of the 9000 family are supported. // iwl-drv.c:332-339
-pub const SILICON_B_STEP: u32 = 1; // iwl-csr.h:@SILICON_B_STEP
-pub const SILICON_C_STEP: u32 = 2; // iwl-csr.h:@SILICON_C_STEP
+pub const SILICON_B_STEP: u32 = 1; // iwl-csr.h:323
+pub const SILICON_C_STEP: u32 = 2; // iwl-csr.h:324
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportError {

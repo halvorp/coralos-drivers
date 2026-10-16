@@ -41,7 +41,7 @@ pub const fn scd_queue_status_bits(q: u32) -> u32 {
 }
 
 // ── queues ── cfg/9000.c, fw/api/txq.h, iwl-trans.h, iwl-config.h, iwl-fh.h
-/// `num_of_queues` of the 9000 family. // cfg/9000.c:@.num_of_queues
+/// `num_of_queues` of the 9000 family. // cfg/9000.c:31
 pub const IWL9000_NUM_OF_QUEUES: u32 = 31; // cfg/9000.c:31
 /// `max_tfd_queue_size`: the TFD ring of every gen1 queue has this many entries. // cfg/9000.c:32
 pub const MAX_TFD_QUEUE_SIZE: u16 = 256; // cfg/9000.c:32

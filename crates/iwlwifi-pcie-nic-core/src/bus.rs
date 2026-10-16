@@ -91,7 +91,7 @@ pub struct Nic<B: RawBus> {
 /// window (`RFH_Q_FRBDCB_WIDX_TRG(q)`, 0x1C80 + 4q, 31 queues at most) is written WITHOUT a grab —
 /// that is what the shadow registers are for (CSR_MAC_SHADOW_REG_CTRL, trans.c:513-517).
 /// // iwl-fh.h:337-338; rx.c:199-201
-pub const RFH_WIDX_TRG_LO: u32 = 0x1C80; // iwl-fh.h:@RFH_Q0_FRBDCB_WIDX_TRG
+pub const RFH_WIDX_TRG_LO: u32 = 0x1C80; // iwl-fh.h:337
 pub const RFH_WIDX_TRG_HI: u32 = 0x1C80 + 4 * 32;
 
 /// Whether `iwl_write_direct32` (a grab) is what Linux uses for `reg`.

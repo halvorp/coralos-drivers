@@ -16,16 +16,16 @@ use crate::regs::*;
 use iwlwifi_pcie_trans_core::io::set_bit;
 use iwlwifi_pcie_trans_core::regs::CSR_HW_IF_CONFIG_REG;
 
-pub const CSR_HW_IF_CONFIG_REG_BIT_MAC_SI: u32 = 0x0000_0100; // iwl-csr.h:@CSR_HW_IF_CONFIG_REG_BIT_MAC_SI
-pub const CSR_HW_IF_CONFIG_REG_BIT_RADIO_SI: u32 = 0x0000_0200; // iwl-csr.h:@CSR_HW_IF_CONFIG_REG_BIT_RADIO_SI
-pub const CSR_HW_IF_CONFIG_REG_D3_DEBUG: u32 = 0x0000_0200; // iwl-csr.h:@CSR_HW_IF_CONFIG_REG_D3_DEBUG
+pub const CSR_HW_IF_CONFIG_REG_BIT_MAC_SI: u32 = 0x0000_0100; // iwl-csr.h:165
+pub const CSR_HW_IF_CONFIG_REG_BIT_RADIO_SI: u32 = 0x0000_0200; // iwl-csr.h:166
+pub const CSR_HW_IF_CONFIG_REG_D3_DEBUG: u32 = 0x0000_0200; // iwl-csr.h:167
 /// `FW_PHY_CFG_RADIO_TYPE` and friends, as `iwl_mvm_nic_config` reads them. // fw/file.h:604-608
-pub const FW_PHY_CFG_RADIO_TYPE: u32 = 0x3; // fw/file.h:@FW_PHY_CFG_RADIO_TYPE
-pub const FW_PHY_CFG_RADIO_STEP: u32 = 0x3 << 2; // fw/file.h:@FW_PHY_CFG_RADIO_STEP
-pub const FW_PHY_CFG_RADIO_DASH: u32 = 0x3 << 4; // fw/file.h:@FW_PHY_CFG_RADIO_DASH
-pub const FW_PHY_CFG_RADIO_TYPE_POS: u32 = 0; // fw/file.h:@FW_PHY_CFG_RADIO_TYPE_POS
-pub const FW_PHY_CFG_RADIO_STEP_POS: u32 = 2; // fw/file.h:@FW_PHY_CFG_RADIO_STEP_POS
-pub const FW_PHY_CFG_RADIO_DASH_POS: u32 = 4; // fw/file.h:@FW_PHY_CFG_RADIO_DASH_POS
+pub const FW_PHY_CFG_RADIO_TYPE: u32 = 0x3; // fw/file.h:604
+pub const FW_PHY_CFG_RADIO_STEP: u32 = 0x3 << 2; // fw/file.h:606
+pub const FW_PHY_CFG_RADIO_DASH: u32 = 0x3 << 4; // fw/file.h:608
+pub const FW_PHY_CFG_RADIO_TYPE_POS: u32 = 0; // fw/file.h:603
+pub const FW_PHY_CFG_RADIO_STEP_POS: u32 = 2; // fw/file.h:605
+pub const FW_PHY_CFG_RADIO_DASH_POS: u32 = 4; // fw/file.h:607
 /// `CSR_MAC_SHADOW_REG_CTRL ← 0x800FFFFF`, `shadow_reg_enable`. // trans.c:514-517
 pub const SHADOW_REG_ENABLE_ALL: u32 = 0x800F_FFFF; // trans.c:515
 

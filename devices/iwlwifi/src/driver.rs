@@ -31,8 +31,8 @@ use iwlwifi_pcie_trans_core::io::TransIo;
 
 /// `trans->mac_cfg->base->eeprom_size` = `OTP_LOW_IMAGE_SIZE_32K`: 32 * 512 * sizeof(u16). // cfg/9000.c:28; iwl-config.h:316
 pub const EEPROM_SIZE: u32 = 32 * 512 * 2;
-/// `trans->mac_cfg->base->nvm_hw_section_num`. // cfg/9000.c:@nvm_hw_section_num
-pub const NVM_HW_SECTION_NUM: u16 = 10; // cfg/9000.c:@nvm_hw_section_num
+/// `trans->mac_cfg->base->nvm_hw_section_num`. // cfg/9000.c:46
+pub const NVM_HW_SECTION_NUM: u16 = 10; // cfg/9000.c:46
 /// The RF-kill switch is in KILL: the INIT image ran as far as the check and stopped. // mvm/fw.c:761-766
 pub const IWL_ALIVE_NOTIF_VER_FALLBACK: u8 = 0;
 
