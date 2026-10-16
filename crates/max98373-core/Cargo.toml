@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "max98373-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "Maxim MAX98373 speaker amplifier: the Linux driver's register plans (probe, DAI format, TDM slots, DAPM power sequence) and ChromeOS's UCM protection set as data, plus the speaker path's hard gain ceiling. No I/O."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+
+[workspace]
