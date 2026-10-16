@@ -390,6 +390,9 @@ coded! {
         Unverified = 2, "unverified";
         /// The pad write was refused or read back high.
         Failed = 3, "failed";
+        /// A speaker session is running: the line was driven high on purpose (protection applied and read back first, D17). The next stop
+        /// drives it low again and reports `held`.
+        Released = 4, "released";
     }
 }
 

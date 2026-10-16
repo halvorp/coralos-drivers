@@ -12,7 +12,8 @@ use avs_wire::*;
 
 pub const BASEFW_BODY: usize = 40_000;
 
-/// A simulated Atlas with every file in place, or None (loudly) when the recovery topology is not on this machine.
+/// A simulated Atlas with every file the HEADPHONES need in place - and no speaker topology on the broker, which is how the device was
+/// before D17 and how a build without `max98373-tplg.bin` looks - or None (loudly) when the recovery topology is not on this machine.
 pub fn atlas() -> Option<Sim> {
     let tplg = tplg_bytes()?;
     let uuids: Vec<[u8; 16]> = {
@@ -24,6 +25,20 @@ pub fn atlas() -> Option<Sim> {
     sim.files.insert("skl/dsp_basefw.bin".into(), synth_image(b"BASEFW\0\0", BASEFW_VERSION, BASEFW_BODY, 0x11));
     sim.files.insert("da7219-tplg.bin".into(), tplg);
     sim.files.insert("nhlt.bin".into(), nhlt_bytes());
+    Some(sim)
+}
+
+/// The Atlas with the speaker topology on the broker too (the upstream DSM-free `max98373-tplg.bin`), or None (loudly) without it.
+pub fn atlas_with_speakers() -> Option<Sim> {
+    let spk = spk_tplg_bytes()?;
+    let mut sim = atlas()?;
+    // the firmware's module table must know the speaker topology's modules too (the volume stage)
+    let head = tplg_bytes().unwrap();
+    let mut all: Vec<[u8; 16]> = Topology::parse(&head, None).unwrap().modcfgs_ext.iter().map(|e| e.type_uuid).collect();
+    let t = Topology::parse(&spk, Some(avs_topology_core::model::SspBinding { port: 0, tdm: 0 })).unwrap();
+    all.extend(t.modcfgs_ext.iter().map(|e| e.type_uuid));
+    sim.dsp = dsp::Dsp::new(dsp::atlas_firmware(&all), BASEFW_BODY);
+    sim.files.insert("max98373-tplg.bin".into(), spk);
     Some(sim)
 }
 
@@ -123,9 +138,26 @@ pub fn settle(dev: &mut Device<Sim>) -> Vec<Got> {
 }
 
 pub fn s16_open() -> Vec<u8> {
+    s16_open_route(Route::Headphones)
+}
+
+pub fn s16_open_route(route: Route) -> Vec<u8> {
     let mut b = [0u8; 32];
-    let n = Open { format: Format::S16_48K_STEREO, route: Route::Headphones, period_frames: 0 }.encode(&mut b).unwrap();
+    let n = Open { format: Format::S16_48K_STEREO, route, period_frames: 0 }.encode(&mut b).unwrap();
     b[..n].to_vec()
+}
+
+pub fn open_stream_route(dev: &mut Device<Sim>, c: &mut Client, route: Route) -> u32 {
+    let (s, b, _) = call(dev, c, Opcode::StreamOpen, &s16_open_route(route));
+    assert_eq!(s, Status::Ok, "open {route:?}");
+    OpenReply::decode(&b).unwrap().stream
+}
+
+pub fn set_volume(dev: &mut Device<Sim>, c: &mut Client, level: u16, mute: bool) -> (Status, Vec<u8>) {
+    let mut b = [0u8; 8];
+    let n = SetVolume { level, mute }.encode(&mut b).unwrap();
+    let (s, body, _) = call(dev, c, Opcode::SetVolume, &b[..n]);
+    (s, body)
 }
 
 pub fn stream_ref(id: u32) -> Vec<u8> {
@@ -168,6 +200,17 @@ pub fn start_stream(dev: &mut Device<Sim>, c: &mut Client, id: u32) -> (Status, 
 /// A started device with the headphones in.
 pub fn started(plugged: bool) -> Option<Device<Sim>> {
     let mut sim = atlas()?;
+    if plugged {
+        sim.codec.plug(false);
+    }
+    let mut dev = Device::new(sim);
+    dev.start();
+    Some(dev)
+}
+
+/// A started device that has the speaker path (the headphones plugged or not).
+pub fn started_with_speakers(plugged: bool) -> Option<Device<Sim>> {
+    let mut sim = atlas_with_speakers()?;
     if plugged {
         sim.codec.plug(false);
     }

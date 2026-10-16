@@ -78,16 +78,25 @@ pub const GAIN_Q31: [u32; STEPS] = [
     3033401, 2782465, 2552289, 2341153,
 ];
 
+/// How many 0.75 dB steps below the ceiling a level is (`0..STEPS`); level 0 counts as the quietest step. Levels above [`LEVEL_MAX`] are
+/// [`LEVEL_MAX`].
+pub const fn steps_below(level: u16) -> usize {
+    let level = if level > LEVEL_MAX { LEVEL_MAX } else { level } as u32;
+    let below = ((LEVEL_MAX as u32 - level) * STEPS as u32 / LEVEL_MAX as u32) as usize;
+    if below >= STEPS {
+        STEPS - 1
+    } else {
+        below
+    }
+}
+
 /// The DSP gain for a client's level. Level 0 or `mute` is silence. Any level above [`LEVEL_MAX`] is treated as [`LEVEL_MAX`]. The result is
 /// never above [`CEILING_LINEAR`], for any input: this is the only function the device derives a speaker gain from.
 pub const fn linear_for(level: u16, mute: bool) -> u32 {
     if mute || level == 0 {
         return 0;
     }
-    let level = if level > LEVEL_MAX { LEVEL_MAX } else { level } as u32;
-    let below = ((LEVEL_MAX as u32 - level) * STEPS as u32 / LEVEL_MAX as u32) as usize;
-    let i = if below >= STEPS { STEPS - 1 } else { below };
-    clamp(GAIN_Q31[i])
+    clamp(GAIN_Q31[steps_below(level)])
 }
 
 /// A gain no larger than the ceiling. The second line of defence: every gain that leaves this crate passes it.

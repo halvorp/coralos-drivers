@@ -6,7 +6,8 @@
 //!   depends on the controller (how many streams it states, where its capability blocks are) and is built once discovery has read that;
 //!   only the PLAYBACK stream's descriptor beyond its control and status bytes is writable.
 //! * **PCI configuration**: `PGCTL` and `CGCTL` (power and clock gating, `avs-fw-core::programs::gating`) - two dwords.
-//! * **I2C**: the codec's address and no other ([`I2cAllow`]). The speaker amplifiers' addresses are refused by NAME, whoever asks.
+//! * **I2C**: the codec's address, and the speaker amplifiers' ONLY while a speaker session has armed them, for the registers their plans write
+//!   and in the two shapes a register map has ([`I2cAllow`]); unarmed, their addresses are refused by NAME, whoever asks (DECISIONS D17).
 //! * **GPIO pads**: the speaker amplifiers' reset pad `PADCFG0`, to hold them in reset, and nothing else ([`PadAllow`]).
 //!
 //! The lists are the in-code half of the fence. The loader-facing half is the window grant, and the production machine builds the
@@ -225,42 +226,88 @@ impl Allow {
     }
 }
 
-/// The I2C addresses the device may transfer to: the codec's, and no other. The speaker amplifiers' are refused by name even if the
-/// codec's address were configured equal to one (the board record is refused at load in that case, [`crate::board::Board::check`]).
+/// The I2C addresses the device may transfer to: the codec's always, and the speaker amplifiers' ONLY while a speaker session has armed them
+/// (DECISIONS D17, amending D14), and then only the registers the amplifier plans write ([`max98373_core::plan::written_registers`]) in the
+/// two shapes a register map has - `[reg_hi, reg_lo, value]` and an address phase `[reg_hi, reg_lo]` followed by a one-byte read. Unarmed, an
+/// amplifier's address is refused by name whoever asks (also when the codec's address were configured equal to one: the board record is
+/// refused at load in that case, [`avs_wire::board::BoardError`]); armed, an address that is neither the codec's nor an amplifier's is
+/// still refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct I2cAllow {
     codec: Option<u16>,
     amps: Vec<u16>,
+    /// The amplifier registers a session may write or read back. Empty until [`I2cAllow::arm_amps`].
+    amp_regs: Vec<u16>,
+    armed: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum I2cRefusal {
     SpeakerAmplifier { addr: u16 },
     NotTheCodec { addr: u16 },
+    /// An armed amplifier was addressed with a register its plans never write (and the revision id is never written).
+    AmplifierRegister { addr: u16, reg: u16 },
+    /// An armed amplifier was addressed with a transfer that is not a one-register write or a one-register read.
+    AmplifierShape { addr: u16 },
 }
 
 impl I2cAllow {
     /// No board yet: every address is refused.
     pub const fn none() -> Self {
-        Self { codec: None, amps: Vec::new() }
+        Self { codec: None, amps: Vec::new(), amp_regs: Vec::new(), armed: false }
     }
     pub fn new(codec: u16, amps: &[u16]) -> Result<Self, AllowError> {
         let mut a = Vec::new();
         a.try_reserve_exact(amps.len()).map_err(|_| AllowError::OutOfMemory)?;
         a.extend_from_slice(amps);
-        Ok(Self { codec: Some(codec), amps: a })
+        Ok(Self { codec: Some(codec), amps: a, amp_regs: Vec::new(), armed: false })
     }
     pub fn codec(&self) -> Option<u16> {
         self.codec
     }
+    /// Let the amplifiers be addressed, for exactly the registers in `regs` (sorted or not). The caller disarms on every way out.
+    pub fn arm_amps(&mut self, regs: &[u16]) -> Result<(), AllowError> {
+        let mut r = Vec::new();
+        r.try_reserve_exact(regs.len()).map_err(|_| AllowError::OutOfMemory)?;
+        r.extend_from_slice(regs);
+        self.amp_regs = r;
+        self.armed = true;
+        Ok(())
+    }
+    pub fn disarm_amps(&mut self) {
+        self.armed = false;
+    }
+    pub fn amps_armed(&self) -> bool {
+        self.armed
+    }
+    /// The address alone.
     pub fn check(&self, addr: u16) -> Result<(), I2cRefusal> {
         if self.amps.contains(&addr) {
-            return Err(I2cRefusal::SpeakerAmplifier { addr });
+            return if self.armed { Ok(()) } else { Err(I2cRefusal::SpeakerAmplifier { addr }) };
         }
         if Some(addr) != self.codec {
             return Err(I2cRefusal::NotTheCodec { addr });
         }
         Ok(())
+    }
+    /// The whole transfer: the address, and for an amplifier the register and the shape. `wr` is what is written (the register, and for a
+    /// write the value), `read_len` the bytes read back after it (0 for a plain write).
+    pub fn check_msg(&self, addr: u16, wr: &[u8], read_len: usize) -> Result<(), I2cRefusal> {
+        self.check(addr)?;
+        if !self.amps.contains(&addr) {
+            return Ok(());
+        }
+        let reg = match (wr.len(), read_len) {
+            (3, 0) => u16::from_be_bytes([wr[0], wr[1]]),
+            (2, 1) => u16::from_be_bytes([wr[0], wr[1]]),
+            _ => return Err(I2cRefusal::AmplifierShape { addr }),
+        };
+        let readable_only = read_len == 1 && reg == max98373_core::regs::R21FF_REV_ID;
+        if readable_only || self.amp_regs.contains(&reg) {
+            Ok(())
+        } else {
+            Err(I2cRefusal::AmplifierRegister { addr, reg })
+        }
     }
 }
 

@@ -4,8 +4,12 @@
 //!
 //! THE LADDER (`ensure_ready`), each rung idempotent and re-tried at the next OPEN or START until it holds, and each failure naming its
 //! cause: board record -> speaker amplifiers held in reset -> PCI identity -> controller discovery (the write list is built from it) ->
-//! firmware set -> codec attach (initialised, safe state proven). Backend problems (windows, identity, controller) are BACKEND-UNAVAILABLE;
+//! firmware set -> codec attach (initialised, safe state proven) -> the speaker topology (NOT fatal: the headphones do not depend on it;
+//! DECISIONS D17). Backend problems (windows, identity, controller) are BACKEND-UNAVAILABLE;
 //! a missing or refused file is FIRMWARE-UNAVAILABLE naming the file; a failed step is INIT-FAILED naming the step.
+//!
+//! TWO OUTPUTS. A stream asks for the headphones, the speakers or `Auto` ([`Device::desired_output`]); the device runs the path it belongs on and
+//! moves it when the jack changes ([`Device::reroute`]), always taking the running path down - silence, off, proven - before the other starts.
 //!
 //! IDLE IS BLOCKED. [`Device::step`] is one blocking wait on the cAVS interrupt (only while a DSP session is running), the jack event, the
 //! client's requests, and at most two deadlines: the codec's delayed ground switch and the running stream's watchdog. With nothing running
@@ -19,9 +23,10 @@ use crate::log::emit;
 use crate::machine::{Machine, Want, Wake};
 use crate::rig::Rig;
 use crate::session::{self, Bufs, Dsp, StartFail};
+use crate::speakers::Speakers;
 use crate::stream::{Fifo, FIFO_PERIODS};
 use avs_wire::board::{Board, BOARD_FILE};
-use avs_wire::{Cause, Jack, SpeakerHold, State, StatusBody};
+use avs_wire::{Cause, Jack, Output, Route, SpeakerHold, State, StatusBody};
 use avs_fw_core::effect::Space;
 
 /// A running stream that has seen no period interrupt for this long has stalled: three times the ring.
@@ -33,6 +38,8 @@ pub struct SafeReport {
     pub codec_safe: bool,
     pub dma_stopped: bool,
     pub dsp_off: bool,
+    /// The speaker amplifiers' reset line was driven low and read back low.
+    pub speakers_held: bool,
 }
 
 /// A named reason with the number that goes with it.
@@ -45,6 +52,8 @@ pub struct Why {
 /// The open stream. One at a time: a second open is refused by name.
 pub struct Stream {
     pub id: u32,
+    /// Where the client asked to be played.
+    pub route: Route,
     pub fifo: Fifo,
     /// The client asked for it to run (it may still be suspended: no headphones, a fault).
     pub want_running: bool,
@@ -70,6 +79,12 @@ pub struct Device<M: Machine> {
     pub rig: Rig<M>,
     pub board: Option<Board>,
     pub(crate) codec: Option<Codec>,
+    /// The speaker amplifiers of a board this port knows (the Pixelbook Go's two MAX98373), when the board record lists them.
+    pub(crate) speakers: Option<Speakers>,
+    /// `max98373-tplg.bin`, once fetched and checked.
+    pub(crate) speaker_topology: Option<alloc::vec::Vec<u8>>,
+    /// Why the speaker topology is not here (the last attempt).
+    pub(crate) speaker_fw_fail: Option<Why>,
     pub(crate) ctl: Option<Controller>,
     pub(crate) files: Option<Files>,
     pub(crate) bufs: Option<Bufs>,
@@ -111,6 +126,9 @@ impl<M: Machine> Device<M> {
             rig: Rig::new(m, Allow::read_only(), I2cAllow::none(), crate::allow::PadAllow::none()),
             board: None,
             codec: None,
+            speakers: None,
+            speaker_topology: None,
+            speaker_fw_fail: None,
             ctl: None,
             files: None,
             bufs: None,
@@ -187,6 +205,14 @@ impl<M: Machine> Device<M> {
             Err(_) => return false,
         }
         self.rig.m.board_loaded(&board);
+        // the speakers: a board whose amplifiers are the Pixelbook Go's; any other board has no speaker path (SPEAKER-PROTECTION-UNAVAILABLE)
+        self.speakers = match Speakers::for_board(board.amps(), board.spkr_rst_pad) {
+            Ok(s) => s,
+            Err(e) => {
+                emit(&mut self.rig.m, format_args!("[AVS-DEV GAP step=SPEAKERS why={}]", e.step()));
+                None
+            }
+        };
         self.codec = Some(codec);
         self.board = Some(board);
         true
@@ -297,7 +323,60 @@ impl<M: Machine> Device<M> {
                 }
             }
         }
+        self.load_speaker_topology();
         true
+    }
+
+    /// The speaker topology, once. A refusal is recorded and shown (status `speaker`, a speaker open's cause) and retried at the next open or
+    /// start; it never fails the ladder.
+    fn load_speaker_topology(&mut self) {
+        if self.speaker_topology.is_some() || self.speakers.is_none() {
+            return;
+        }
+        let Some(board) = self.board else { return };
+        let ssp = board.speaker_ssps().first().copied().unwrap_or(0);
+        match firmware::load_speaker_topology(&mut self.rig.m, ssp) {
+            Ok(b) => {
+                emit(&mut self.rig.m, format_args!("[AVS-DEV FIRMWARE speaker-topology={}B]", b.len()));
+                self.speaker_topology = Some(b);
+                self.speaker_fw_fail = None;
+            }
+            Err(f) => {
+                emit(&mut self.rig.m, format_args!("[AVS-DEV GAP step=SPEAKER-TOPOLOGY file={} why={}]", f.file, f.why));
+                self.speaker_fw_fail = Some(Why { step: f.why, detail: 0 });
+            }
+        }
+    }
+
+    /// Can the speaker path run now? The board's amplifiers, the checked topology, and the reset line proven held.
+    pub fn speaker_ready(&self) -> bool {
+        self.speakers.is_some() && self.speaker_topology.is_some() && matches!(self.st.speaker_hold, SpeakerHold::Held | SpeakerHold::Released)
+    }
+
+    /// Does this board have a speaker path at all (the record lists the Pixelbook Go's amplifiers)?
+    pub fn speakers_on_board(&self) -> bool {
+        self.speakers.is_some()
+    }
+
+    /// Where the open stream should be playing right now, if anywhere. Headphones need a plug; speakers need the protected path ready;
+    /// `Auto` is the headphones while there is a plug and the speakers while there is not.
+    pub fn desired_output(&self) -> Option<Output> {
+        let s = self.stream.as_ref()?;
+        let plug = self.jack != Jack::Absent;
+        let spk = self.speaker_ready();
+        match s.route {
+            Route::Headphones => plug.then_some(Output::Headphones),
+            Route::Speakers => spk.then_some(Output::Speakers),
+            Route::Auto => {
+                if plug {
+                    Some(Output::Headphones)
+                } else if spk {
+                    Some(Output::Speakers)
+                } else {
+                    None
+                }
+            }
+        }
     }
 
     // ---- sessions ----
@@ -308,6 +387,7 @@ impl<M: Machine> Device<M> {
     }
 
     fn try_start(&mut self) -> Result<Dsp, StartFail> {
+        let Some(out) = self.desired_output() else { return Err(StartFail::Layout("no-output")) };
         let (Some(board), Some(ctl), Some(codec), Some(stream)) = (self.board, self.ctl.as_ref(), self.codec.as_mut(), self.stream.as_mut()) else {
             return Err(StartFail::Layout("not-ready"));
         };
@@ -317,12 +397,16 @@ impl<M: Machine> Device<M> {
         }
         let Some(bufs) = self.bufs.as_ref() else { return Err(StartFail::OutOfMemory) };
         // the speakers stay held: re-asserted at every session start, so a reset line something else released is caught here
-        self.st.speaker_hold = gpio::hold_speakers(&mut self.rig, board.spkr_rst_pad);
+        self.st.speaker_hold = match self.speakers.as_mut() {
+            Some(s) => s.hold(&mut self.rig),
+            None => gpio::hold_speakers(&mut self.rig, board.spkr_rst_pad),
+        };
         if self.st.speaker_hold == SpeakerHold::Failed {
             return Err(StartFail::Layout("speaker-hold"));
         }
         let level = if self.mute { Some(0) } else { self.level };
-        session::start_dsp(&mut self.rig, &session::StartArgs { ctl, files, bufs, board: &board, level }, codec, &mut stream.fifo)
+        let args = session::StartArgs { ctl, files, bufs, board: &board, level, out, speaker_topology: self.speaker_topology.as_deref() };
+        session::start_dsp(&mut self.rig, &args, codec, self.speakers.as_mut(), &mut stream.fifo)
     }
 
     /// Bring a DSP session up for the open stream. On failure the device is left in the safe state with the fault recorded.
@@ -335,14 +419,18 @@ impl<M: Machine> Device<M> {
                 self.dsp = Some(dsp);
                 self.fault = None;
                 self.st.safe_verified = false; // the path is live: the safe state is no longer the state
+                if self.dsp.as_ref().is_some_and(|d| d.out == Output::Speakers) {
+                    self.st.speaker_hold = SpeakerHold::Released;
+                }
                 self.rig.m.rearm_avs_irq();
-                emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION up in {} ms]", ms));
+                emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION up in {} ms output={}]", ms, self.dsp.as_ref().map_or("none", |d| d.out.name())));
                 Ok(())
             }
             Err(e) => {
                 self.stats.faults += 1;
                 self.fault = Some(Why { step: e.step(), detail: e.detail() });
-                self.st.safe_verified = self.codec.as_mut().is_some_and(|c| c.is_safe(&mut self.rig));
+                self.st.safe_verified = self.output_stage_is_safe();
+                self.settle_speaker_hold();
                 emit(&mut self.rig.m, format_args!("[AVS-DEV FAIL step={} stage={} detail={:#x} safe={}]", e.step(), e.stage(), e.detail(), self.st.safe_verified));
                 Err(e)
             }
@@ -358,8 +446,11 @@ impl<M: Machine> Device<M> {
             s.underruns_base = s.underruns_base.saturating_add(dsp.acct.underruns);
         }
         let (Some(ctl), Some(codec)) = (self.ctl.as_ref(), self.codec.as_mut()) else { return };
-        let rep = session::stop_dsp(&mut self.rig, ctl, codec, dsp, graceful);
+        let rep = session::stop_dsp(&mut self.rig, ctl, codec, self.speakers.as_mut(), dsp, graceful);
         self.st.safe_verified = rep.codec_safe;
+        if let Some(h) = rep.spk_hold {
+            self.st.speaker_hold = h;
+        }
         emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION down codec_safe={} dsp_off={} errors={}]", rep.codec_safe, rep.dsp_off, rep.errors));
     }
 
@@ -369,20 +460,49 @@ impl<M: Machine> Device<M> {
         emit(&mut self.rig.m, format_args!("[AVS-DEV FAULT step={} detail={:#x}]", step, detail));
         self.stop_session(false);
         if self.dsp.is_none() && !self.st.safe_verified {
-            // no session to unwind (or its unwind could not prove it): ask the codec directly
-            if let Some(c) = self.codec.as_mut() {
-                self.st.safe_verified = c.safe_state(&mut self.rig).is_ok();
-            }
+            // no session to unwind (or its unwind could not prove it): ask the output stages directly
+            let codec_safe = self.codec.as_mut().is_some_and(|c| c.safe_state(&mut self.rig).is_ok());
+            let spk_safe = self.speakers.as_mut().is_none_or(|s| s.safe(&mut self.rig, true).verified());
+            self.st.safe_verified = codec_safe && spk_safe;
         }
         self.fault = Some(Why { step, detail });
         self.publish();
+    }
+
+    /// After a failed start: the status's hold is what the pad says now, not what it said before the amplifiers were released.
+    fn settle_speaker_hold(&mut self) {
+        if matches!(self.st.speaker_hold, SpeakerHold::Held | SpeakerHold::Released) {
+            let held = self.speakers.as_ref().map(|s| s.pad()).is_some_and(|pad| crate::gpio::speakers_held(&mut self.rig, pad));
+            self.st.speaker_hold = if held { SpeakerHold::Held } else { SpeakerHold::Failed };
+        }
+    }
+
+    /// Is every output stage in its verified safe state right now? The codec by readback; the amplifiers in hardware reset by the pad.
+    fn output_stage_is_safe(&mut self) -> bool {
+        let codec = self.codec.as_mut().is_some_and(|c| c.is_safe(&mut self.rig));
+        let spk = match self.speakers.as_ref() {
+            Some(s) => {
+                let pad = s.pad();
+                crate::gpio::speakers_held(&mut self.rig, pad)
+            }
+            None => true,
+        };
+        codec && spk
     }
 
     /// What a dying task does: the codec to its safe state, the playback stream's DMA stopped, the DSP core off. Register writes and the
     /// codec's plans only - no allocation, no messages - because it runs when the task is already broken (a panic). It needs no session
     /// record: the stream and the core are the ones the board names, found by discovery.
     pub fn emergency_safe_state(&mut self) -> SafeReport {
+        self.safe_pass(true)
+    }
+
+    fn safe_pass(&mut self, speakers: bool) -> SafeReport {
         let mut rep = SafeReport::default();
+        // the amplifiers first: they are what can hurt something
+        if let (true, Some(s)) = (speakers, self.speakers.as_mut()) {
+            rep.speakers_held = s.emergency(&mut self.rig).verified();
+        }
         if let Some(c) = self.codec.as_mut() {
             rep.codec_safe = c.safe_state(&mut self.rig).is_ok();
         }
@@ -404,7 +524,19 @@ impl<M: Machine> Device<M> {
             return SafeReport::default();
         }
         let Some(board) = self.board else { return SafeReport::default() };
-        self.st.speaker_hold = gpio::hold_speakers(&mut self.rig, board.spkr_rst_pad);
+        // the reset line first of all: through the speakers' own emergency pass (their parts off if the fence is armed, then the line low) on a
+        // board that has them, directly on any other
+        let speakers_held = match self.speakers.as_mut() {
+            Some(s) => {
+                let h = s.emergency(&mut self.rig).verified();
+                self.st.speaker_hold = if h { SpeakerHold::Held } else { SpeakerHold::Failed };
+                Some(h)
+            }
+            None => {
+                self.st.speaker_hold = gpio::hold_speakers(&mut self.rig, board.spkr_rst_pad);
+                None
+            }
+        };
         if let Ok(v) = self.rig.read32(Space::PciConfig, 0) {
             self.pci_ok = v == (board.pci_vendor as u32 | (board.pci_device as u32) << 16);
         }
@@ -417,8 +549,9 @@ impl<M: Machine> Device<M> {
                 }
             }
         }
-        let rep = self.emergency_safe_state();
-        emit(&mut self.rig.m, format_args!("[AVS-DEV SAFE-ONLY codec_safe={} dma_stopped={} dsp_off={} hold={}]", rep.codec_safe, rep.dma_stopped, rep.dsp_off, self.st.speaker_hold.name()));
+        let mut rep = self.safe_pass(false);
+        rep.speakers_held = speakers_held.unwrap_or(self.st.speaker_hold == SpeakerHold::Held);
+        emit(&mut self.rig.m, format_args!("[AVS-DEV SAFE-ONLY codec_safe={} dma_stopped={} dsp_off={} hold={} speakers_held={}]", rep.codec_safe, rep.dma_stopped, rep.dsp_off, self.st.speaker_hold.name(), rep.speakers_held));
         rep
     }
 
@@ -559,23 +692,31 @@ impl<M: Machine> Device<M> {
         }
     }
 
-    /// The jack changed to `to`: suspend or resume the stream around it.
+    /// The jack changed to `to`: move the stream to the path it now belongs on. The path in use is taken down FIRST (silence, off, proven) and
+    /// only then is the other one started; a stream with nowhere to play is held, and the status says why.
     pub(crate) fn jack_changed(&mut self, to: Jack) {
         let was = self.jack;
         self.jack = to;
         emit(&mut self.rig.m, format_args!("[AVS-DEV JACK {} -> {}]", was.name(), to.name()));
         if to == Jack::Absent {
             self.gnd_deadline = None;
-            if self.dsp.is_some() {
-                // the headphones are out: mute and take the path down NOW, before anything else is serviced
-                self.stop_session(true);
-            }
-        } else if was == Jack::Absent && self.stream.as_ref().is_some_and(|s| s.want_running) && self.dsp.is_none() && self.fault.is_none()
-            && self.ensure_ready() {
-                let _ = self.start_session();
-            }
+        }
+        self.reroute();
         self.send_jack_event();
         self.publish();
+    }
+
+    /// Make the running path the desired one: stop what should not be running, then start what should.
+    pub(crate) fn reroute(&mut self) {
+        let want = self.desired_output();
+        let have = self.dsp.as_ref().map(|d| d.out);
+        if have.is_some() && have != want {
+            // the headphones are out (mute and take the path down NOW, before anything else is serviced), or the other path is wanted
+            self.stop_session(true);
+        }
+        if self.dsp.is_none() && want.is_some() && self.stream.as_ref().is_some_and(|s| s.want_running) && self.fault.is_none() && self.ensure_ready() {
+            let _ = self.start_session();
+        }
     }
 
     /// For the jack module.

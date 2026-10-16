@@ -123,7 +123,8 @@ fn every_coded_enum_round_trips_and_rejects_the_next_value() {
     for s in SpeakerHold::ALL {
         assert_eq!(SpeakerHold::from_raw(*s as u8), Some(*s));
     }
-    assert_eq!(SpeakerHold::from_raw(4), None);
+    assert_eq!(SpeakerHold::from_raw(4), Some(SpeakerHold::Released));
+    assert_eq!(SpeakerHold::from_raw(5), None);
     // the speakers are refused or protected (D17); the running stream's path is none, headphones or speakers
     assert_eq!(Speaker::ALL, &[Speaker::Refused, Speaker::Protected]);
     assert_eq!(Speaker::from_raw(0), Some(Speaker::Refused));
@@ -174,7 +175,7 @@ fn a_status_body_round_trips_and_names_its_step() {
 fn a_status_body_with_a_bad_field_is_refused_by_name() {
     let mut b = [0u8; 128];
     let n = StatusBody::new().encode(&mut b).unwrap();
-    for (off, v, why) in [(0usize, 6u8, "state"), (1, 6, "cause"), (2, 3, "jack"), (3, 4, "stream"), (4, 2, "safe"), (5, 2, "speaker"), (6, 4, "hold"), (7, 3, "output")] {
+    for (off, v, why) in [(0usize, 6u8, "state"), (1, 6, "cause"), (2, 3, "jack"), (3, 4, "stream"), (4, 2, "safe"), (5, 2, "speaker"), (6, 5, "hold"), (7, 3, "output")] {
         let mut bad = b;
         bad[off] = v;
         assert!(StatusBody::decode(&bad[..n]).is_err(), "{why}");

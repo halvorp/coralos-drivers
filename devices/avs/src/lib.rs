@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! avs.device - the Intel cAVS audio DSP (Sunrise Point-LP / Kaby Lake, PCI 8086:9d71) and the Dialog DA7219 headset codec of the Pixelbook
-//! Go (ATLAS) as a ring-3 CoralOS `.device`. HEADPHONES ONLY. The speaker amplifiers are never addressed: their I2C addresses are refused
-//! by name at two layers, their SSP is refused before a pipeline exists, their reset pad is driven low to hold them, and the speaker route
-//! is answered `SPEAKER-PROTECTION-UNAVAILABLE` (Astra audio ruling, 2026-10-12).
+//! Go (ATLAS) as a ring-3 CoralOS `.device`: the headphones, and - DECISIONS D17, which amends D11/D14 - the two MAX98373 speaker amplifiers
+//! as a PROTECTED path ([`speakers`]): held in hardware reset except while a speaker session runs, configured with ChromeOS's UCM protection
+//! set and READ BACK before they are enabled, fed through a DSP volume stage that can never exceed a hard ceiling, and returned to the
+//! reset on stop, unplug, fault and death. A board that cannot offer that path answers `SPEAKER-PROTECTION-UNAVAILABLE` and touches nothing.
+//! (The Astra audio ruling of 2026-10-12 put headphones first; the owner's ruling of 2026-10-16 admitted the speakers on these terms.)
 //!
 //! WHAT IT IS. The wave-1 and wave-2 cores are PLANS (data, no effects): avs-fw-core boots the DSP, avs-ipc-core speaks to it,
 //! avs-topology-core reads the topology and NHLT, hda-ext-core drives the host stream, avs-boot-core orders all of it, da7219-core plans the
-//! codec. This crate EXECUTES them: [`fwexec`] and [`ipcrun`] over the registers and the interrupt [`pump`], [`i2c`] and [`codec`] over the
+//! codec, max98373-core the speaker amplifiers and their gain ceiling. This crate EXECUTES them: [`fwexec`] and [`ipcrun`] over the registers and the interrupt [`pump`], [`i2c`] and [`codec`] over the
 //! codec's bus, [`gpio`] for the two pads, [`firmware`] for the files, [`session`] for one DSP session, [`device`] / [`serve`] / [`jack`] for
-//! the state machine and the protocol (`avs-wire`) Aura.engine speaks.
+//! the state machine and the protocol (`avs-wire`) Aura.engine speaks, [`speakers`] for the amplifiers.
 //!
 //! THE FENCES ([`allow`], [`rig`]). Registers: the plans' write sets, register by register and width by width, built once the controller
-//! has been read; the loader-facing grant is built FROM them. I2C: the codec's address only. Pads: the speaker-reset pad's `PADCFG0` only.
-//! `tests/allow.rs` runs every plan against the lists and requires set equality.
+//! has been read; the loader-facing grant is built FROM them. I2C: the codec's address, and the amplifiers' ONLY while a speaker session has
+//! armed them, only for the registers the amplifier plans write, and only as a one-register write or read. Pads: the speaker-reset pad's
+//! `PADCFG0` only. `tests/fences.rs` runs every plan against the lists and requires set equality.
 //!
 //! IDLE IS BLOCKED. With nothing running the task sleeps in one wait for a request or a jack event. While a stream plays it also wakes on the
 //! cAVS interrupt and a watchdog deadline. Every other wait is a bounded step of a plan.
@@ -44,6 +47,7 @@ pub mod rig;
 pub mod rt;
 pub mod serve;
 pub mod session;
+pub mod speakers;
 pub mod stream;
 pub mod wire;
 

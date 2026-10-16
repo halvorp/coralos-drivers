@@ -113,6 +113,21 @@ fn the_level_map_is_monotonic() {
 }
 
 #[test]
+fn the_step_below_the_ceiling_is_the_levels_position() {
+    assert_eq!(steps_below(LEVEL_MAX), 0);
+    assert_eq!(steps_below(u16::MAX), 0, "a level past the scale is the top");
+    assert_eq!(steps_below(1), STEPS - 1);
+    assert_eq!(steps_below(0), STEPS - 1, "silence is reported as the quietest step; the gain itself is 0");
+    // 1000 levels over 64 steps: 15.625 levels per step, floor
+    assert_eq!(steps_below(985), 0);
+    assert_eq!(steps_below(984), 1);
+    assert_eq!(steps_below(500), 32);
+    for level in 1..=LEVEL_MAX {
+        assert_eq!(linear_for(level, false), GAIN_Q31[steps_below(level)]);
+    }
+}
+
+#[test]
 fn clamp_is_the_second_line_of_defence() {
     assert_eq!(clamp(0), 0);
     assert_eq!(clamp(CEILING_LINEAR), CEILING_LINEAR);
