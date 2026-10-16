@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "iwlwifi-fw-image-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+iwlwifi-fw-tlv-core = { path = "../iwlwifi-fw-tlv-core" }
+
+[workspace]
+# Standalone workspace (PORT_CONVENTIONS.md 7a).

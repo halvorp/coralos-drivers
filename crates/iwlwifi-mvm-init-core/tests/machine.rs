@@ -678,3 +678,23 @@ fn unexpected_events_are_named_with_the_state() {
         Action::Failed(Failure::UnexpectedEvent { state: State::NvmWaitReply })
     );
 }
+
+#[test]
+fn set_valid_antennas_after_the_nvm_walk_changes_what_both_commands_carry() {
+    // mvm/fw.c:772 and :776 read iwl_mvm_get_valid_tx_ant() / iwl_mvm_get_phy_config() AFTER iwl_nvm_init
+    // (mvm/mvm.h:1757-1800): the firmware's mask ANDed with the NVM's. cfg() starts at 1/1; the NVM said 3/2.
+    let mut c = cfg();
+    c.nvm_already_loaded = true;
+    c.fw_phy_config = 0x0033_0015; // tx chain 3, rx chain 3 in the firmware's word
+    let mut m = Machine::new(c);
+    assert_eq!(to_alive(&mut m).action, Action::CheckRfkill);
+    m.set_valid_antennas(3, 2);
+    assert_eq!(m.step(Event::Rfkill(false)).action, Action::SendTxAntCfg { valid_tx_ant: 3 });
+    match m.step(Event::CmdSent(SendStatus::Ok)).action {
+        Action::SendPhyCfg(p) => {
+            // phy_cfg = fw_phy_config & (~(TX|RX chain) | tx << 16 | rx << 20), mvm/mvm.h:1789-1800
+            assert_eq!(p.phy_cfg, 0x0023_0015);
+        }
+        a => panic!("{a:?}"),
+    }
+}
