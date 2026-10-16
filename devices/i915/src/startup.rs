@@ -18,6 +18,8 @@ pub struct Ready {
     pub active_pipes: u32,
     /// How many register reads the readout made (it makes no writes).
     pub reads: u32,
+    /// What the device made of the firmware's display (D17): adopted and kept, or refused by name. Nothing was written either way.
+    pub adoption: crate::display::Adoption,
 }
 
 /// Why bring-up stopped, named.
@@ -108,8 +110,10 @@ pub fn startup<B: RegRead, C: RegRead, L: Log>(bar: &mut B, cfg: &mut C, log: &m
         return Err(StartError::ReadRefused { off, err });
     }
     let active_pipes = report::all(log, &state);
+    let adoption = crate::display::Adoption::of(&state);
+    adoption.report(log);
     emit(log, format_args!("[I915-KBL-DEV READY pipes_active={} reads={} writes=0 refusals=0]", active_pipes, reads));
-    Ok(Ready { identity, device, state, active_pipes, reads })
+    Ok(Ready { identity, device, state, active_pipes, reads, adoption })
 }
 
 /// Why the whole bring-up (gate, display readout, forcewake proof of life) stopped, named.

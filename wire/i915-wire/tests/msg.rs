@@ -4,6 +4,7 @@
 use i915_wire::codec::{Reader, Writer};
 use i915_wire::msg::ctx::*;
 use i915_wire::msg::device::*;
+use i915_wire::msg::display::*;
 use i915_wire::msg::exec::{self, *};
 use i915_wire::msg::gem::*;
 use i915_wire::msg::prime::*;
@@ -68,6 +69,12 @@ fn every_opcode_number_is_pinned_and_introduced_by_the_right_minor() {
         (Opcode::PrimeGrant, 0x164, 4, "PRIME-GRANT"),
         (Opcode::SyncFileGrant, 0x165, 4, "SYNC-FILE-GRANT"),
         (Opcode::SyncFileRedeem, 0x166, 4, "SYNC-FILE-REDEEM"),
+        (Opcode::DisplayQuery, 0x170, 5, "DISPLAY-QUERY"),
+        (Opcode::DisplaySetMode, 0x171, 5, "DISPLAY-SET-MODE"),
+        (Opcode::ScanoutAcquire, 0x172, 5, "SCANOUT-ACQUIRE"),
+        (Opcode::ScanoutBegin, 0x173, 5, "SCANOUT-BEGIN"),
+        (Opcode::ScanoutPresent, 0x174, 5, "SCANOUT-PRESENT"),
+        (Opcode::ScanoutWait, 0x175, 5, "SCANOUT-WAIT"),
     ];
     for (op, n, since, name) in table {
         assert_eq!(*op as u32, *n);
@@ -176,9 +183,10 @@ fn every_fixed_message_is_transactional_and_ignores_no_byte() {
         exec::ExecHeader, ExecObject, Reloc, exec::Fence, ExtHeader, ExecRepHead, RelocUpdate, SyncobjCreateReq, SyncobjHandleRep, SyncobjDestroyReq, SyncobjWaitHead,
         SyncobjWaitRep, SyncobjArrayHead, SyncobjQueryRepHead, SyncobjTransferReq, SyncobjHandleToFdReq, SyncobjTokenRep, SyncobjFdToHandleReq, FdCloseReq, SyncFileMergeReq,
         SyncFileTokenRep, SyncFileWaitReq, SyncFileWaitRep, PrimeHandleToFdReq, PrimeTokenRep, PrimeFdToHandleReq, PrimeHandleRep, DmabufExportSyncFileReq, DmabufSyncFileRep,
-        DmabufImportSyncFileReq, PrimeGrantReq, SyncFileGrantReq, SyncFileGrantRep, SyncFileRedeemReq,
+        DmabufImportSyncFileReq, PrimeGrantReq, SyncFileGrantReq, SyncFileGrantRep, SyncFileRedeemReq, DisplayQueryRep, DisplayModeReq, ScanoutAcquireRep,
+        ScanoutBeginReq, ScanoutPresentReq, ScanoutPresentRep, ScanoutWaitReq, ScanoutStatusRep,
     );
-    assert_eq!(n, 76, "the message count is pinned: a message added or dropped changes this");
+    assert_eq!(n, 84, "the message count is pinned: a message added or dropped changes this");
 }
 
 #[test]

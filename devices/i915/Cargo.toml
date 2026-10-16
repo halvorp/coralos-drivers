@@ -49,6 +49,8 @@ i915-memory-core = { path = "../../crates/i915-memory-core" }
 i915-submit-core = { path = "../../crates/i915-submit-core" }
 i915-display-clock-core = { path = "../../crates/i915-display-clock-core" }
 i915-display-link-core = { path = "../../crates/i915-display-link-core" }
+# D17 display ownership: the adoption predicate (initial plane config, GGTT extent, the one offered mode) and the surface-replacement plan
+i915-display-modeset-core = { path = "../../crates/i915-display-modeset-core" }
 # the uAPI service (src/uapi, feature p3-exec): GEM planning, uAPI validation, drm_syncobj semantics
 i915-gem-core = { path = "../../crates/i915-gem-core", optional = true }
 i915-uapi-core = { path = "../../crates/i915-uapi-core", optional = true }
