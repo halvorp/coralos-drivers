@@ -441,3 +441,42 @@ fn every_bar0_write_of_a_full_bring_up_is_inside_the_write_allow_list() {
         .collect();
     assert_eq!(outside, vec![], "BAR0 writes the allow-list would refuse");
 }
+
+/// A card that dies after a green HW-READY must be named at the stage where the latch is first seen, with the
+/// gp_cntrl the handshake read, and bring-up must fail there - not later with an anonymous errno.
+#[test]
+fn a_latched_nic_fault_is_named_by_stage_with_its_gp_cntrl_and_fails_that_stage() {
+    use iwlwifi_pcie_nic_core::bus::NicIo;
+    use iwlwifi_pcie_trans_core::io::TransIo;
+    let b = build(&Opts::default());
+    let sim = world(&b);
+    let mut d = driver(&sim, &b);
+    let kill = d.t.start_hw().expect("start_hw");
+    assert!(!kill);
+    assert_eq!(d.nic_fault_check("start_hw"), Ok(()), "a healthy card says nothing");
+    sim.w().wedge_mac_access = true;
+    let _ = d.t.nic.prph_read(0x3000); // the access that times out and latches
+    assert!(d.t.nic.fault().is_some());
+    let r = d.nic_fault_check("start_fw");
+    assert!(matches!(r, Err(DriverError::NicFault { stage: "start_fw", .. })), "{r:?}");
+    let gp = match r {
+        Err(DriverError::NicFault { gp_cntrl, .. }) => gp_cntrl,
+        _ => unreachable!(),
+    };
+    let line = sim.w().log.iter().find(|l| l.contains("[IWL-NIC-FAULT")).cloned().expect("marker logged");
+    assert_eq!(line, format!("[IWL-NIC-FAULT stage=start_fw gp_cntrl={gp:#010x}]"));
+}
+
+/// The same through `bring_up`: the card wedges right after the firmware is loaded (a scheduled device event), and the
+/// run ends with the named stage marker.
+#[test]
+fn bring_up_on_a_card_that_wedges_mid_flight_ends_with_a_nic_fault_marker() {
+    let b = build(&Opts::default());
+    let sim = world(&b);
+    sim.w().schedule(8_000, sim::Ev::Custom(Box::new(|w: &mut sim::World| w.wedge_mac_access = true)));
+    let mut d = driver(&sim, &b);
+    let r = d.bring_up();
+    assert!(r.is_err(), "{r:?}");
+    let log = sim.w().log.clone();
+    assert!(log.iter().any(|l| l.starts_with("[IWL-NIC-FAULT stage=")), "{log:#?}");
+}

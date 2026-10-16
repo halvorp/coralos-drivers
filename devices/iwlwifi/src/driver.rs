@@ -24,7 +24,7 @@ use iwlwifi_mvm_init_core::encode::{encode_nvm_read, encode_phy_cfg_v1, encode_t
 use iwlwifi_mvm_init_core::ids::*;
 use iwlwifi_mvm_init_core::machine::{Action, Config, Event, Failure, Machine, NvmType, SendStatus, State};
 use iwlwifi_nvm_parse_core::{channels, mac_from_csr, parse_ext, NvmChannel, NvmData, NvmError, CSR_MAC_ADDR0_OTP, CSR_MAC_ADDR0_STRAP, CSR_MAC_ADDR1_OTP, CSR_MAC_ADDR1_STRAP};
-use iwlwifi_pcie_nic_core::bus::NicIo;
+use iwlwifi_pcie_nic_core::bus::{NicFault, NicIo};
 use iwlwifi_pcie_nic_core::load::LoadReport;
 use iwlwifi_pcie_ring_core::tx::Chunk;
 use iwlwifi_pcie_trans_core::io::TransIo;
@@ -47,6 +47,10 @@ pub enum DriverError {
     Nvm(NvmError),
     /// The firmware sent a status other than 0xCAFE.
     AliveStatus(u16),
+    /// The NIC-access handshake timed out earlier and the card is latched dead (`STATUS_TRANS_DEAD`, trans.c:2339):
+    /// `stage` is the first bring-up stage after which the latch was seen. CoralOS addition: Linux's callers see the
+    /// -EIO of the access that failed; this driver reads 0x5a5a5a5a as a value, so the latch is checked by name.
+    NicFault { stage: &'static str, gp_cntrl: u32 },
 }
 
 impl DriverError {
@@ -57,6 +61,7 @@ impl DriverError {
             DriverError::Init(_) => "IWL-INIT",
             DriverError::Alive(_) | DriverError::AliveStatus(_) => "IWL-ALIVE",
             DriverError::Nvm(_) => "IWL-NVM",
+            DriverError::NicFault { .. } => "IWL-NIC-FAULT",
         }
     }
 }
@@ -95,6 +100,20 @@ pub struct Driver<H: Host> {
     pub mac: Option<[u8; 6]>,
     pub channels: Vec<NvmChannel>,
     nvm_sections: Vec<Option<Vec<u8>>>,
+}
+
+/// The bring-up stage an [`Action`] belongs to, for `[IWL-NIC-FAULT stage=…]`.
+fn stage_of(a: &Action) -> &'static str {
+    match a {
+        Action::StartFw => "start_fw",
+        Action::WaitAlive { .. } => "alive",
+        Action::ReadNvmChunk { .. } => "nvm-read",
+        Action::CheckRfkill => "rfkill-check",
+        Action::SendTxAntCfg { .. } => "tx-ant-cfg",
+        Action::SendPhyCfg(_) => "phy-cfg",
+        Action::WaitCalib { .. } | Action::Pending => "calib",
+        Action::Done | Action::Failed(_) => "end",
+    }
 }
 
 fn status_of(r: Result<Rx, TransportError>) -> SendStatus {
@@ -151,6 +170,18 @@ impl<H: Host> Driver<H> {
         r
     }
 
+    /// If the NIC-access handshake has failed, say so by name and fail `stage`: a latched fault must never hide
+    /// behind a green marker. `[IWL-NIC-FAULT stage=<stage> gp_cntrl=0x........]`
+    pub fn nic_fault_check(&mut self, stage: &'static str) -> Result<(), DriverError> {
+        match self.t.nic.fault() {
+            None => Ok(()),
+            Some(NicFault::AccessTimeout { gp_cntrl }) => {
+                self.log(format_args!("[IWL-NIC-FAULT stage={stage} gp_cntrl={gp_cntrl:#010x}]"));
+                Err(DriverError::NicFault { stage, gp_cntrl })
+            }
+        }
+    }
+
     /// `iwl_fwrt_dump_lmac_error_log` and `_umac_`: read the error tables the ALIVE pointed at and log them.
     /// // fw/dump.c:146-231
     pub fn dump_fw_error(&mut self, image: Image) {
@@ -185,6 +216,7 @@ impl<H: Host> Driver<H> {
 
     fn bring_up_inner(&mut self) -> Result<InitReport, DriverError> {
         let kill = self.t.start_hw()?;
+        self.nic_fault_check("start_hw")?;
         let (hw_rev, name) = (self.t.hw_rev, if self.t.hw_rev & 0xF == 1 { 'B' } else { 'C' });
         self.log(format_args!("[IWL-HW-READY hw_rev={hw_rev:#010x} step={name} rfkill={}]", if kill { "ON" } else { "off" }));
         let cfg = self.init_config();
@@ -279,8 +311,10 @@ impl<H: Host> Driver<H> {
                     return Err(DriverError::Init(f));
                 }
             };
+            self.nic_fault_check(stage_of(&action))?;
             step = m.step(ev);
         }
+        self.nic_fault_check("init-complete")?;
         let nvm = self.nvm.ok_or(DriverError::Init(Failure::UnexpectedEvent { state: m.state() }))?;
         let mac = self.mac.unwrap_or([0; 6]);
         let alive = self.alive.ok_or(DriverError::AliveStatus(0))?;
