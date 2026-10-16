@@ -66,6 +66,9 @@ pub struct RenderConfig {
     pub quirks: FlushQuirks,
     /// The engine's stall bound in milliseconds (the unit of `Hw::now_ms`).
     pub stall_bound_ms: u64,
+    /// The GGTT range that is LIVE before bring-up - the framebuffer the panel is showing (`crate::display::Adoption::keep`): its
+    /// entries are never written and no bind lands on it (`Gtt::new_ggtt_preserving`). `None` = nothing adopted.
+    pub keep: Option<i915_memory_core::Preallocated>,
 }
 
 #[derive(Debug)]
@@ -181,6 +184,9 @@ pub struct UapiService {
     pub(crate) lease_sys: alloc::boxed::Box<dyn super::kernel_lease::LeaseSys>,
     /// Pages never reused because the kernel would not confirm their lease ended.
     pub(crate) quarantined: usize,
+    /// The display this device adopted from the firmware (D18), and which session, if any, is its AUTHORITY.
+    pub(crate) display: crate::display::Adoption,
+    pub(crate) authority: Option<u64>,
 }
 
 /// Bring up the render engine and the GGTT and return the service: the window, the scratch page, the GGTT, the status page, the
@@ -190,7 +196,11 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
     let window = crate::exec::allow::GgttWindow::for_table(geom.pte_base, geom.entries).ok_or(Fail::new(errno::EIO, "GGTT-WINDOW"))?;
     hw.ex.set_ggtt_window(window)?;
     let scratch = hw.gm.alloc.alloc(ObjKind::Data, crate::exec::dma::PAGE)?;
-    let (mut ggtt, create) = Gtt::new_ggtt(&dev.desc, geom, scratch.device_addr).map_err(|e| Fail::new(errno::EIO, e.name()))?;
+    // D18: the adopted framebuffer's GGTT entries are kept exactly as the firmware left them - the panel is showing them NOW
+    let (mut ggtt, create) = Gtt::new_ggtt_preserving(&dev.desc, geom, scratch.device_addr, cfg.keep.as_slice()).map_err(|e| Fail::new(errno::EIO, e.name()))?;
+    if let Some(k) = cfg.keep {
+        emit(hw.log, format_args!("[I915-GGTT kept={} start={:#x} size={:#x} - not written, never bound over]", k.what, k.start, k.size));
+    }
     hw.ex.run_bind_step(hw.log, hw.gm, &create, true, &mut |_| true)?;
     let hwsp = hw.gm.alloc.alloc_hwsp()?;
     let hwsp_ggtt = bind_ggtt_grant(hw, &mut ggtt, &hwsp)?.0;
@@ -254,7 +264,33 @@ impl UapiService {
             kleases: Vec::new(),
             lease_sys: alloc::boxed::Box::new(super::kernel_lease::NoLeaseSys),
             quarantined: 0,
+            display: crate::display::Adoption::NoReadout,
+            authority: None,
         }
+    }
+
+    /// The display startup adopted (or refused): `DISPLAY-QUERY` answers from it, the authority calls act on it.
+    pub fn set_display(&mut self, a: crate::display::Adoption) {
+        self.display = a;
+    }
+
+    /// Bind session `inc` as the DISPLAY AUTHORITY. The caller is the transport, on the strength of a capability only the
+    /// compositor holds - never anything a request says. A second binding replaces the first only when the first session is gone.
+    pub fn bind_display_authority<L: Log>(&mut self, log: &mut L, inc: u64) -> Result<(), Fail> {
+        if self.session_idx(inc).is_none() {
+            return Err(Fail::new(errno::ENOENT, "DISPLAY-AUTHORITY-NO-SESSION"));
+        }
+        match self.authority {
+            Some(cur) if cur != inc && self.session_idx(cur).is_some() => return Err(Fail::new(errno::EBUSY, "DISPLAY-AUTHORITY-HELD")),
+            _ => {}
+        }
+        self.authority = Some(inc);
+        emit(log, format_args!("[I915-DISPLAY authority bound inc={}]", inc));
+        Ok(())
+    }
+
+    pub fn display_authority(&self) -> Option<u64> {
+        self.authority
     }
 
     // ---- observation (the tests' and the markers' view) ----------------------------------------------------------------------
@@ -396,6 +432,11 @@ impl UapiService {
         use Opcode::*;
         match h.opcode {
             Hello => Ok(Done::Len(msg::encode_reply::<msg::Empty>(out, Status::Ok, 0, None)?)),
+            // describes, changes nothing: answered with or without a session (D18)
+            DisplayQuery => {
+                msg::Empty::from_payload(p)?;
+                Ok(Done::Len(msg::encode_reply(out, Status::Ok, 0, Some(&self.display.query_reply()))?))
+            }
             // delete-when: the display-write increment (set-mode / page-flip / scanout allocation, plan section 3 P7+) and the pre-uAPI SUBMIT-BATCH
             // are served by their own opcodes; until then these first-generation operations answer Unsupported (2026-10-12 skeleton, still named).
             GetReadout | SetMode | PageFlip | AllocScanout | SubmitBatch => Ok(Done::Len(msg::encode_unsupported(out, msg::unsupported::NOT_IMPLEMENTED)?)),
@@ -424,8 +465,9 @@ impl UapiService {
             Execbuffer2 => self.call_exec(hw, inc, p, out),
             SyncobjCreate | SyncobjDestroy | SyncobjWait | SyncobjTimelineWait | SyncobjSignal | SyncobjReset | SyncobjTimelineSignal | SyncobjQuery | SyncobjTransfer
             | SyncobjHandleToFd | SyncobjFdToHandle | FdClose | SyncFileMerge | SyncFileWait | SyncFileGrant | SyncFileRedeem => self.call_sync(hw, h, inc, p, out),
+            DisplaySetMode | ScanoutAcquire | ScanoutBegin | ScanoutPresent | ScanoutWait => self.call_display(hw, h, inc, p, out),
             // already routed above
-            Hello | GetReadout | SetMode | PageFlip | AllocScanout | SubmitBatch | SessionOpen => Err(Fail::new(errno::EINVAL, "UNROUTED")),
+            Hello | GetReadout | SetMode | PageFlip | AllocScanout | SubmitBatch | SessionOpen | DisplayQuery => Err(Fail::new(errno::EINVAL, "UNROUTED")),
         }
     }
 
@@ -516,6 +558,11 @@ impl UapiService {
         self.sync.close_session(inc);
         let _ = self.close_gem_session(hw, inc);
         self.sessions[i] = None;
+        if self.authority == Some(inc) {
+            // the display keeps scanning out what it last latched; the next authority binds afresh
+            self.authority = None;
+            emit(hw.log, format_args!("[I915-DISPLAY authority ended inc={}]", inc));
+        }
         self.refresh_gate_state();
         self.trim_pool(hw);
         emit(hw.log, format_args!("[I915-UAPI session dead inc={}]", inc));

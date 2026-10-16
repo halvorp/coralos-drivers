@@ -27,6 +27,8 @@ pub struct ParkedStats {
 pub struct Parked<T: Transport, L: Log> {
     pub t: T,
     pub log: L,
+    /// The firmware display as startup judged it: `DISPLAY-QUERY` is answered from it (D18).
+    pub display: crate::display::Adoption,
     pub conns: ConnTable,
     pub stats: ParkedStats,
     msgbuf: Vec<u8>,
@@ -45,7 +47,13 @@ impl<T: Transport, L: Log> Parked<T, L> {
     /// `None` = the heap could not give the buffers (the device does not start half-able to read a frame).
     pub fn new(t: T, log: L) -> Option<Self> {
         let cap = t.limits().msg_cap;
-        Some(Parked { t, log, conns: ConnTable::new(), stats: ParkedStats::default(), msgbuf: buf(cap)?, inbuf: buf(MAX_FRAME_BYTES)?, outbuf: buf(MAX_FRAME_BYTES)? })
+        Some(Parked { t, log, display: crate::display::Adoption::NoReadout, conns: ConnTable::new(), stats: ParkedStats::default(), msgbuf: buf(cap)?, inbuf: buf(MAX_FRAME_BYTES)?, outbuf: buf(MAX_FRAME_BYTES)? })
+    }
+
+    /// The adoption `DISPLAY-QUERY` answers from (the default is `NoReadout`: nothing adopted).
+    pub fn with_display(mut self, a: crate::display::Adoption) -> Self {
+        self.display = a;
+        self
     }
 
     /// Serve until the transport closes.
@@ -91,7 +99,16 @@ impl<T: Transport, L: Log> Parked<T, L> {
     fn serve(&mut self, id: ConnId) {
         let Some(c) = self.conns.get_mut(id) else { return };
         let answer = match c.pull(&mut self.t, &mut self.msgbuf, &mut self.inbuf) {
-            Pulled::Frame(n) => Some((true, frame::answer_without_service(&self.inbuf[..n], &mut self.outbuf))),
+            Pulled::Frame(n) => Some((true, match frame::answer_parked(&self.inbuf[..n], &self.display, &mut self.outbuf) {
+                Ok((len, refused)) => {
+                    if let Some(name) = refused {
+                        self.stats.refused += 1;
+                        emit(&mut self.log, format_args!("[I915-PARKED display call refused name={}]", name));
+                    }
+                    Ok(len)
+                }
+                Err(e) => Err(e),
+            })),
             Pulled::Legacy(n) => crate::wire::handle(n as u64, &self.inbuf).map(|r| {
                 self.outbuf[..r.len()].copy_from_slice(&r);
                 (false, Ok(r.len()))

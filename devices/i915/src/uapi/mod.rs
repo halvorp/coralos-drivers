@@ -10,6 +10,7 @@
 //! |---|---|
 //! | [`frame`] | frame-level answers that need no service: malformed frames and the `Unsupported (increment not enabled)` reply |
 //! | `service` (feature `p3-exec`) | [`UapiService`]: sessions, dispatch, deferred waits, polling, session death |
+//! | `calls_display` | the display AUTHORITY's calls (D18): the one mode, the scanout pair and its flips |
 //! | `calls_*`, `exec_call` | one handler per opcode: decode (wire) -> validate (uapi-core) -> plan (gem-core) -> execute (exec/) |
 //! | `adapt` | the seams gem-core plans against, over the executor |
 //! | `pool` | page recycling, and giving idle grants back to the host where `Dma::free` exists |
@@ -27,6 +28,8 @@ pub mod frame;
 mod adapt;
 #[cfg(feature = "p3-exec")]
 mod calls_ctx;
+#[cfg(feature = "p3-exec")]
+mod calls_display;
 #[cfg(feature = "p3-exec")]
 mod calls_gem;
 #[cfg(feature = "p3-exec")]

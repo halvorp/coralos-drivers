@@ -134,7 +134,7 @@ fn world() -> W {
     let Gen9Clock::Hz(hz) = gen9_clock_from_ctc(2 << 1) else { panic!("crystal expected") };
     let dev = UapiDevice::new(kbl(), 0x09, sseu, hz, 8 * GIB).unwrap();
     let geom = GgttGeometry::probe(1 << 6, 16 << 20, 256 << 20).unwrap();
-    let cfg = RenderConfig { quirks: FlushQuirks { vf_flush_wa: true, dc_flush_wa_kbl: false }, stall_bound_ms: 1000 };
+    let cfg = RenderConfig { quirks: FlushQuirks { vf_flush_wa: true, dc_flush_wa_kbl: false }, stall_bound_ms: 1000, keep: None };
     let svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log: &mut log, now_ms: 0 }, dev, &geom, cfg).unwrap();
     let t = FakeT::default();
     t.0.borrow_mut().now = 1;

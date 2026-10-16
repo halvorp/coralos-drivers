@@ -51,6 +51,7 @@ pub(crate) fn error_body_len(op: Opcode) -> usize {
         PrimeHandleToFd | PrimeGrant => PrimeTokenRep::SIZE,
         PrimeFdToHandle => PrimeHandleRep::SIZE,
         DmabufExportSyncFile => DmabufSyncFileRep::SIZE,
+        DisplayQuery | ScanoutAcquire | ScanoutPresent | ScanoutWait => crate::display::answer::reply_body_len(op),
         _ => 0,
     }
 }

@@ -28,6 +28,7 @@
 extern crate alloc;
 
 pub mod conn;
+pub mod display;
 pub mod exec;
 pub mod gt;
 pub mod identity;

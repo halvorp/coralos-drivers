@@ -152,8 +152,8 @@ fn fixed_offsets_are_checked_and_never_land_on_a_reservation() {
     let (mut g, _) = ggtt();
     let pg = [0x10_0000u64; 1];
     let fx = |o| Placement::with_mode(Mode::Fixed(o));
-    assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x1000))).err(), Some(MemError::RangeOccupied { start: 0x1000, len: 4096 }), "the error-capture slot");
-    assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x1000).evicting())).err(), Some(MemError::RangeOccupied { start: 0x1000, len: 4096 }), "a reservation is never a victim");
+    assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x1000))).err(), Some(MemError::RangeReserved { start: 0x1000, len: 4096, by: "error-capture" }), "the error-capture slot, named");
+    assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x1000).evicting())).err(), Some(MemError::RangeReserved { start: 0x1000, len: 4096, by: "error-capture" }), "a reservation is never a victim");
     assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x10_0800))).err().map(|e| e.name()), Some("MISALIGNED"));
     assert_eq!(g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(END))).err(), Some(MemError::BeyondSpace { va: END, len: 4096, total: END }), "the guard page");
     let ok = g.plan_bind(&mut NoTablePages, &req(&pg, 4096, fx(0x10_0000))).unwrap();

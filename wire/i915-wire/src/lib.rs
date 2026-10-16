@@ -49,7 +49,10 @@ pub const ABI_MAJOR: u16 = 1;
 /// 3: a region call may name a separate reply region ([`region::REPLY_ELSEWHERE`]) and `GEM-MMAP-OPEN`/`GEM-MMAP-LEGACY`'s reply carries the kernel
 /// lease handle and the offset to map ([`msg::gem::GemMmapRep`]); additive - no opcode changed.
 /// 4: grants addressed to a NAMED session, for sharing across processes: `PRIME-GRANT`, `SYNC-FILE-GRANT`, `SYNC-FILE-REDEEM` (D15); additive.
-pub const ABI_MINOR: u16 = 4;
+/// 5: DISPLAY OWNERSHIP (D18, Astra's Kaby Lake single-owner ruling 2026-10-16): the adopted display and its one mode (`DISPLAY-QUERY`,
+/// `DISPLAY-SET-MODE`) and the presentation path (`SCANOUT-ACQUIRE`, `SCANOUT-BEGIN`, `SCANOUT-PRESENT`, `SCANOUT-WAIT`), [`msg::display`];
+/// additive - no opcode changed.
+pub const ABI_MINOR: u16 = 5;
 pub const HEADER_BYTES: usize = 40;
 /// The largest payload a frame may declare (64 KiB): a submit carries object and dependency tables, never GPU data.
 pub const MAX_PAYLOAD: u32 = 64 * 1024;
@@ -153,6 +156,13 @@ opcodes! {
     PrimeGrant = 0x164, 4, "PRIME-GRANT";
     SyncFileGrant = 0x165, 4, "SYNC-FILE-GRANT";
     SyncFileRedeem = 0x166, 4, "SYNC-FILE-REDEEM";
+    // ---- display ownership and presentation (msg::display; ABI 1.5)
+    DisplayQuery = 0x170, 5, "DISPLAY-QUERY";
+    DisplaySetMode = 0x171, 5, "DISPLAY-SET-MODE";
+    ScanoutAcquire = 0x172, 5, "SCANOUT-ACQUIRE";
+    ScanoutBegin = 0x173, 5, "SCANOUT-BEGIN";
+    ScanoutPresent = 0x174, 5, "SCANOUT-PRESENT";
+    ScanoutWait = 0x175, 5, "SCANOUT-WAIT";
 }
 
 /// The status word that opens a reply payload.

@@ -32,7 +32,7 @@ pub mod probe;
 pub mod pte;
 pub mod regs;
 
-pub use gtt::{BindRequest, Gtt, GttKind, NoTablePages, PpgttInit, TablePage, TablePageRequest, TablePageSource, Walk};
+pub use gtt::{BindRequest, Gtt, GttKind, Preallocated, ERROR_CAPTURE, NoTablePages, PpgttInit, TablePage, TablePageRequest, TablePageSource, Walk};
 pub use nodes::{Mode, Placement, VmaId};
 pub use plan::{BindPlan, Flush, Op, RegWrite, Target, UnbindPlan, Write};
 pub use pte::CacheLevel;
@@ -76,6 +76,9 @@ pub enum MemError {
     NoSpace { size: u64 },
     /// A fixed placement collides with a live (or unevictable) node.
     RangeOccupied { start: u64, len: u64 },
+    /// A fixed placement collides with a driver RESERVATION, named by what holds it (`by`: `"adopted-scanout"` - the firmware
+    /// framebuffer the display is scanning out - or `"error-capture"`).
+    RangeReserved { start: u64, len: u64, by: &'static str },
     /// An access to an address that is not inside a live bound range: unbound, unbound-then-reused, or a guard/scratch page.
     StaleMapping { va: u64 },
     /// An access that lands on a guard page of a live node.
@@ -117,6 +120,7 @@ impl MemError {
             MemError::DeviceAddrBeyondMask { .. } => "DEVICE-ADDR-BEYOND-MASK",
             MemError::NoSpace { .. } => "NO-SPACE",
             MemError::RangeOccupied { .. } => "RANGE-OCCUPIED",
+            MemError::RangeReserved { .. } => "RANGE-RESERVED",
             MemError::StaleMapping { .. } => "STALE-MAPPING",
             MemError::GuardPageAccess { .. } => "GUARD-PAGE-ACCESS",
             MemError::NotBound { .. } => "VMA-NOT-BOUND",
