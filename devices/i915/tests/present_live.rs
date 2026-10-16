@@ -199,8 +199,10 @@ fn a_suppressed_latch_releases_nothing() {
     assert!(!live.log.has("released=firmware"));
 }
 
+/// The next authority takes the SAME pair over (its own handles of the same two images): taking over writes nothing - the only write
+/// since the death is the restore of the firmware framebuffer.
 #[test]
-fn a_new_authority_takes_the_same_pair_over_and_the_glass_does_not_move() {
+fn a_new_authority_takes_the_same_pair_over_and_taking_over_writes_nothing() {
     let (mut live, t, chip) = world(true);
     let (id, inc, a) = authority(&mut live, &t);
     begin(&mut live, &t, id, inc, a.handle0);
@@ -212,8 +214,29 @@ fn a_new_authority_takes_the_same_pair_over_and_the_glass_does_not_move() {
     assert!(live.log.has("[I915-SCANOUT pair taken over"));
     assert_eq!(b.size, a.size);
     let s = live.svc.scanout_images().unwrap();
-    assert_eq!(s[0].1, ImageState::ScanningOut { seq: 1 }, "still on the glass");
-    assert_eq!(chip.writes_to(PLANE_SURF).len(), 1, "taking over wrote nothing");
+    assert_eq!(s[0].1, ImageState::Free, "the restore released it");
+    assert_eq!(chip.writes_to(PLANE_SURF), [s[0].2, 0], "the flip, then the restore; taking over wrote nothing");
     assert!(begin(&mut live, &t, id2, inc2, b.handle1).errno == 0);
     assert_eq!(present(&mut live, &t, id2, inc2, b.handle1).body::<ScanoutPresentRep>().seq, 2);
+}
+
+/// The compositor dies with its image on the glass: the device writes the firmware framebuffer's address back to PLANE_SURF (the CPU
+/// compositor's surface), and the next authority still takes the pair over with both images FREE.
+#[test]
+fn the_authoritys_end_puts_the_boot_framebuffer_back_on_the_glass() {
+    let (mut live, t, chip) = world(true);
+    let (id, inc, a) = authority(&mut live, &t);
+    begin(&mut live, &t, id, inc, a.handle0);
+    present(&mut live, &t, id, inc, a.handle0);
+    let imgs = live.svc.scanout_images().unwrap();
+    t.kill(id);
+    for ms in 0..4u64 {
+        t.0.borrow_mut().script.push_back(Ev::At(Wake::Deadline, 5 + ms));
+    }
+    run(&mut live);
+    assert_eq!(chip.writes_to(PLANE_SURF), [imgs[0].2, 0], "the firmware framebuffer's GGTT address, written back");
+    assert!(live.log.has("[I915-SCANOUT-RESTORED]"), "{:?}", live.log.0);
+    assert!(live.svc.scanout_images().unwrap().iter().all(|i| i.1 == ImageState::Free));
+    let (id2, inc2, b) = authority(&mut live, &t);
+    assert!(begin(&mut live, &t, id2, inc2, b.handle0).errno == 0, "the next authority draws into either image");
 }

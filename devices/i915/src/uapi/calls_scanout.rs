@@ -198,12 +198,23 @@ impl UapiService {
 
     /// Does the pair want the loop to come back (a flip waiting for its GPU work, or for the latch)?
     pub(crate) fn scanout_wants_time(&self) -> bool {
-        self.scanout.as_ref().is_some_and(|r| r.pair.awaiting_gpu().is_some() || r.pair.wants_latch_reads())
+        self.scanout.as_ref().is_some_and(|r| r.pair.awaiting_gpu().is_some() || r.pair.wants_latch_reads() || r.pair.restoring())
     }
 
     /// Move the pair on: arm a flip whose image is idle, read the latch of an armed one.
     pub(crate) fn advance_scanout<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {
         let Some(rec) = self.scanout.as_mut() else { return };
+        match rec.pair.ready_to_restore() {
+            Some(Ok(plan)) => {
+                if let Err(e) = hw.ex.run_link_effects(&plan.write) {
+                    rec.pair.restore_failed();
+                    emit(hw.log, format_args!("[I915-SCANOUT restore refused name={}] - the last image stays on the glass", e.name()));
+                    return;
+                }
+            }
+            Some(Err(e)) => emit(hw.log, format_args!("[I915-SCANOUT restore refused name={}] - the last image stays on the glass", e.name())),
+            None => {}
+        }
         if let Some(img) = rec.pair.awaiting_gpu_image() {
             if !self.gem.object_busy(ObjId(img.key)) {
                 if let Some(plan) = rec.pair.ready_to_arm() {
@@ -241,6 +252,9 @@ impl UapiService {
             LatchStep::TimedOut { seq, got } => {
                 emit(hw.log, format_args!("[I915-PRESENT latch_timeout seq={} surflive={:#x} timeouts={}] - nothing released", seq, got, rec.pair.status().latch_timeouts));
             }
+            LatchStep::Restored => {
+                emit(hw.log, format_args!("[I915-SCANOUT restored firmware-fb surf={:#x}] - the display authority is gone; the boot framebuffer is on the glass [I915-SCANOUT-RESTORED]", rec.pair.firmware_surf()));
+            }
             LatchStep::StillWaiting | LatchStep::Idle => {}
         }
     }
@@ -250,7 +264,7 @@ impl UapiService {
     pub(crate) fn scanout_owner_dead(&mut self, inc: u64) {
         if let Some(rec) = self.scanout.as_mut() {
             if rec.pair.owner() == inc {
-                rec.pair.rebind_owner(0, [0, 0]);
+                rec.pair.orphan(); // and the firmware's framebuffer goes back on the glass (advance_scanout)
             }
         }
     }
