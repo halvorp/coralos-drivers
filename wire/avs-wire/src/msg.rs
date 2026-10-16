@@ -180,7 +180,8 @@ impl Caps {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Open {
     pub format: Format,
-    /// Only [`Route::Headphones`] is served; [`Route::Speakers`] is answered [`Status::SpeakerProtectionUnavailable`] and touches nothing.
+    /// [`Route::Headphones`], [`Route::Speakers`] (the protected path; [`Status::SpeakerProtectionUnavailable`] when the board cannot offer it,
+    /// touching nothing) or [`Route::Auto`].
     pub route: Route,
     /// 0: the device's default.
     pub period_frames: u32,

@@ -124,9 +124,18 @@ fn every_coded_enum_round_trips_and_rejects_the_next_value() {
         assert_eq!(SpeakerHold::from_raw(*s as u8), Some(*s));
     }
     assert_eq!(SpeakerHold::from_raw(4), None);
-    // the speakers have exactly one state: refused
-    assert_eq!(Speaker::ALL, &[Speaker::Refused]);
-    assert_eq!(Speaker::from_raw(1), None);
+    // the speakers are refused or protected (D17); the running stream's path is none, headphones or speakers
+    assert_eq!(Speaker::ALL, &[Speaker::Refused, Speaker::Protected]);
+    assert_eq!(Speaker::from_raw(0), Some(Speaker::Refused));
+    assert_eq!(Speaker::from_raw(1), Some(Speaker::Protected));
+    assert_eq!(Speaker::from_raw(2), None);
+    assert_eq!(Output::ALL, &[Output::None, Output::Headphones, Output::Speakers]);
+    assert_eq!((Output::None as u8, Output::Headphones as u8, Output::Speakers as u8), (0, 1, 2));
+    assert_eq!(Output::from_raw(3), None);
+    // the routes: the original two keep their numbers, Auto is the new one
+    assert_eq!(Route::ALL, &[Route::Headphones, Route::Speakers, Route::Auto]);
+    assert_eq!((Route::Headphones as u8, Route::Speakers as u8, Route::Auto as u8), (0, 1, 2));
+    assert_eq!(Route::from_raw(3), None);
 }
 
 #[test]
@@ -138,6 +147,8 @@ fn a_status_body_round_trips_and_names_its_step() {
     s.stream = StreamPhase::Suspended;
     s.safe_verified = true;
     s.speaker_hold = SpeakerHold::Held;
+    s.speaker = Speaker::Protected;
+    s.output = Output::Speakers;
     s.generation = 77;
     s.volume_level = 640;
     s.detail = 0xdead;
@@ -148,7 +159,11 @@ fn a_status_body_round_trips_and_names_its_step() {
     let d = StatusBody::decode(&b[..n]).unwrap();
     assert_eq!(d, s);
     assert_eq!(d.step_str(), "rom-init");
-    assert_eq!(d.speaker, Speaker::Refused, "the speakers are refused in every status");
+    assert_eq!((d.speaker, d.output), (Speaker::Protected, Output::Speakers));
+    // the byte that was reserved in minor 0 is the output: a minor-0 peer's zero decodes as `none`
+    assert_eq!(b[7], Output::Speakers as u8);
+    assert_eq!(StatusBody::new().speaker, Speaker::Refused, "a fresh status offers nothing");
+    assert_eq!(StatusBody::new().output, Output::None);
     // a long step name is cut with a NUL kept
     s.set_step("a-step-name-that-is-much-longer-than-thirty-one-bytes");
     assert_eq!(s.step_str().len(), STEP_BYTES - 1);
@@ -159,7 +174,7 @@ fn a_status_body_round_trips_and_names_its_step() {
 fn a_status_body_with_a_bad_field_is_refused_by_name() {
     let mut b = [0u8; 128];
     let n = StatusBody::new().encode(&mut b).unwrap();
-    for (off, v, why) in [(0usize, 6u8, "state"), (1, 6, "cause"), (2, 3, "jack"), (3, 4, "stream"), (4, 2, "safe"), (5, 1, "speaker"), (6, 4, "hold"), (7, 1, "reserved")] {
+    for (off, v, why) in [(0usize, 6u8, "state"), (1, 6, "cause"), (2, 3, "jack"), (3, 4, "stream"), (4, 2, "safe"), (5, 2, "speaker"), (6, 4, "hold"), (7, 3, "output")] {
         let mut bad = b;
         bad[off] = v;
         assert!(StatusBody::decode(&bad[..n]).is_err(), "{why}");

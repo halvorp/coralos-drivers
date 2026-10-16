@@ -20,8 +20,11 @@
 //! ```
 //! A REPLY has the request's opcode and request_id, and its payload begins with a `u32` [`Status`].
 //!
-//! SPEAKERS ARE NOT IN THIS PROTOCOL. The device plays to the headphone jack only; the speaker amplifiers are never addressed (the Astra audio
-//! ruling of 2026-10-12, headphones first: recorded in this repository's DECISIONS.md, D11 and D14). [`Cause::SpeakerProtectionUnavailable`] says so, always, in every STATUS.
+//! SPEAKERS ARE IN THIS PROTOCOL ONLY AS THE PROTECTED PATH (DECISIONS D17, which amends D11 and D14). A stream may ask for the headphones,
+//! the speakers, or [`Route::Auto`] (the headphones while the jack holds a plug, the speakers otherwise); a board that cannot offer the
+//! protected speaker path - no amplifier record, no topology file, a protection the part would not take - answers a speaker request
+//! [`Status::SpeakerProtectionUnavailable`] and touches nothing. [`StatusBody::speaker`] says which it is; [`StatusBody::output`] says which
+//! path the running stream is on. The device caps the speaker gain in hardware-facing code that no request on this wire can raise.
 //!
 //! PCM travels inline in [`msg::PcmWrite`] frames (at most [`MAX_PCM_BYTES`] each) until the kernel can map a client region; the region form
 //! ([`Opcode::StreamOpenRing`]) is DEFINED so Aura can be written against it, and is refused by name ([`Status::RingRegionUnavailable`]).
@@ -38,7 +41,8 @@ pub mod msg;
 /// `b"AVSD"` as a little-endian u32.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"AVSD");
 pub const ABI_MAJOR: u16 = 1;
-pub const ABI_MINOR: u16 = 0;
+/// Minor 1: [`Route::Auto`], [`Speaker::Protected`] and [`Output`] (the status byte that was reserved).
+pub const ABI_MINOR: u16 = 1;
 pub const HEADER_BYTES: usize = 32;
 /// The largest payload a frame may declare: one inline PCM write of 16 KiB plus its small header, rounded to a power of two. A VALIDATION
 /// limit of the wire, not a buffer the device sizes its queues by.
@@ -274,7 +278,7 @@ coded! {
 
 coded! {
     /// Why nothing can play right now. At most one is primary; [`Cause::SpeakerProtectionUnavailable`] is reported ONLY when it is the
-    /// only thing left (the speakers are refused in every state - [`StatusBody::speaker`] says so separately).
+    /// only thing left (a speaker stream on a board that cannot offer the protected path - [`StatusBody::speaker`] says so separately).
     Cause : u8 {
         None = 0, "none";
         BackendUnavailable = 1, "backend-unavailable";
@@ -345,17 +349,33 @@ coded! {
 }
 
 coded! {
-    /// Where a stream asks to be played. Only the headphones are served; the speakers are refused by name.
+    /// Where a stream asks to be played.
     Route : u8 {
         Headphones = 0, "headphones";
+        /// The protected speaker path (D17). Refused by name when the board cannot offer it.
         Speakers = 1, "speakers";
+        /// The headphones while the jack holds a plug, the protected speakers while it does not (and when they are offered).
+        Auto = 2, "auto";
     }
 }
 
 coded! {
-    /// The speakers. There is one state: refused.
+    /// The speakers.
     Speaker : u8 {
+        /// Not offered: the board, a file or a protection step says no (the status names which), and nothing plays on them.
         Refused = 0, "refused";
+        /// Offered: the amplifier record is the board's, the topology is loaded, and every start applies and reads back the protection set
+        /// before the amplifiers are enabled. (Not a claim that a stream is playing on them: [`Output`] says that.)
+        Protected = 1, "protected";
+    }
+}
+
+coded! {
+    /// Where the running stream is actually playing.
+    Output : u8 {
+        None = 0, "none";
+        Headphones = 1, "headphones";
+        Speakers = 2, "speakers";
     }
 }
 
@@ -388,6 +408,8 @@ pub struct StatusBody {
     pub safe_verified: bool,
     pub speaker: Speaker,
     pub speaker_hold: SpeakerHold,
+    /// The path the running stream is on ([`Output::None`] while nothing runs).
+    pub output: Output,
     /// Bumped on every change, so a UI discards a stale event.
     pub generation: u32,
     /// The volume Aura last asked for, 0..=[`VOLUME_MAX`].
@@ -412,6 +434,7 @@ impl StatusBody {
             safe_verified: false,
             speaker: Speaker::Refused,
             speaker_hold: SpeakerHold::NotGranted,
+            output: Output::None,
             generation: 0,
             volume_level: 0,
             detail: 0,
@@ -439,7 +462,7 @@ impl StatusBody {
         w.u8("status.safe_verified", self.safe_verified as u8)?;
         w.u8("status.speaker", self.speaker as u8)?;
         w.u8("status.speaker_hold", self.speaker_hold as u8)?;
-        w.u8("status.reserved", 0)?;
+        w.u8("status.output", self.output as u8)?;
         w.u32("status.generation", self.generation)?;
         w.u16("status.volume_level", self.volume_level)?;
         w.u16("status.reserved2", 0)?;
@@ -460,7 +483,7 @@ impl StatusBody {
         let safe = r.u8("status.safe_verified")?;
         let speaker = r.u8("status.speaker")?;
         let hold = r.u8("status.speaker_hold")?;
-        let rsv = r.u8("status.reserved")?;
+        let output = r.u8("status.output")?;
         let generation = r.u32("status.generation")?;
         let volume_level = r.u16("status.volume_level")?;
         let rsv2 = r.u16("status.reserved2")?;
@@ -469,8 +492,8 @@ impl StatusBody {
         let mut step = [0u8; STEP_BYTES];
         step.copy_from_slice(r.bytes("status.step", STEP_BYTES)?);
         r.finish()?;
-        if rsv != 0 || rsv2 != 0 || rsv3 != 0 {
-            return Err(WireError::ReservedNonZero { what: "status.reserved", got: (rsv as u64) | (rsv2 as u64) << 8 | (rsv3 as u64) << 24 });
+        if rsv2 != 0 || rsv3 != 0 {
+            return Err(WireError::ReservedNonZero { what: "status.reserved", got: (rsv2 as u64) | (rsv3 as u64) << 16 });
         }
         if safe > 1 {
             return Err(bad("status.safe_verified", safe));
@@ -486,6 +509,7 @@ impl StatusBody {
             safe_verified: safe == 1,
             speaker: Speaker::from_raw(speaker).ok_or(bad("status.speaker", speaker))?,
             speaker_hold: SpeakerHold::from_raw(hold).ok_or(bad("status.speaker_hold", hold))?,
+            output: Output::from_raw(output).ok_or(bad("status.output", output))?,
             generation,
             volume_level,
             detail,
