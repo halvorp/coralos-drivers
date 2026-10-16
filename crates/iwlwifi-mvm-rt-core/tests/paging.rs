@@ -62,8 +62,8 @@ fn layout_failures_are_named() {
     // the last block must hold exactly pages_in_last pages
     assert_eq!(plan(&image(241_664 + 4096, 100), 241_664), Err(PagingError::LastBlockMismatch { remaining: 16_384, expected: 12_288 }));
     assert_eq!(plan(&image(241_664 - 4096, 100), 241_664), Err(PagingError::LastBlockMismatch { remaining: 8192, expected: 12_288 }));
-    // a middle block short of data: 3 blocks promised, 2 blocks of data
-    assert_eq!(plan(&image(65_536, 100), 98_304), Err(PagingError::NotEnoughData { block: 3, remaining: 0 }));
+    // a middle block short of data: 25 pages = 4 blocks promised (last holds 1), 2 blocks of data
+    assert_eq!(plan(&image(65_536, 100), 102_400), Err(PagingError::NotEnoughData { block: 3, remaining: 0 }));
     assert_eq!(plan(&image(100, 100), 0), Err(PagingError::NoPaging));
     // 32 data blocks + CSS is the most the command carries; 33 blocks is not representable
     assert_eq!(plan(&image(1, 100), 33 * 32768), Err(PagingError::TooManyBlocks { blocks: 33 }));

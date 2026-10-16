@@ -91,11 +91,11 @@ fn the_rt_image_comes_up_through_paging_and_the_post_alive_commands() {
     let cmds = sim.w().fw.rt.cmd_log.clone();
     assert_eq!(
         cmds,
-        ["1.0x4f", "0.0x98", "0.0x6c", "0.0x6c", "0.0x6c", "0.0x6c", "0.0x6a", "0.0x9b", "2.0x1", "5.0x0", "0.0x1d", "0.0x18", "4.0x4", "0.0x77", "0.0xc8", "1.0xc"]
+        ["1.0x4f", "0.0x98", "0.0x6c", "0.0x6c", "0.0x6c", "0.0x6c", "0.0x6a", "0.0x9b", "2.0x1", "5.0x0", "0.0x1d", "0.0x18", "4.0x4", "0.0x77", "0.0xc8", "1.0xc", "0.0x28"]
     );
     let log = sim.w().log.clone();
     let at = |needle: &str| log.iter().position(|l| l.contains(needle)).unwrap_or_else(|| panic!("no marker {needle}: {log:#?}"));
-    let order = ["[IWL-INIT-COMPLETE", "[IWL-RT-STOP", "[IWL-RT-HW-READY", "[IWL-FW-LOADED rt", "[IWL-ALIVE rt", "[IWL-PAGING blocks=1 last_pages=2", "[IWL-RT-CMD paging ok", "[IWL-RT-CMD tx_ant ok", "[IWL-RT-CMD phy_db ok sections=4", "[IWL-RT-CMD phy_cfg ok", "[IWL-RT-CMD bt ok", "[IWL-RT-CMD soc ok", "[IWL-RT-CMD dqa ok", "[IWL-RT-CMD aux_queue ok", "[IWL-RT-CMD aux_sta ok sta=1 queue=1", "[IWL-RT-CMD temp_ths ok", "[IWL-RT-CMD power ok", "[IWL-RT-CMD mcc ok", "[IWL-RT-CMD scan_cfg ok", "[IWL-RT-UP"];
+    let order = ["[IWL-INIT-COMPLETE", "[IWL-RT-STOP", "[IWL-RT-HW-READY", "[IWL-FW-LOADED rt", "[IWL-ALIVE rt", "[IWL-PAGING blocks=1 last_pages=2", "[IWL-RT-CMD paging ok", "[IWL-RT-CMD tx_ant ok", "[IWL-RT-CMD phy_db ok sections=4", "[IWL-RT-CMD phy_cfg ok", "[IWL-RT-CMD bt ok", "[IWL-RT-CMD soc ok", "[IWL-RT-CMD dqa ok", "[IWL-RT-CMD aux_queue ok", "[IWL-RT-CMD aux_sta ok sta=1 queue=1", "[IWL-RT-CMD temp_ths ok", "[IWL-RT-CMD power ok", "[IWL-RT-CMD mcc ok", "[IWL-RT-CMD scan_cfg ok", "[IWL-MAC-CTXT OK id=0 type=sta tsf=A assoc=0", "[IWL-RT-UP"];
     let pos: Vec<usize> = order.iter().map(|n| at(n)).collect();
     assert!(pos.windows(2).all(|w| w[0] < w[1]), "markers out of order: {pos:?}");
     assert!(log[at("[IWL-RT-CMD mcc ok")].contains("mcc=US n_channels=51 valid=36"));
@@ -196,6 +196,33 @@ fn a_scan_before_the_rt_image_is_up_is_refused_by_name() {
     let r = d.scan(1);
     assert!(matches!(r, Err(DriverError::Rt { stage: "scan", why: RtWhy::NotUp })), "{r:?}");
     assert!(sim.w().log.iter().any(|l| l.starts_with("[IWL-SCAN FAIL id=1 the RT image is not up]")));
+}
+
+#[test]
+fn a_scan_without_a_mac_context_makes_the_firmware_assert_and_the_driver_says_so() {
+    let (sim, mut d) = up(&[13]);
+    d.start_rt().unwrap();
+    // the firmware forgets the MAC context (what silicon would do if the driver had never added one)
+    sim.w().fw.rt.mac_ctxt = None;
+    let r = d.scan(9);
+    assert!(r.is_err(), "{r:?}");
+    let log = sim.w().log.clone();
+    assert!(log.iter().any(|l| l.starts_with("[IWL-FW-ERROR img=RT")), "{log:#?}");
+    assert!(sim.w().violations.iter().any(|v| v.contains("names MAC context 0 but the host added None")), "{:?}", sim.w().violations);
+}
+
+#[test]
+fn a_mac_context_the_firmware_asserts_on_fails_the_stage_by_name_and_dumps_the_error_table() {
+    let (sim, mut d) = up(&[13]);
+    sim.w().fw.sw_error_on_cmd = Some(0x28); // the firmware asserts on MAC_CONTEXT_CMD
+    let r = d.start_rt();
+    assert!(matches!(r, Err(DriverError::Rt { stage: "mac_ctxt", .. })), "{r:?}");
+    let log = sim.w().log.clone();
+    assert!(log.iter().any(|l| l.starts_with("[IWL-MAC-CTXT FAIL id=0]")), "{log:#?}");
+    assert!(log.iter().any(|l| l.starts_with("[IWL-RT FAIL stage=mac_ctxt")), "{log:#?}");
+    assert!(log.iter().any(|l| l.starts_with("[IWL-FW-ERROR img=RT") && l.contains("hcmd=0x00000028")), "{log:#?}");
+    assert!(!log.iter().any(|l| l.starts_with("[IWL-MAC-CTXT OK")));
+    assert!(!d.rt.up);
 }
 
 #[test]

@@ -79,7 +79,7 @@ impl<H: Host> Driver<H> {
         let uid = 0u32; // iwl_mvm_scan_uid_by_status(mvm, 0): the first free slot, and one scan runs at a time
         let use_ebs = self.fw.info.flags & IWL_UCODE_TLV_FLAGS_EBS_SUPPORT != 0;
         let sa = self.mac.unwrap_or([0; 6]);
-        let req = ScanRequest { uid, channels: &self.rt.scan_channels, n_scan_channels: n_scan, sa, scan_start_mac_id: 0, use_ebs };
+        let req = ScanRequest { uid, channels: &self.rt.scan_channels, n_scan_channels: n_scan, sa, scan_start_mac_id: self.rt.mac_id, use_ebs };
         let mut buf = vec![0u8; scan_req_umac_len(n_scan)];
         let len = match encode_scan_req_umac_v8(&req, &mut buf) {
             Ok(n) => n,

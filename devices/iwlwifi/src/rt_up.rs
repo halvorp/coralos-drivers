@@ -65,6 +65,8 @@ pub struct RtState {
     /// The channels a scan listens on: NVM channel order, 2.4 GHz then 5 GHz, valid per the MCC response.
     pub scan_channels: Vec<u8>,
     pub aux_sta_id: u8,
+    /// The station interface's MAC context id (`mvmvif->id`), named in every scan's `scan_start_mac_id`.
+    pub mac_id: u8,
     pub mcc: u16,
     /// Host commands the RT bring-up sent.
     pub cmds: u32,
@@ -307,6 +309,37 @@ impl<H: Host> Driver<H> {
         if capa(self, CAPA_UMAC_SCAN) {
             self.rt_scan_config()?;
         }
+        // iwl_mvm_up is done; what mac80211 does when the station interface comes up follows it.
+        self.rt_mac_ctxt()?;
+        Ok(())
+    }
+
+    /// `iwl_mvm_mac_add_interface` for a (non-P2P) station: `iwl_mvm_mac_ctxt_init` hands out MAC id 0 and TSF A (id 0 is
+    /// reserved for the managed vif on the non-MLD API), `iwl_mvm_mac_ctxt_add` sends `MAC_CONTEXT_CMD` with
+    /// `FW_CTXT_ACTION_ADD`. The scan then names that id in `scan_start_mac_id` (`iwl_mvm_scan_umac`). // mvm/mac80211.c:1687-1760;
+    /// mvm/mac-ctxt.c (iwl_mvm_mac_ctxt_init, iwl_mvm_mac_ctxt_add); mvm/scan.c:2330
+    ///
+    /// NOT sent, deliberately: a PHY context and a binding. Linux adds a PHY context from `assign_vif_chanctx` and binds the
+    /// MAC to it there; an unassociated station scanning has no channel context (`iwl_mvm_scan_umac` carries no PHY id), and
+    /// `iwl_mvm_up` of this tree adds none. `iwl_mvm_power_update_mac` and `iwl_mvm_disable_beacon_filter`, the two commands
+    /// `add_interface` sends after the add, are configuration of an interface that is not associated and are not sent either.
+    fn rt_mac_ctxt(&mut self) -> Result<(), DriverError> {
+        let id = 0u8; // iwl_mvm_mac_ctxt_init: first free id, 0 allowed for the managed vif
+        let mac = self.mac.unwrap_or([0; 6]);
+        let mut b = [0u8; MAC_CTX_CMD_LEN];
+        let n = match encode_mac_ctxt_sta_add(id, mac, &mut b) {
+            Ok(n) => n,
+            Err(e) => return Err(self.rt_fail("mac_ctxt", e.into())),
+        };
+        match self.rt_cmd("mac_ctxt", LEGACY_GROUP, MAC_CONTEXT_CMD, &[Chunk { data: &b[..n], nocopy: false }]) {
+            Ok(_) => {}
+            Err(e) => {
+                self.log(format_args!("[IWL-MAC-CTXT FAIL id={id}]"));
+                return Err(e);
+            }
+        }
+        self.rt.mac_id = id;
+        self.log(format_args!("[IWL-MAC-CTXT OK id={id} type=sta tsf=A assoc=0]"));
         Ok(())
     }
 
