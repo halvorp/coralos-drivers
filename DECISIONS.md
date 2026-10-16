@@ -194,10 +194,33 @@ waited on, merged and used as a dependency; nothing signals through it); `FD-CLO
 its recipient; a handle or sync_file already redeemed holds its own reference and is untouched. NOT in this row: syncobj export tokens (`SYNCOBJ-HANDLE-TO-FD`
 without EXPORT_SYNC_FILE) are still the old bearer form - a full syncobj is signalable, so it needs its own ruling; the importer's CPU lease on a shared object is still
 refused while the exporter maps it (`MMAP-OBJECT-LEASED-TO-ANOTHER-SESSION`) - each side getting its own lease needs the page-exclusive lease rule lifted in gem-core.
-||||||| 430966b
 
 **D16 — the avs.device endpoint numbers are the CoralOS registry's: 70..=74 (2026-10-16).**
 The five numbers of `devices/avs/src/wire.rs` were proposed as 67..=71 (D14). The CoralOS registry gave the static endpoints below 70 to other services before the audio
 integration landed (the touchpad-prefs batch, matrix.connector, messages.service's reader lane, and storage's vault compartment: `EP_FS_VAULT` = 69), so the device carries
 `AVS_LISTEN` 70, `AVS_FW_REQ` 71, `AVS_FW_REPLY` 72, `AVS_JACK` 73, `AVS_JACK_ACK` 74 and the registry's dynamic base is 75. Nothing else changes: the device reads them only
 in `rt`, and the wait mask already covers endpoints above 63. A later registry reshuffle renumbers this file again, in the same change that moves the loader's grants.
+
+**D17 — `i915.device` OWNS the Kaby Lake function, render AND display: it adopts the firmware's display, keeps its framebuffer through bring-up, offers its one mode, and speaks display to the compositor as semantics on i915-wire 1.5, never as registers (2026-10-16).**
+Astra's Kaby Lake single-owner ruling (CoralOS docs/consults/2026-10-16-astra-kbl-gpu-single-owner.md, option (a)) after the Atlas boot where CoralOS's closed
+`drm_i915.device` took the GPU object (`ENDOW-DEVICE-BUSY`) and this device never launched: one hardware owner per function, chosen by identity (the
+CoralOS side - the owner table, the launch-plan check, the display row as an authority-limited adapter - is its doctrine GPU-ONE-OWNER-PER-FUNCTION); no
+register proxy, no kernel BAR split; `drm_i915.device` stays the Cherry Trail backend. In this repository: (1) ADOPTION -
+`i915-display-modeset-core::initial` ports `skl_get_initial_plane_config` and the extent rounding of `initial_plane_vma` and judges whether the firmware's scanout
+can be kept without a modeset (one active pipe; its primary plane enabled, RGB, unrotated, uncompressed, offset 0, covering the pipe source from (0,0); at
+most a pipe-bound panel fitter over the whole panel) - anything else is `ADOPT-*` by name and left alone; startup logs `[I915-ADOPT OK|REFUSED ...]` with
+writes=0. (2) THE GGTT AROUND IT - `i915-memory-core::Gtt::new_ggtt_preserving` ports `init_ggtt` faithfully (only non-preallocated blocks are cleared; the
+error-capture slot moves off 0 when the firmware's framebuffer is there); render bring-up keeps the adopted extent (`[I915-GGTT kept=adopted-scanout ...]`),
+a bind over it is `RANGE-RESERVED(by=adopted-scanout)`. The port's old `new_ggtt` cleared EVERY entry and would have pointed the Pixelbook Go's panel at the
+scratch page. (3) ONE MODE - `DISPLAY-SET-MODE` accepts the adopted mode (nothing written) and refuses any other `MODE-NOT-ADOPTED`. (4) THE WIRE, ABI 1.5
+(additive): `DISPLAY-QUERY` (answered to anyone, the parked device included) and the authority calls `DISPLAY-SET-MODE`, `SCANOUT-ACQUIRE`, `SCANOUT-BEGIN`,
+`SCANOUT-PRESENT`, `SCANOUT-WAIT`. WHO MAY: only the session the device bound as the DISPLAY AUTHORITY (`UapiService::bind_display_authority`, called by the
+transport on a capability only the compositor holds - never a request flag; `SESSION-OPEN` with every cap is not the authority, tested); everyone else
+`-EACCES DISPLAY-NOT-AUTHORIZED`; the binding ends with its session. (5) THE LIFECYCLE - `devices/i915/src/display/scanout.rs`: FREE / RENDERING / COMMITTED /
+SCANNING_OUT; only the owner begins / presents / waits; drawing into a COMMITTED or SCANNING_OUT image is `SCANOUT-REUSE-VIOLATION` (also as a GPU write);
+a flip is `plan_surface_replacement`'s one `PLANE_SURF` write, armed only after the GPU work is complete, confirmed only by `PLANE_SURFLIVE`; the firmware's
+framebuffer is kept until the first replacement is proven latched; a suppressed latch is counted and releases NOTHING. PENDING (named, not claimed): the
+presentation increment's service glue - the pair's GEM backing (`prime_export` hold, `set_framebuffer`), its 256 KiB-aligned mappable GGTT pin at `I915_CACHE_NONE`,
+the `PLANE_SURF` write through the executor under a `p4-present` allow-list, `SURFLIVE` polling in `poll`, the parked `SCANOUT-WAIT`, the EXECBUFFER2 write
+check - until which `SCANOUT-*` answer `-EOPNOTSUPP SCANOUT-INCREMENT-NOT-ENABLED`; the transport's display-authority endpoint; interrupt, forcewake and
+power-well ownership for display; native modeset; `initial_plane_phys` (the PTE check).
