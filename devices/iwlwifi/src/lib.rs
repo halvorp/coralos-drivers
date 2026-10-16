@@ -13,7 +13,7 @@
 //! MILESTONES, as built (see DECISIONS.md D-NEXT and the commit message for what is and is not proven):
 //!  M1  power-up, firmware upload, ALIVE                  - [`driver::Driver::bring_up`] up to `Event::AliveOk`
 //!  M2  NVM, antennas, PHY configuration, calibration     - the rest of `bring_up`
-//!  M3  scan -> results shaped for wifi-manager           - [`scan`] (see its module doc for exactly what exists)
+//!  M3  scan -> results shaped for wifi-manager           - NOT BUILT; [`scan`] holds the cited breakdown
 //!
 //! THE WIRE TO wifi-manager. There is no wire crate here. wifi-manager.service speaks CoralOS's PRIVATE driver ABI
 //! (`coral-wifi-abi::driver`), a closed crate; the closed wrapper (userland/coral-iwlwifi-driver) maps this crate's
