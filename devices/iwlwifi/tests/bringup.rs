@@ -405,3 +405,22 @@ fn the_real_9260_46_file_comes_up_on_the_simulated_card() {
     assert_eq!(w.fw.boots, [FwState::Init]);
     assert_eq!(rep.alive.lmac.ucode_major, 46);
 }
+
+/// The 2026-10-16 Atlas silicon failure (teal-maple-glade-ring): `[IWL-FW-LOADED FAIL IWL-NIC-ACCESS
+/// AccessTimeout { gp_cntrl: 134479880 }]` = 0x08040008 = HW_RF_KILL_SW | bit 18 | MAC_ACCESS_REQ, with INIT_DONE and
+/// MAC_CLOCK_READY CLEAR. The card gives no clock to an access request made before INIT_DONE (iwl-csr.h:277-278), so a
+/// `grab` before `apm_init` fails and latches STATUS_TRANS_DEAD. Linux reads HPM_DEBUG in `clear_persistence_bit` with
+/// `iwl_read_umac_prph_no_grab` (trans.c:1749) precisely because the MAC is not up yet; this driver grabbed.
+#[test]
+fn no_nic_access_is_requested_before_init_done_and_the_silicon_gp_cntrl_never_appears() {
+    use iwlwifi_pcie_nic_core::bus::{NicFault, NicIo};
+    let b = build(&Opts::default());
+    let sim = world(&b);
+    let mut d = driver(&sim, &b);
+    let r = d.bring_up();
+    let fault = d.t.nic.fault();
+    assert_ne!(fault, Some(NicFault::AccessTimeout { gp_cntrl: 0x0804_0008 }), "the silicon failure: a grab before INIT_DONE");
+    assert!(r.is_ok(), "bring_up: {r:?}");
+    assert_eq!(fault, None);
+    no_violations(&sim);
+}

@@ -97,12 +97,15 @@ pub fn read32(w: &mut World, off: u32) -> u32 {
         CSR_INT_MASK => w.int_mask,
         CSR_FH_INT_STATUS => w.fh_int,
         CSR_GP_CNTRL => {
-            // MAC_CLOCK_READY follows INIT_DONE or an access request; GOING_TO_SLEEP never shows while awake.
+            // MAC_CLOCK_READY follows INIT_DONE ONLY: "After device reset, this bit remains 0 until host sets
+            // INIT_DONE" (iwl-csr.h:277-278), and an access request alone does not raise it (silicon, Z8350-class
+            // Atlas 2026-10-16: gp_cntrl 0x08040008 = ACCESS_REQ without INIT_DONE never got a clock).
+            // GOING_TO_SLEEP never shows while awake.
             let mut v = w.gp_cntrl & !(GP_MAC_CLOCK_READY | GP_GOING_TO_SLEEP | GP_HW_RF_KILL_SW);
             if !w.hw_rfkill {
                 v |= GP_HW_RF_KILL_SW; // the switch is a pin: a card reset does not move it
             }
-            if !w.wedge_mac_access && v & (GP_INIT_DONE | GP_MAC_ACCESS_REQ) != 0 {
+            if !w.wedge_mac_access && v & GP_INIT_DONE != 0 {
                 v |= GP_MAC_CLOCK_READY;
             }
             v
