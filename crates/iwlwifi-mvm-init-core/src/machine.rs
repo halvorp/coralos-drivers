@@ -276,6 +276,15 @@ impl Machine {
         Step::act(Action::StartFw)
     }
 
+    /// Replace the antenna masks the TX_ANT and PHY commands will carry. Linux computes them AFTER
+    /// `iwl_nvm_init` (mvm/fw.c:772, :776): `iwl_mvm_get_valid_tx_ant` is the firmware's mask ANDed with
+    /// the NVM's when the NVM names one (mvm/mvm.h:1757-1765), and the NVM is not known when the flow
+    /// starts. Call it when the machine asks for `CheckRfkill` after the NVM walk, before answering.
+    pub fn set_valid_antennas(&mut self, tx: u8, rx: u8) {
+        self.cfg.valid_tx_ant = tx;
+        self.cfg.valid_rx_ant = rx;
+    }
+
     pub fn state(&self) -> State {
         self.state
     }
