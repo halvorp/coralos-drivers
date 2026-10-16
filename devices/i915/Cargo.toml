@@ -28,6 +28,9 @@ entry = []
 p2-memory = []
 # P3: execlists on the render engine, the per-engine RESET_CTL handshakes and GEN6_GDRST. Needs P2 (its objects are GGTT-bound).
 p3-exec = ["p2-memory", "dep:i915-gem-core", "dep:i915-uapi-core", "dep:i915-syncobj-core"]
+# P4 (D18): the display authority's scanout pair - SCANOUT-ACQUIRE / BEGIN / PRESENT / WAIT served, and PLANE_SURF of the adopted plane
+# (i915-display-modeset-core adopt::ADOPT_WRITE_ALLOWLIST) on the write allow-list. Needs P3 (the images are GEM objects the GPU renders).
+p4-present = ["p3-exec"]
 
 [[bin]]
 name = "i915-device"

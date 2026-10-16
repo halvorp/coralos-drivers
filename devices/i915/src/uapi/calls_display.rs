@@ -29,8 +29,11 @@ impl UapiService {
                 }
                 Ok(Done::Len(msg::encode_reply::<msg::Empty>(out, Status::Ok, 0, None)?))
             }
-            // 2026-10-16 (D18): the presentation increment's service glue - the pair's GEM backing and GGTT pin, the PLANE_SURF write,
-            // SURFLIVE polling, the parked wait - is not in this device yet, so these calls are refused by name (DELETE-WHEN: devices/i915/Cargo.toml gains the `p4-present` feature that compiles that glue in)
+            // the presentation increment (D18, feature `p4-present`): the scanout pair served
+            #[cfg(feature = "p4-present")]
+            _ => self.call_scanout(hw, h, inc, p, out),
+            // a build without that increment refuses them by name, never a silent success
+            #[cfg(not(feature = "p4-present"))]
             _ => Err(Fail::new(errno::EOPNOTSUPP, "SCANOUT-INCREMENT-NOT-ENABLED")),
         }
     }

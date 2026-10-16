@@ -67,7 +67,12 @@ pub struct ReplacementSurface {
     pub rotation: Rotation,
 }
 
-/// `skl_plane_min_alignment()` for colour plane 0.
+/// `skl_plane_min_alignment()` for colour plane 0 (skl_universal_plane.c): the GGTT alignment a surface of this tiling must have
+/// to be scanned out - what a scanout buffer is pinned at.
+pub const fn surf_alignment(t: Tiling) -> u32 {
+    min_alignment(t)
+}
+
 const fn min_alignment(t: Tiling) -> u32 {
     match t {
         Tiling::Linear | Tiling::X => 256 * 1024,

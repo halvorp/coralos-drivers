@@ -256,19 +256,19 @@ impl UapiService {
     }
 
     /// `Some((status, positive errno, body))` once the parked call is decided.
-    fn eval_waiter(&mut self, w: &Waiter, now_ms: u64) -> Option<(Status, i32, ([u8; 16], usize))> {
+    fn eval_waiter(&mut self, w: &Waiter, now_ms: u64) -> Option<(Status, i32, ([u8; 24], usize))> {
         let inc = w.hdr.session_incarnation;
         let late = w.deadline_ms.is_some_and(|d| now_ms >= d);
-        let fail = |e: i32| Some((Status::Ok, e, ([0u8; 16], 0)));
+        let fail = |e: i32| Some((Status::Ok, e, ([0u8; 24], 0)));
         let body8 = |v: u32| {
-            let mut b = [0u8; 16];
+            let mut b = [0u8; 24];
             b[..4].copy_from_slice(&v.to_le_bytes());
             (b, 8)
         };
         match &w.kind {
             WaitKind::Gem { handle, timeout_ns } => {
                 let elapsed = now_ms.saturating_sub(w.start_ms).saturating_mul(1_000_000);
-                let mut b = [0u8; 16];
+                let mut b = [0u8; 24];
                 let mut finish = |busy: bool| {
                     let (left, res) = i915_gem_core::wait_finish(*timeout_ns, elapsed, busy, JIFFY_NS);
                     b[..8].copy_from_slice(&left.to_le_bytes());
@@ -292,12 +292,14 @@ impl UapiService {
             }
             WaitKind::Syncobj { handles, points, flags, timeline, first } => match self.sync.wait_eval(inc, handles, points.as_deref(), *flags, *timeline, Some(*first)) {
                 Ok(WaitEval::Done { first }) => Some((Status::Ok, 0, body8(first))),
-                Ok(WaitEval::Pending { .. }) => late.then(|| (Status::Ok, errno::ETIME, ([0u8; 16], 8))),
+                Ok(WaitEval::Pending { .. }) => late.then(|| (Status::Ok, errno::ETIME, ([0u8; 24], 8))),
                 Err(e) => fail(e.errno()),
             },
+            #[cfg(feature = "p4-present")]
+            WaitKind::Scanout { seq } => self.eval_scanout_wait(*seq, late),
             WaitKind::SyncFile { token } => match self.sync.file_status(inc, *token) {
                 Ok(FenceStatus::Signalled(e)) => Some((Status::Ok, 0, body8(e as u32))),
-                Ok(FenceStatus::Pending) => late.then(|| (Status::Ok, errno::ETIME, ([0u8; 16], 8))),
+                Ok(FenceStatus::Pending) => late.then(|| (Status::Ok, errno::ETIME, ([0u8; 24], 8))),
                 Err(e) => fail(e.errno()),
             },
         }
