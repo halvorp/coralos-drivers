@@ -19,16 +19,6 @@ description = "iwlwifi.device: Wireless-AC 9260 PCIe transport, firmware upload,
 name = "iwlwifi_device"
 path = "src/lib.rs"
 
-[features]
-# Builds the standalone ELF (src/main.rs); off for the library and its host tests.
-entry = []
-
-[[bin]]
-name = "iwlwifi-device"
-path = "src/main.rs"
-test = false
-required-features = ["entry"]
-
 [dependencies]
 coralos-rt = { path = "../../rt" }
 coralos-hal = { path = "../../hal" }

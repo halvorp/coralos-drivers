@@ -1,8 +1,3 @@
-# The standalone ELF build (feature `entry`):
-#   cargo +nightly build --release --features entry --target x86_64-unknown-none -Zbuild-std=core,compiler_builtins -Zbuild-std-features=compiler-builtins-mem
-[target.x86_64-unknown-none]
-rustflags = [
-    "-Clink-arg=-Tuser.ld",
-    "-Crelocation-model=static",
-    "-Ctarget-feature=-soft-float,+sse,+sse2,+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+lahfsahf",
-]
+# The CoralOS wrapper (userland/coral-iwlwifi-driver) builds this library into the .device ELF; it brings its own linker script
+# and target flags. This crate is checked for the bare-metal target with:
+#   cargo check --lib --target x86_64-unknown-none
