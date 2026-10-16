@@ -194,3 +194,10 @@ waited on, merged and used as a dependency; nothing signals through it); `FD-CLO
 its recipient; a handle or sync_file already redeemed holds its own reference and is untouched. NOT in this row: syncobj export tokens (`SYNCOBJ-HANDLE-TO-FD`
 without EXPORT_SYNC_FILE) are still the old bearer form - a full syncobj is signalable, so it needs its own ruling; the importer's CPU lease on a shared object is still
 refused while the exporter maps it (`MMAP-OBJECT-LEASED-TO-ANOTHER-SESSION`) - each side getting its own lease needs the page-exclusive lease rule lifted in gem-core.
+||||||| 430966b
+
+**D16 — the avs.device endpoint numbers are the CoralOS registry's: 70..=74 (2026-10-16).**
+The five numbers of `devices/avs/src/wire.rs` were proposed as 67..=71 (D14). The CoralOS registry gave the static endpoints below 70 to other services before the audio
+integration landed (the touchpad-prefs batch, matrix.connector, messages.service's reader lane, and storage's vault compartment: `EP_FS_VAULT` = 69), so the device carries
+`AVS_LISTEN` 70, `AVS_FW_REQ` 71, `AVS_FW_REPLY` 72, `AVS_JACK` 73, `AVS_JACK_ACK` 74 and the registry's dynamic base is 75. Nothing else changes: the device reads them only
+in `rt`, and the wait mask already covers endpoints above 63. A later registry reshuffle renumbers this file again, in the same change that moves the loader's grants.
