@@ -201,7 +201,7 @@ integration landed (the touchpad-prefs batch, matrix.connector, messages.service
 `AVS_LISTEN` 70, `AVS_FW_REQ` 71, `AVS_FW_REPLY` 72, `AVS_JACK` 73, `AVS_JACK_ACK` 74 and the registry's dynamic base is 75. Nothing else changes: the device reads them only
 in `rt`, and the wait mask already covers endpoints above 63. A later registry reshuffle renumbers this file again, in the same change that moves the loader's grants.
 
-**D17 — `i915.device` OWNS the Kaby Lake function, render AND display: it adopts the firmware's display, keeps its framebuffer through bring-up, offers its one mode, and speaks display to the compositor as semantics on i915-wire 1.5, never as registers (2026-10-16).**
+**D18 — `i915.device` OWNS the Kaby Lake function, render AND display: it adopts the firmware's display, keeps its framebuffer through bring-up, offers its one mode, and speaks display to the compositor as semantics on i915-wire 1.5, never as registers (2026-10-16).**
 Astra's Kaby Lake single-owner ruling (CoralOS docs/consults/2026-10-16-astra-kbl-gpu-single-owner.md, option (a)) after the Atlas boot where CoralOS's closed
 `drm_i915.device` took the GPU object (`ENDOW-DEVICE-BUSY`) and this device never launched: one hardware owner per function, chosen by identity (the
 CoralOS side - the owner table, the launch-plan check, the display row as an authority-limited adapter - is its doctrine GPU-ONE-OWNER-PER-FUNCTION); no

@@ -49,7 +49,7 @@ pub const ABI_MAJOR: u16 = 1;
 /// 3: a region call may name a separate reply region ([`region::REPLY_ELSEWHERE`]) and `GEM-MMAP-OPEN`/`GEM-MMAP-LEGACY`'s reply carries the kernel
 /// lease handle and the offset to map ([`msg::gem::GemMmapRep`]); additive - no opcode changed.
 /// 4: grants addressed to a NAMED session, for sharing across processes: `PRIME-GRANT`, `SYNC-FILE-GRANT`, `SYNC-FILE-REDEEM` (D15); additive.
-/// 5: DISPLAY OWNERSHIP (D17, Astra's Kaby Lake single-owner ruling 2026-10-16): the adopted display and its one mode (`DISPLAY-QUERY`,
+/// 5: DISPLAY OWNERSHIP (D18, Astra's Kaby Lake single-owner ruling 2026-10-16): the adopted display and its one mode (`DISPLAY-QUERY`,
 /// `DISPLAY-SET-MODE`) and the presentation path (`SCANOUT-ACQUIRE`, `SCANOUT-BEGIN`, `SCANOUT-PRESENT`, `SCANOUT-WAIT`), [`msg::display`];
 /// additive - no opcode changed.
 pub const ABI_MINOR: u16 = 5;

@@ -184,7 +184,7 @@ pub struct UapiService {
     pub(crate) lease_sys: alloc::boxed::Box<dyn super::kernel_lease::LeaseSys>,
     /// Pages never reused because the kernel would not confirm their lease ended.
     pub(crate) quarantined: usize,
-    /// The display this device adopted from the firmware (D17), and which session, if any, is its AUTHORITY.
+    /// The display this device adopted from the firmware (D18), and which session, if any, is its AUTHORITY.
     pub(crate) display: crate::display::Adoption,
     pub(crate) authority: Option<u64>,
 }
@@ -196,7 +196,7 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
     let window = crate::exec::allow::GgttWindow::for_table(geom.pte_base, geom.entries).ok_or(Fail::new(errno::EIO, "GGTT-WINDOW"))?;
     hw.ex.set_ggtt_window(window)?;
     let scratch = hw.gm.alloc.alloc(ObjKind::Data, crate::exec::dma::PAGE)?;
-    // D17: the adopted framebuffer's GGTT entries are kept exactly as the firmware left them - the panel is showing them NOW
+    // D18: the adopted framebuffer's GGTT entries are kept exactly as the firmware left them - the panel is showing them NOW
     let (mut ggtt, create) = Gtt::new_ggtt_preserving(&dev.desc, geom, scratch.device_addr, cfg.keep.as_slice()).map_err(|e| Fail::new(errno::EIO, e.name()))?;
     if let Some(k) = cfg.keep {
         emit(hw.log, format_args!("[I915-GGTT kept={} start={:#x} size={:#x} - not written, never bound over]", k.what, k.start, k.size));
@@ -432,7 +432,7 @@ impl UapiService {
         use Opcode::*;
         match h.opcode {
             Hello => Ok(Done::Len(msg::encode_reply::<msg::Empty>(out, Status::Ok, 0, None)?)),
-            // describes, changes nothing: answered with or without a session (D17)
+            // describes, changes nothing: answered with or without a session (D18)
             DisplayQuery => {
                 msg::Empty::from_payload(p)?;
                 Ok(Done::Len(msg::encode_reply(out, Status::Ok, 0, Some(&self.display.query_reply()))?))

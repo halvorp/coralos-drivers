@@ -33,7 +33,7 @@ pub struct UapiFacts {
     pub quirks: FlushQuirks,
     /// The engine's stall bound in milliseconds.
     pub stall_bound_ms: u64,
-    /// The firmware display as startup judged it (D17): an adopted framebuffer's GGTT range is kept through bring-up.
+    /// The firmware display as startup judged it (D18): an adopted framebuffer's GGTT range is kept through bring-up.
     pub adoption: crate::display::Adoption,
 }
 

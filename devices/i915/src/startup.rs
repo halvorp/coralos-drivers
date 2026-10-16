@@ -18,7 +18,7 @@ pub struct Ready {
     pub active_pipes: u32,
     /// How many register reads the readout made (it makes no writes).
     pub reads: u32,
-    /// What the device made of the firmware's display (D17): adopted and kept, or refused by name. Nothing was written either way.
+    /// What the device made of the firmware's display (D18): adopted and kept, or refused by name. Nothing was written either way.
     pub adoption: crate::display::Adoption,
 }
 

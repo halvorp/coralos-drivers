@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The scanout pair's lifecycle (D17, i915-wire 1.5) on the Pixelbook Go's adopted display, against the REAL surface-replacement
+//! The scanout pair's lifecycle (D18, i915-wire 1.5) on the Pixelbook Go's adopted display, against the REAL surface-replacement
 //! planner. The ruling's RED controls are here, each failing at its named invariant: presenting another session's image, rendering into
 //! a COMMITTED or SCANNING_OUT image, and a suppressed latch - which must release nothing.
 use i915_device::display::scanout::*;

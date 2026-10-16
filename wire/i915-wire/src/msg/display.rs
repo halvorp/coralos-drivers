@@ -1,4 +1,4 @@
-//! Display ownership on the wire (ABI 1.5, D17): the display the device ADOPTED from the firmware, the one mode it offers, and the
+//! Display ownership on the wire (ABI 1.5, D18): the display the device ADOPTED from the firmware, the one mode it offers, and the
 //! presentation path - two scanout images the display authority renders into, and the flips between them.
 //!
 //! WHO MAY CALL WHAT. `DISPLAY-QUERY` describes and changes nothing: it is answered to any frame, with or without a session (the

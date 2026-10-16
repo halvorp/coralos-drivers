@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! THE SCANOUT PAIR'S LIFECYCLE (D17; i915-wire 1.5 SCANOUT-*; CoralOS SCANOUT-BUFFER-LIFECYCLE): two images of the adopted layout the
+//! THE SCANOUT PAIR'S LIFECYCLE (D18; i915-wire 1.5 SCANOUT-*; CoralOS SCANOUT-BUFFER-LIFECYCLE): two images of the adopted layout the
 //! display authority draws into, and the flips between them. This module is the STATE MACHINE and nothing else: it holds no memory,
 //! writes no register and reads none - the caller (the presentation increment's service glue) creates and binds the images, executes
 //! the one-register flip plan it is handed, and feeds back the `PLANE_SURFLIVE` reads. Every rule of the wire is decided HERE, so it

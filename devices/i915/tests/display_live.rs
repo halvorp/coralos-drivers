@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! D17 display ownership on the LIVE service (`p3-exec`): render bring-up keeps the adopted framebuffer's GGTT entries exactly as
+//! D18 display ownership on the LIVE service (`p3-exec`): render bring-up keeps the adopted framebuffer's GGTT entries exactly as
 //! the firmware left them (and a control shows bring-up WOULD overwrite them), `DISPLAY-QUERY` is answered with or without a session,
 //! and every authority call is refused unless the session is the one the device bound - a `SESSION-OPEN` flag never makes one.
 #![cfg(feature = "p3-exec")]

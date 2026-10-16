@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! D17 display ownership, the parts every build has: startup ADOPTS the firmware's display (or refuses by name) without writing
+//! D18 display ownership, the parts every build has: startup ADOPTS the firmware's display (or refuses by name) without writing
 //! anything, the adopted framebuffer's GGTT range is what bring-up must keep, and the PARKED device answers `DISPLAY-QUERY` from the
 //! adoption while refusing every authority call (`DISPLAY-NOT-AUTHORIZED`: the parked device has no sessions, so no authority).
 use i915_device::display::{Adoption, ADOPTED_SCANOUT};

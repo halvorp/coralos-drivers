@@ -27,7 +27,7 @@ pub struct ParkedStats {
 pub struct Parked<T: Transport, L: Log> {
     pub t: T,
     pub log: L,
-    /// The firmware display as startup judged it: `DISPLAY-QUERY` is answered from it (D17).
+    /// The firmware display as startup judged it: `DISPLAY-QUERY` is answered from it (D18).
     pub display: crate::display::Adoption,
     pub conns: ConnTable,
     pub stats: ParkedStats,
