@@ -9,9 +9,11 @@
 //! |---|---|
 //! | [`Adoption`] | the verdict: adopted (and what), refused (and why), or no readout at all |
 //! | [`answer`] | the session-less display answers both loops give (`DISPLAY-QUERY`; the authority calls refused without an authority) |
+//! | [`scanout`] | the scanout pair's LIFECYCLE (FREE / RENDERING / COMMITTED / SCANNING_OUT): who may draw, present and wait, when a flip is armed, when a surface is released |
 //!
-//! Nothing here writes a register.
+//! Nothing here writes a register: the flip plan `scanout` hands over is executed by the presentation increment's service glue.
 pub mod answer;
+pub mod scanout;
 
 use crate::log::{emit, Log};
 use i915_display_modeset_core::initial::{adopt, AdoptRefusal, AdoptedDisplay};
