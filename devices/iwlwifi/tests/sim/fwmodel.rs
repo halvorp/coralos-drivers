@@ -76,6 +76,8 @@ pub struct Fw {
     pub notif_counter: u16,
     pub calib_types: Vec<u16>,
     pub extra: Option<Box<dyn FnMut(&mut World, &SeenCmd) -> Option<Vec<Reply>>>>,
+    /// The RT image's behaviour and what it was told (tests/sim/rtfw.rs).
+    pub rt: super::rtfw::RtFw,
 }
 
 /// One packet the firmware sends back.
@@ -109,6 +111,7 @@ impl Fw {
             notif_counter: 0,
             calib_types: vec![1, 2, 4, 5],
             extra: None,
+            rt: super::rtfw::RtFw::new(),
         }
     }
 
@@ -116,6 +119,7 @@ impl Fw {
         self.cpu_released = false;
         self.scd_base_reg = 0;
         self.state = FwState::Off;
+        self.rt.reset_run();
     }
 }
 
@@ -159,6 +163,10 @@ pub fn boot(w: &mut World) {
         return;
     }
     w.fw.scd_base_reg = SCD_BASE_VALUE;
+    if which == FwState::Regular {
+        let model = w.fw.regular.clone();
+        w.fw.rt.on_boot(model.as_ref());
+    }
     let mut p = Vec::new();
     p.extend_from_slice(&w.fw.alive_status.to_le_bytes()); // status
     p.extend_from_slice(&0u16.to_le_bytes()); // flags
@@ -342,6 +350,10 @@ fn dispatch(w: &mut World, c: SeenCmd) {
     if Some(c.cmd) == w.fw.swallow_cmd && c.group == 0 {
         return; // never answered
     }
+    if w.fw.state == FwState::Regular {
+        super::rtfw::handle(w, &c);
+        return;
+    }
     if let Some(mut f) = w.fw.extra.take() {
         let r = f(w, &c);
         w.fw.extra = Some(f);
@@ -381,7 +393,13 @@ fn dispatch(w: &mut World, c: SeenCmd) {
                 let mut t = 2_000;
                 for ty in w.fw.calib_types.clone() {
                     // struct iwl_calib_res_notif_phy_db { le16 type; le16 length; u8 data[]; } (cmdhdr.h:130-134)
-                    let data = vec![ty as u8; 16 * ty as usize];
+                    // PAPD (4) and TXP (5) sections start with their channel-group id (le16), iwl_phy_db_set_section reads it.
+                    let mut data = vec![ty as u8; 16 * ty as usize];
+                    if ty == 4 || ty == 5 {
+                        data[0] = 0;
+                        data[1] = 0;
+                    }
+                    w.fw.rt.init_phydb.push((ty, data.clone()));
                     let mut p = vec![];
                     p.extend_from_slice(&ty.to_le_bytes());
                     p.extend_from_slice(&(data.len() as u16).to_le_bytes());

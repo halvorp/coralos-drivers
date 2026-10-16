@@ -39,6 +39,12 @@ impl TransIo for Env {
     fn prph_write(&mut self, a: u32, v: u32) {
         self.io.prph_write(a, v)
     }
+    fn prph_read_no_grab(&mut self, a: u32) -> u32 {
+        self.io.prph_read_no_grab(a)
+    }
+    fn prph_write_no_grab(&mut self, a: u32, v: u32) {
+        self.io.prph_write_no_grab(a, v)
+    }
     fn sleep_us(&mut self, us: u32) {
         self.io.sleep_us(us)
     }

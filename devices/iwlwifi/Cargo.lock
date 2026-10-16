@@ -24,6 +24,7 @@ dependencies = [
  "iwlwifi-fw-image-core",
  "iwlwifi-fw-tlv-core",
  "iwlwifi-mvm-init-core",
+ "iwlwifi-mvm-rt-core",
  "iwlwifi-nvm-parse-core",
  "iwlwifi-pcie-nic-core",
  "iwlwifi-pcie-ring-core",
@@ -47,6 +48,10 @@ version = "0.1.0"
 
 [[package]]
 name = "iwlwifi-mvm-init-core"
+version = "0.1.0"
+
+[[package]]
+name = "iwlwifi-mvm-rt-core"
 version = "0.1.0"
 
 [[package]]

@@ -156,7 +156,13 @@ pub struct Stats {
     pub rx_packets: u32,
     pub cmds_sent: u32,
     pub spurious: u32,
+    /// Notifications dropped because nobody waited for them and the inbox was full ([`INBOX_CAP`]).
+    pub inbox_dropped: u32,
 }
+
+/// The most unclaimed notifications the transport keeps. A burst of RX_MPDU nobody waits for must not grow the heap
+/// without bound; the oldest is dropped and counted.
+pub const INBOX_CAP: usize = 256;
 
 pub struct Transport<H: Host> {
     pub nic: Nic<H>,
@@ -317,6 +323,12 @@ impl<H: Host> TransIo for Transport<H> {
     }
     fn prph_write(&mut self, addr: u32, val: u32) {
         self.nic.prph_write(addr, val)
+    }
+    fn prph_read_no_grab(&mut self, addr: u32) -> u32 {
+        self.nic.prph_read_no_grab(addr)
+    }
+    fn prph_write_no_grab(&mut self, addr: u32, val: u32) {
+        self.nic.prph_write_no_grab(addr, val)
     }
     fn sleep_us(&mut self, us: u32) {
         self.nic.sleep_us(us)
