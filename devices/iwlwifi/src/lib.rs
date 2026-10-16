@@ -33,6 +33,7 @@ pub mod host;
 pub mod irqloop;
 #[cfg(target_arch = "x86_64")]
 pub mod rt;
+pub mod rt_up;
 pub mod rxpath;
 pub mod scan;
 pub mod sha256;

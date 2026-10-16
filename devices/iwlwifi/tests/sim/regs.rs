@@ -206,7 +206,9 @@ pub fn write32(w: &mut World, off: u32, val: u32) {
             if q == 0 {
                 fm::doorbell(w, (val & 0xff) as u16);
             } else {
-                w.violation(format!("doorbell for queue {q}: no data queue is enabled"));
+                // A write pointer for a data queue: positions the pointer before SCD_QUEUE_CFG enables the queue
+                // (iwl_trans_pcie_txq_enable with no cfg); the firmware model checks the order (rtfw.rs).
+                super::rtfw::queue_wrptr(w, q as u8, (val & 0xff) as u16);
             }
         }
         RFH_Q0_FRBDCB_WIDX_TRG => {

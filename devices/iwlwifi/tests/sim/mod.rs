@@ -17,6 +17,7 @@ pub mod blob;
 pub mod fwmodel;
 pub mod nvmdata;
 pub mod regs;
+pub mod rtfw;
 
 use coralos_hal::{DmaRefusal, DmaRegion};
 use iwlwifi_device::host::{Host, Wake};
