@@ -29,7 +29,8 @@ impl UapiService {
                 }
                 Ok(Done::Len(msg::encode_reply::<msg::Empty>(out, Status::Ok, 0, None)?))
             }
-            // the presentation increment (P4-PRESENT) serves these; until it is compiled in they are refused by name
+            // 2026-10-16 (D17): the presentation increment's service glue - the pair's GEM backing and GGTT pin, the PLANE_SURF write,
+            // SURFLIVE polling, the parked wait - is not in this device yet, so these calls are refused by name (DELETE-WHEN: devices/i915/Cargo.toml gains the `p4-present` feature that compiles that glue in)
             _ => Err(Fail::new(errno::EOPNOTSUPP, "SCANOUT-INCREMENT-NOT-ENABLED")),
         }
     }

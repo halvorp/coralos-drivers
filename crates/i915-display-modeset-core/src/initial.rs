@@ -16,9 +16,9 @@
 //! intel_fb.c (`intel_tile_size` :769-772, `intel_tile_width_bytes` :774-842, `intel_tile_height` :843-849, `intel_fb_align_height`
 //! :891-897), i915_initial_plane.c (`initial_plane_vma` :86-215: the extent rounded down to `I915_GTT_MIN_ALIGNMENT` and up to the
 //! region's `min_page_size`), and include/uapi/drm/drm_fourcc.h (`fourcc_code` :105, the modifiers :544, :573, :591, :606).
-//! NOT ported: `initial_plane_phys` (the framebuffer PTE must be present and inside stolen memory, i915_initial_plane.c:35-84) - it
-//! reads the GGTT, which the read-only device does not map; and the "larger than half of stolen" fbdev discard (:116-120), which
-//! is fbdev policy, not adoption. Copyright (c) Intel Corporation.
+//! OWED to the device's GGTT bring-up (D17, 2026-10-16): `initial_plane_phys` (the framebuffer PTE must be present and inside stolen memory,
+//! i915_initial_plane.c:35-84) reads the GGTT, which only the device maps, so it is the device's step, not this crate's. Deliberately
+//! absent: the "larger than half of stolen" fbdev discard (:116-120), which is fbdev policy, not adoption. Copyright (c) Intel Corporation.
 use i915_kbl_display_core::plane::{fourcc_name, PlaneFormat, PlaneState, Rotation, ScalerBinding, ScalerState, Tiling};
 use i915_kbl_display_core::power::Well;
 use i915_kbl_display_core::readout::{PipeState, ReadoutState};
