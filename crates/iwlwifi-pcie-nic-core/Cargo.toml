@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[package]
+name = "iwlwifi-pcie-nic-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+iwlwifi-pcie-trans-core = { path = "../iwlwifi-pcie-trans-core" }
+iwlwifi-fw-image-core = { path = "../iwlwifi-fw-image-core" }
+
+[workspace]
+# Standalone workspace (PORT_CONVENTIONS.md 7a).

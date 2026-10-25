@@ -1,0 +1,3 @@
+# The CoralOS wrapper (userland/coral-iwlwifi-driver) builds this library into the .device ELF; it brings its own linker script
+# and target flags. This crate is checked for the bare-metal target with:
+#   cargo check --lib --target x86_64-unknown-none

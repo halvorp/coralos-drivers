@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# iwlwifi.device - the Intel Wireless-AC 9260 (PCI 8086:2526, "ThunderPeak2") of the Pixelbook Go (ATLAS) as a ring-3 CoralOS `.device`.
+# It composes the ported cores (iwlwifi-pcie-trans-core, -nic-core, -ring-core, iwlwifi-fw-tlv-core, -image-core, -alive-core,
+# iwlwifi-mvm-init-core) into a driver that powers the card, uploads the firmware image, waits for ALIVE, runs the MVM INIT sequence
+# (NVM, antennas, PHY configuration, calibration) and reports what it found. The dependency list is a CONTRACT: tests/contract.rs fails
+# the build on a closed CoralOS crate, in the manifest or in a source.
+#
+# There is NO wire crate here: the wifi-manager side of the conversation is CoralOS's private driver ABI (coral-wifi-abi), which is a
+# closed crate; the closed wrapper (userland/coral-iwlwifi-driver) maps this library's neutral `Request` / `Event` onto it. See DECISIONS.md D-NEXT.
+[package]
+name = "iwlwifi-device"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-2.0-only"
+description = "iwlwifi.device: Wireless-AC 9260 PCIe transport, firmware upload, ALIVE, MVM INIT (NVM, PHY, calibration), scan results"
+
+[lib]
+name = "iwlwifi_device"
+path = "src/lib.rs"
+
+[dependencies]
+coralos-rt = { path = "../../rt" }
+coralos-hal = { path = "../../hal" }
+iwlwifi-pcie-trans-core = { path = "../../crates/iwlwifi-pcie-trans-core" }
+iwlwifi-pcie-nic-core = { path = "../../crates/iwlwifi-pcie-nic-core" }
+iwlwifi-pcie-ring-core = { path = "../../crates/iwlwifi-pcie-ring-core" }
+iwlwifi-fw-tlv-core = { path = "../../crates/iwlwifi-fw-tlv-core" }
+iwlwifi-fw-image-core = { path = "../../crates/iwlwifi-fw-image-core" }
+iwlwifi-fw-alive-core = { path = "../../crates/iwlwifi-fw-alive-core" }
+iwlwifi-mvm-init-core = { path = "../../crates/iwlwifi-mvm-init-core" }
+iwlwifi-nvm-parse-core = { path = "../../crates/iwlwifi-nvm-parse-core" }
+
+[dev-dependencies]
+coralos-hal = { path = "../../hal", features = ["fake"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[workspace]
