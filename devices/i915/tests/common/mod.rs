@@ -61,6 +61,7 @@ pub fn config_page(device: u16, rev: u8) -> Window {
 pub fn config_full(vendor: u16, device: u16, rev: u8, base: u8, sub: u8) -> Window {
     let mut w = Window::new(256);
     w.set(0x00, (device as u32) << 16 | vendor as u32);
+    w.set(0x04, 0x0010_0007); // status: capability list; command: io+mem+bme
     w.set(0x08, (base as u32) << 24 | (sub as u32) << 16 | rev as u32);
     w.set(0x2c, 0x1234_5678);
     w

@@ -420,3 +420,45 @@ fn the_whole_proof_runs_over_the_real_window_against_a_register_image_and_stops_
     assert!(matches!(e, I915Error::AckTimeout { domain: 2, .. }), "{e:?}");
     assert_eq!(bar.take_fault(), None, "the proof wrote only what the window allows");
 }
+
+// ---- the PCI COMMAND register is reported by the bring-up (i915_driver.c:533 pci_set_master is the precondition it names) -----------
+
+fn pci_ring_for(command_dword: u32) -> (Lines, Vec<u32>) {
+    let mut chip = Chip::new(bar_vector_a());
+    let mut cfg = config_page(0x591c, 0x02);
+    cfg.set(0x04, command_dword);
+    let mut lg = Lines::default();
+    bringup(&mut chip, &mut cfg, &mut lg).expect("bring-up proceeds whatever the command register says");
+    (lg, cfg.reads)
+}
+
+#[test]
+fn bringup_reports_the_command_register_before_the_readout() {
+    let (lg, reads) = pci_ring_for(0x0010_0007);
+    let at = lg.0.iter().position(|l| l.starts_with("[I915-KBL-DEV PCI command=")).expect("a PCI command line");
+    assert_eq!(lg.0[at], "[I915-KBL-DEV PCI command=0x0007 io=1 mem=1 bme=1 intx_disable=0 (pci_set_master: i915_driver.c:533)]");
+    let readout = lg.0.iter().position(|l| l.starts_with("[I915-KBL-READOUT pipe=")).unwrap();
+    assert!(at < readout);
+    assert!(!lg.has("PCI-BME-OFF"));
+    assert!(reads.contains(&0x04));
+}
+
+#[test]
+fn a_clear_bus_master_bit_is_named_and_does_not_stop_the_bringup() {
+    let (lg, _) = pci_ring_for(0x0010_0003);
+    assert!(lg.has("[I915-KBL-DEV PCI command=0x0003 io=1 mem=1 bme=0 intx_disable=0 (pci_set_master: i915_driver.c:533)]"), "{:?}", lg.0);
+    let off = lg.find("[I915-KBL-DEV PCI-BME-OFF");
+    assert_eq!(off.len(), 1);
+    assert!(off[0].contains("this device cannot set it"), "{}", off[0]);
+    assert!(lg.has("[I915-PROOF-OF-LIFE id="), "the proof of life still runs: a clear bit is evidence, not a verdict");
+}
+
+#[test]
+fn an_unreadable_command_register_is_named_and_does_not_stop_the_bringup() {
+    let mut chip = Chip::new(bar_vector_a());
+    let mut cfg = config_page(0x591c, 0x02);
+    cfg.fail_at = Some(0x04);
+    let mut lg = Lines::default();
+    bringup(&mut chip, &mut cfg, &mut lg).expect("proceeds");
+    assert!(lg.has("[I915-KBL-DEV PCI command=unreadable why="), "{:?}", lg.0);
+}

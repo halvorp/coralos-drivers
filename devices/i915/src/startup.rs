@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The device's whole read-only bring-up as one function over two windows and a log, so a host test can run it end to end.
 use crate::gt::{self, Proof};
-use crate::identity::{check, read_identity, PciIdentity, Refusal};
+use crate::identity::{check, read_command, read_identity, PciIdentity, Refusal};
 use crate::log::{emit, Log};
 use crate::regio::{Bar, RegRead, BAR0_SLOT, READOUT_WINDOW_BYTES};
 use i915_common_core::I915Error;
@@ -151,6 +151,7 @@ pub fn bringup<B: Bar, C: RegRead, L: Log>(bar: &mut B, cfg: &mut C, log: &mut L
         }
     };
     let desc = gt::gate(&identity, log).map_err(BringupError::Gate)?;
+    report_command(cfg, log);
     let ready = startup(bar, cfg, log).map_err(BringupError::Startup)?;
     if let Some(f) = bar.take_fault() {
         emit(log, format_args!("[I915-KBL-DEV FAIL step=WINDOW why={}]", f.name()));
@@ -162,4 +163,29 @@ pub fn bringup<B: Bar, C: RegRead, L: Log>(bar: &mut B, cfg: &mut C, log: &mut L
         return Err(BringupError::Window(f));
     }
     Ok((ready, proof))
+}
+
+/// Say what the firmware left in PCI COMMAND. Linux sets bus mastering itself (`pci_set_master`, i915_driver.c:533) before the
+/// command streamer or the display engine fetch from memory; this device holds no configuration lever, so a clear bit is reported
+/// by name and the bring-up goes on - the ring is the evidence, not a verdict. Writes nothing.
+fn report_command<C: RegRead, L: Log>(cfg: &mut C, log: &mut L) {
+    match read_command(cfg) {
+        Ok(c) => {
+            emit(
+                log,
+                format_args!(
+                    "[I915-KBL-DEV PCI command={:#06x} io={} mem={} bme={} intx_disable={} (pci_set_master: i915_driver.c:533)]",
+                    c.raw,
+                    c.io() as u8,
+                    c.memory() as u8,
+                    c.bus_master() as u8,
+                    c.intx_disabled() as u8
+                ),
+            );
+            if !c.bus_master() {
+                emit(log, format_args!("[I915-KBL-DEV PCI-BME-OFF render and display DMA are gated on COMMAND.BME; this device cannot set it - a batch that never retires is this]"));
+            }
+        }
+        Err(r) => emit(log, format_args!("[I915-KBL-DEV PCI command=unreadable why={}]", r.name())),
+    }
 }

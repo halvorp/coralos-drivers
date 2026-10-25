@@ -77,3 +77,41 @@ pub fn check(id: &PciIdentity) -> Result<KblDevice, Refusal> {
     }
     Ok(dev)
 }
+
+/// include/uapi/linux/pci_regs.h: `PCI_COMMAND`.
+pub const PCI_COMMAND: u32 = 0x04;
+/// include/uapi/linux/pci_regs.h: `PCI_COMMAND_IO`.
+pub const PCI_COMMAND_IO: u16 = 0x1;
+/// include/uapi/linux/pci_regs.h: `PCI_COMMAND_MEMORY`.
+pub const PCI_COMMAND_MEMORY: u16 = 0x2;
+/// include/uapi/linux/pci_regs.h: `PCI_COMMAND_MASTER` - bus mastering, which the GPU's command streamer and display DMA need.
+pub const PCI_COMMAND_MASTER: u16 = 0x4;
+/// include/uapi/linux/pci_regs.h: `PCI_COMMAND_INTX_DISABLE`.
+pub const PCI_COMMAND_INTX_DISABLE: u16 = 0x400;
+
+/// The PCI COMMAND register as the firmware left it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PciCommand {
+    pub raw: u16,
+}
+
+impl PciCommand {
+    pub fn io(self) -> bool {
+        self.raw & PCI_COMMAND_IO != 0
+    }
+    pub fn memory(self) -> bool {
+        self.raw & PCI_COMMAND_MEMORY != 0
+    }
+    pub fn bus_master(self) -> bool {
+        self.raw & PCI_COMMAND_MASTER != 0
+    }
+    pub fn intx_disabled(self) -> bool {
+        self.raw & PCI_COMMAND_INTX_DISABLE != 0
+    }
+}
+
+/// Read COMMAND (the low half of the dword at 0x04; the high half is STATUS).
+pub fn read_command<C: RegRead>(cfg: &mut C) -> Result<PciCommand, Refusal> {
+    let dword = cfg.read32(PCI_COMMAND).map_err(Refusal::ConfigUnreadable)?;
+    Ok(PciCommand { raw: dword as u16 })
+}
