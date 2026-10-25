@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: ISC
+[package]
+name = "wpa-crypto-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "ISC"
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

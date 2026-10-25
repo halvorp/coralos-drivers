@@ -112,6 +112,10 @@ pub struct Driver<H: Host> {
     pub(crate) valid_rx_ant: u8,
     /// The RT image state (see `rt_up`).
     pub rt: crate::rt_up::RtState,
+    /// The link to the access point, from the first join command to the teardown (see `join`, `link`).
+    pub(crate) link: Option<Box<crate::link::Link>>,
+    /// Events produced where no caller could take them (a link-up after message 4, a link-down after a bad handshake).
+    pub(crate) pending_events: Vec<crate::event::Event>,
 }
 
 /// The bring-up stage an [`Action`] belongs to, for `[IWL-NIC-FAULT stage=…]`.
@@ -151,7 +155,7 @@ impl<H: Host> Driver<H> {
         let fw = FwImage::load(firmware, digest)?;
         let mut nvm_sections = Vec::new();
         nvm_sections.resize_with(NVM_MAX_NUM_SECTIONS as usize, || None);
-        Ok(Driver { t: Transport::new(host), fw, alive: None, error_tables: None, nvm: None, mac: None, channels: Vec::new(), nvm_sections, phydb: Box::new(PhyDb::new()), valid_tx_ant: 0, valid_rx_ant: 0, rt: crate::rt_up::RtState::default() })
+        Ok(Driver { t: Transport::new(host), fw, alive: None, error_tables: None, nvm: None, mac: None, channels: Vec::new(), nvm_sections, phydb: Box::new(PhyDb::new()), valid_tx_ant: 0, valid_rx_ant: 0, rt: crate::rt_up::RtState::default(), link: None, pending_events: Vec::new() })
     }
 
     pub(crate) fn log(&mut self, args: core::fmt::Arguments<'_>) {

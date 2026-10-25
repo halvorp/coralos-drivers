@@ -30,6 +30,9 @@ pub trait Host: RawBus {
     /// Block until the card's MSI fires or the absolute `deadline_ms` passes. An MSI that fired while
     /// the device was busy is not lost: it wakes the next wait at once.
     fn wait_irq(&mut self, deadline_ms: u64) -> Wake;
+    /// Fill `out` with bytes an attacker cannot predict (the supplicant's SNonce comes from here). `false` when the
+    /// machine has no such source: the caller refuses to start a handshake, it never falls back to a weaker one.
+    fn random(&mut self, out: &mut [u8]) -> bool;
     /// The task log: one line, no newline.
     fn log(&mut self, line: &str);
 }

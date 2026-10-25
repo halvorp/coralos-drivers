@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-const ALLOWED_EXACT: [&str; 2] = ["coralos-rt", "coralos-hal"];
+const ALLOWED_EXACT: [&str; 4] = ["coralos-rt", "coralos-hal", "wpa-supplicant-core", "wpa-crypto-core"];
 const ALLOWED_PREFIX: [&str; 1] = ["iwlwifi-"];
 
 fn dependency_names(toml: &str) -> Vec<String> {
@@ -58,7 +58,7 @@ fn sources_naming_closed(dir: &Path, hits: &mut Vec<String>) {
 fn the_real_manifest_has_only_contract_dependencies() {
     let toml = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).unwrap();
     assert_eq!(forbidden(&toml), Vec::<String>::new());
-    assert!(dependency_names(&toml).len() >= 10);
+    assert!(dependency_names(&toml).len() >= 14);
 }
 
 #[test]

@@ -31,9 +31,15 @@ iwlwifi-fw-alive-core = { path = "../../crates/iwlwifi-fw-alive-core" }
 iwlwifi-mvm-init-core = { path = "../../crates/iwlwifi-mvm-init-core" }
 iwlwifi-mvm-rt-core = { path = "../../crates/iwlwifi-mvm-rt-core" }
 iwlwifi-nvm-parse-core = { path = "../../crates/iwlwifi-nvm-parse-core" }
+iwlwifi-mvm-join-core = { path = "../../crates/iwlwifi-mvm-join-core" }
+iwlwifi-mvm-sta-key-core = { path = "../../crates/iwlwifi-mvm-sta-key-core" }
+# The RSN supplicant and its crypto are ISC (OpenBSD net80211, DECISIONS D20); this GPL device links them.
+wpa-supplicant-core = { path = "../../crates/wpa-supplicant-core" }
+wpa-crypto-core = { path = "../../crates/wpa-crypto-core" }
 
 [dev-dependencies]
 coralos-hal = { path = "../../hal", features = ["fake"] }
+wpa-supplicant-core = { path = "../../crates/wpa-supplicant-core", features = ["testkit"] }
 
 [profile.release]
 opt-level = "z"

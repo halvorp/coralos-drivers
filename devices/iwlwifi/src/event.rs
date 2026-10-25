@@ -59,11 +59,58 @@ pub enum Event {
     ScanDone { scan_id: u32, complete: bool },
     /// The firmware or the bus failed; `code` is for the log (a [`crate::transport::Fault`] number).
     Fault { code: u32 },
+    /// The join finished: authenticated, associated and (for a protected network) the keys are installed and the
+    /// controlled port is open. Data frames may flow.
+    LinkUp { bssid: [u8; 6], channel: u8, aid: u16 },
+    /// The link ended.
+    LinkDown { reason: LinkDown },
+    /// A join step failed; `stage` names it (a marker name) and `code` is the 802.11 status or reason when the AP sent one.
+    JoinFailed { stage: &'static str, code: u32 },
+    /// A received data frame, as an Ethernet II frame (destination, source, ethertype, payload).
+    Rx(alloc::vec::Vec<u8>),
+}
+
+/// Why a link ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkDown {
+    /// The AP sent a deauthentication; carries its reason code.
+    Deauthenticated(u16),
+    /// The AP sent a disassociation; carries its reason code.
+    Disassociated(u16),
+    /// The key handshake failed; carries the 802.11 reason code this station deauthenticated with.
+    HandshakeFailed(u16),
+    /// The host asked to leave.
+    Left,
+    /// The firmware or the bus failed.
+    DeviceFault,
+}
+
+/// Join one network. The PMK is derived by whoever holds the passphrase; the device never sees the passphrase and
+/// forgets the PMK when the handshake ends.
+#[derive(Clone, PartialEq, Eq)]
+pub struct JoinRequest {
+    pub ssid: Ssid,
+    /// Join this BSS; `None` takes the strongest one of the last scan that carries the SSID.
+    pub bssid: Option<[u8; 6]>,
+    pub security: Security,
+    /// Present exactly when `security` is [`Security::Wpa2Psk`].
+    pub pmk: Option<[u8; 32]>,
+}
+
+impl core::fmt::Debug for JoinRequest {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The PMK is a credential: a log line shows only whether one was given.
+        f.debug_struct("JoinRequest").field("ssid", &self.ssid).field("bssid", &self.bssid).field("security", &self.security).field("pmk", &self.pmk.map(|_| "<present>")).finish()
+    }
 }
 
 /// What the server asks of the device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     /// Scan all channels the NVM allows; passive and active as the regulatory state permits.
     Scan { scan_id: u32 },
+    /// Join a network.
+    Join(JoinRequest),
+    /// Leave the network.
+    Leave,
 }

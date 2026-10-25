@@ -13,8 +13,10 @@
 //! written; a notification needs a posted receive buffer. A violation is RECORDED (`violations`), never
 //! silently tolerated, and the tests assert the list is empty.
 #![allow(dead_code)]
+pub mod ap;
 pub mod blob;
 pub mod fwmodel;
+pub mod harness;
 pub mod nvmdata;
 pub mod regs;
 pub mod rtfw;
@@ -92,6 +94,10 @@ pub struct World {
     /// The RF-kill switch (a pin, not card state): true = KILL, GP_CNTRL bit 27 reads clear.
     pub hw_rfkill: bool,
     pub wait_log: Vec<(u64, Option<u64>, bool)>,
+    /// The host's entropy source: xorshift state, calls made, and a switch that makes it refuse.
+    pub rng: u64,
+    pub rng_calls: u32,
+    pub rng_refuse: bool,
 }
 
 /// A host command as the card saw it.
@@ -147,6 +153,9 @@ impl Sim {
             wedge_mac_access: false,
             hw_rfkill: false,
             wait_log: Vec::new(),
+            rng: 0x9e37_79b9_7f4a_7c15,
+            rng_calls: 0,
+            rng_refuse: false,
         };
         w.csr.insert(regs::CSR_HW_REV, 0x0000_0321);
         w.csr.insert(regs::CSR_HW_RF_ID, 0x0010_5100);
@@ -332,6 +341,19 @@ impl Host for SimHost {
                 }
             }
         }
+    }
+
+    fn random(&mut self, out: &mut [u8]) -> bool {
+        // A deterministic xorshift stream: tests need a repeatable SNonce, and a different one each call.
+        let mut w = self.0.w();
+        for b in out.iter_mut() {
+            w.rng ^= w.rng << 13;
+            w.rng ^= w.rng >> 7;
+            w.rng ^= w.rng << 17;
+            *b = (w.rng >> 24) as u8;
+        }
+        w.rng_calls += 1;
+        !w.rng_refuse
     }
 
     fn log(&mut self, line: &str) {

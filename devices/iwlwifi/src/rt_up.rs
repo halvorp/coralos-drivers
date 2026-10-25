@@ -72,6 +72,24 @@ pub struct RtState {
     pub cmds: u32,
     /// The paging DRAM blocks (CSS first); allocated once, reused by a later RT start.
     pub paging_blocks: Vec<DmaRegion>,
+    /// The strongest beacon or probe response heard per BSSID in the last scan, kept whole so a join can read the
+    /// rates, the RSN element, the beacon interval and the DTIM state from it.
+    pub beacons: Vec<StoredBeacon>,
+}
+
+/// One heard frame, as the card delivered it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredBeacon {
+    pub bssid: [u8; 6],
+    pub rssi: i16,
+    /// The MPDU from the 802.11 header on.
+    pub mpdu: Vec<u8>,
+    /// The device inserted two pad bytes after the header.
+    pub padded: bool,
+    /// The channel the card was on (`desc->v1.channel`).
+    pub rx_channel: u8,
+    /// `gp2_on_air_rise`: the device clock when the frame arrived.
+    pub gp2: u32,
 }
 
 /// The summary `start_rt` returns (everything is also in the markers).
@@ -98,13 +116,13 @@ impl<H: Host> Driver<H> {
         r
     }
 
-    fn rt_fail(&mut self, stage: &'static str, why: RtWhy) -> DriverError {
+    pub(crate) fn rt_fail(&mut self, stage: &'static str, why: RtWhy) -> DriverError {
         self.log(format_args!("[IWL-RT FAIL stage={stage} {why:?}]"));
         DriverError::Rt { stage, why }
     }
 
     /// Send one RT command and name the outcome. `stage` is the marker name.
-    fn rt_cmd(&mut self, stage: &'static str, group: u8, cmd: u8, chunks: &[Chunk<'_>]) -> Result<Rx, DriverError> {
+    pub(crate) fn rt_cmd(&mut self, stage: &'static str, group: u8, cmd: u8, chunks: &[Chunk<'_>]) -> Result<Rx, DriverError> {
         match self.t.send_cmd(group, cmd, 0, chunks) {
             Ok(rx) => {
                 self.rt.cmds += 1;
@@ -119,7 +137,7 @@ impl<H: Host> Driver<H> {
     }
 
     /// A command whose reply carries nothing the host checks (Linux: `iwl_mvm_send_cmd_pdu` without `CMD_WANT_SKB`).
-    fn rt_simple(&mut self, stage: &'static str, group: u8, cmd: u8, payload: &[u8]) -> Result<(), DriverError> {
+    pub(crate) fn rt_simple(&mut self, stage: &'static str, group: u8, cmd: u8, payload: &[u8]) -> Result<(), DriverError> {
         self.rt_cmd(stage, group, cmd, &[Chunk { data: payload, nocopy: false }])?;
         self.log(format_args!("[IWL-RT-CMD {stage} ok]"));
         Ok(())

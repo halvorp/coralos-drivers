@@ -104,7 +104,7 @@ pub fn build(o: &Opts) -> Blob {
         c0.extend_from_slice(&((1u32 << 1) | (1 << 2) | (1 << 9) | (1 << 12)).to_le_bytes());
         tlv(&mut b, 30, &c0);
         let mut c1 = 1u32.to_le_bytes().to_vec();
-        c1.extend_from_slice(&(1u32 << 5).to_le_bytes());
+        c1.extend_from_slice(&((1u32 << 5) | (1u32 << 16)).to_le_bytes()); // 37 SOC_LATENCY_SUPPORT, 48 ULTRA_HB_CHANNELS
         tlv(&mut b, 30, &c1);
         // API: word 0: 9 WIFI_MCC_UPDATE, 30 STA_TYPE ; word 1: 32 ADAPTIVE_DWELL (bit 0), 42 ADAPTIVE_DWELL_V2 (bit 10)
         let mut a0 = 0u32.to_le_bytes().to_vec();
@@ -129,6 +129,7 @@ pub fn build(o: &Opts) -> Blob {
         cv.extend_from_slice(&[0x0c, 0x01, 2, 0]); // SCAN_CFG_CMD
         cv.extend_from_slice(&[0x18, 0x01, 10, 0]); // ADD_STA v10
         cv.extend_from_slice(&[0xc1, 0x00, 99, 2]); // REPLY_RX_MPDU_CMD notification version 2
+        cv.extend_from_slice(&[0x17, 0x00, 1, 0]); // ADD_STA_KEY v1, as the real -46 file lists it
     }
     tlv(&mut b, 48, &cv);
     if o.init_sections {

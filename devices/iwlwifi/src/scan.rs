@@ -89,6 +89,7 @@ impl<H: Host> Driver<H> {
             }
         };
         self.t.inbox.clear(); // stale notifications from before this scan
+        self.rt.beacons.clear();
         let t0 = self.t.host().now_ms();
         self.log(format_args!("[IWL-SCAN-REQ id={scan_id} uid={uid} passive channels={} len={len} ebs={}]", self.rt.scan_channels.len(), use_ebs as u8));
         if let Err(e) = self.t.send_cmd(LONG_GROUP, SCAN_REQ_UMAC, 0, &[Chunk { data: &buf[..len], nocopy: true }]) {
@@ -125,6 +126,8 @@ impl<H: Host> Driver<H> {
                         Ok(m) => match heard_from_rx(&m) {
                             Ok(h) => {
                                 stats.heard += 1;
+                                let gp2 = u32::from_le_bytes([rx.payload[36], rx.payload[37], rx.payload[38], rx.payload[39]]);
+                                remember(&mut self.rt.beacons, &h, &m, gp2);
                                 merge(&mut table, h, &mut stats);
                             }
                             Err(Skip::BadCrc) => stats.bad_crc += 1,
@@ -189,6 +192,27 @@ impl<H: Host> Driver<H> {
     pub fn handle(&mut self, req: crate::event::Request) -> Result<Vec<Event>, DriverError> {
         match req {
             crate::event::Request::Scan { scan_id } => Ok(self.scan(scan_id)?.events),
+            crate::event::Request::Join(j) => Ok(self.join_events(&j)),
+            crate::event::Request::Leave => Ok(self.leave_events()),
+        }
+    }
+}
+
+/// Keep the strongest frame heard per BSSID, preferring one that names the network. // the join reads it back
+fn remember(store: &mut Vec<crate::rt_up::StoredBeacon>, h: &Heard, m: &iwlwifi_mvm_rt_core::decode::RxMpdu<'_>, gp2: u32) {
+    let fresh = crate::rt_up::StoredBeacon { bssid: h.bssid, rssi: h.rssi, mpdu: m.mpdu.to_vec(), padded: m.padded, rx_channel: m.channel, gp2 };
+    match store.iter_mut().find(|e| e.bssid == h.bssid) {
+        Some(e) => {
+            let old_named = iwlwifi_mvm_join_core::bss::parse_beacon(&e.mpdu, e.padded).is_ok_and(|b| !b.ssid.is_empty());
+            let new_named = h.ssid_len != 0;
+            if (new_named && !old_named) || (new_named == old_named && h.rssi > e.rssi) {
+                *e = fresh;
+            }
+        }
+        None => {
+            if store.len() < MAX_BSS {
+                store.push(fresh);
+            }
         }
     }
 }

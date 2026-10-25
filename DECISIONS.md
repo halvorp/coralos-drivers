@@ -247,3 +247,13 @@ check).
 
 **D19 - iwlwifi.device: public GPL device + thin closed wrapper; M1 and M2 built, M3 not (2026-10-16).**
 `devices/iwlwifi` executes the ported cores (`iwlwifi-pcie-nic-core`, `-pcie-ring-core`, `-fw-image-core`, `-nvm-parse-core` added; `-pcie-trans`, `-fw-tlv`, `-fw-alive`, `-mvm-init` reused) over a `Host` seam (BAR0, DMA, MSI wait). The closed wrapper `coral-iwlwifi-driver` holds only glue: it reads the firmware from the data volume, hands it in with the build-baked sha256 (the device re-verifies), and maps `event::Event` onto `coral-wifi-abi::driver`. Proven on a simulated card written independently from Linux literals (MAC-awake discipline, CHICK window, SRAM image match, TFD/sequence checks) plus the real 1.49 MB ucode: power-up, upload, ALIVE, NVM, antennas, PHY config, calibration, INIT_COMPLETE. Scan (M3) is not built; `scan.rs` carries the cited breakdown. Unverified until silicon: every timing, the interrupt cause mix, the real card's NVM, the firmware's real ALIVE.
+
+**D20 - The WPA2/RSN supplicant is ported from OpenBSD net80211 because Linux has none; the OpenBSD-derived crates stay ISC (2026-10-25).**
+Linux runs no 4-way handshake in the kernel: `wpa_supplicant` (a userspace daemon, BSD-licensed, absent from `references/`) does, and mac80211 only installs
+the keys it is handed (`ieee80211_key_link`, iwlwifi `iwl_mvm_set_sta_key` / `ADD_STA_KEY`). The in-tree source that implements the station side of IEEE 802.11-2020
+12.7 is OpenBSD `sys/net80211/ieee80211_pae_input.c`, `ieee80211_pae_output.c` and `ieee80211_crypto.c` (ISC, Damien Bergamini). It is therefore the PORT source for
+`wpa-supplicant-core` and `wpa-crypto-core` - an exception to D1's "BSD is a second opinion", recorded here so it is not read as a precedent. Owner ruling (Peter,
+2026-10-25): keep those two crates ISC as their source is (`license = "ISC"`, `SPDX-License-Identifier: ISC`, `LICENSE-OpenBSD-ISC` in each crate); the GPL-2.0-only
+crates that link them (`iwlwifi-device`) stay GPL, and the coralos closed tree still does not link either. Departures from the OpenBSD code are listed in
+`wpa-supplicant-core`'s crate docs and each is pinned by a test. Linux stays the authority for everything iwlwifi: `iwlwifi-mvm-sta-key-core` and
+`iwlwifi-mvm-join-core` are `GPL-2.0-only` ports of Linux `mvm/` and `fw/api/`, with OpenBSD `if_iwm.c` as the sequencing oracle for the same firmware.

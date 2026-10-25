@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: ISC
+[package]
+name = "wpa-supplicant-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "ISC"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# A test authenticator (uses std) for this crate's tests and for device crates that simulate an access point.
+testkit = []
+
+[dependencies]
+wpa-crypto-core = { path = "../wpa-crypto-core" }
+
+[dev-dependencies]
+wpa-supplicant-core = { path = ".", features = ["testkit"] }
+
+[workspace]

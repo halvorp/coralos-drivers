@@ -64,6 +64,14 @@ pub enum TransportError {
     QueueFull,
     /// A used descriptor named a buffer that is not in the pool, or one the host already holds.
     BadRb { vid: u16 },
+    /// A data frame for a TX queue that was never enabled.
+    TxQueueUnknown { qid: u8 },
+    /// A frame (command, header and payload) larger than a transmit slot.
+    TxFrameTooLong { len: usize, max: usize },
+    /// A reclaim named a sequence number outside the queue's outstanding frames.
+    TxReclaimRange { qid: u8, ssn: u16, read: u16, write: u16 },
+    /// The scheduler byte-count entry did not fit (a frame beyond 0xfff dwords).
+    TxByteCount { len: u32 },
 }
 
 impl TransportError {
@@ -77,6 +85,8 @@ impl TransportError {
             TransportError::Load(_) => "IWL-FW-LOAD",
             TransportError::Tx(_) | TransportError::TxInit(_) | TransportError::QueueFull => "IWL-TX",
             TransportError::Rx(_) | TransportError::BadRb { .. } => "IWL-RX",
+            TransportError::TxQueueUnknown { .. } | TransportError::TxFrameTooLong { .. } | TransportError::TxByteCount { .. } => "IWL-TX",
+            TransportError::TxReclaimRange { .. } => "IWL-RECLAIM",
             TransportError::Reclaim(_) => "IWL-RECLAIM",
             TransportError::RfKill => "IWL-RFKILL",
             TransportError::IsDown => "IWL-IS-DOWN",
@@ -93,6 +103,7 @@ impl TransportError {
             TransportError::Timeout { .. } => -110, // ETIMEDOUT
             TransportError::Dma { .. } => -12, // ENOMEM
             TransportError::QueueFull => -28, // ENOSPC
+            TransportError::TxFrameTooLong { .. } => -90, // EMSGSIZE
             TransportError::IsDown => -5,
             _ => -5, // EIO
         }
@@ -176,6 +187,8 @@ pub struct Transport<H: Host> {
     pub scd_base: u32,
     pub(crate) rx: Option<RxRings>,
     pub(crate) tx: Option<TxRings>,
+    /// The data TX queues the host enabled after ALIVE (see [`crate::txq`]).
+    pub(crate) dtx: Vec<crate::txq::DataTxq>,
     pub(crate) bounce: Option<DmaRegion>,
     pub(crate) nocopy: Option<DmaRegion>,
     pub(crate) write_complete: bool,
@@ -197,6 +210,7 @@ impl<H: Host> Transport<H> {
             scd_base: 0,
             rx: None,
             tx: None,
+            dtx: Vec::new(),
             bounce: None,
             nocopy: None,
             write_complete: false,

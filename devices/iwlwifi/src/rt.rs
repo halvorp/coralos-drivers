@@ -179,9 +179,41 @@ impl Host for RtHost {
         }
     }
 
+    fn random(&mut self, out: &mut [u8]) -> bool {
+        // CPUID.01H:ECX bit 30 is RDRAND. The build is the x86-64-v2 baseline, so the instruction is reached only
+        // through a function that enables the feature, after this check.
+        // SAFETY: CPUID leaf 1 exists on every x86_64 CPU. (`__cpuid` is a safe function on newer compilers: the pinned
+        // nightly still marks it unsafe, hence the allow.)
+        #[allow(unused_unsafe)]
+        let ecx = unsafe { core::arch::x86_64::__cpuid(1) }.ecx;
+        if ecx & (1 << 30) == 0 {
+            return false;
+        }
+        for chunk in out.chunks_mut(8) {
+            // SAFETY: the RDRAND feature was checked above.
+            match unsafe { rdrand64() } {
+                Some(v) => chunk.copy_from_slice(&v.to_le_bytes()[..chunk.len()]),
+                None => return false,
+            }
+        }
+        true
+    }
+
     fn log(&mut self, line: &str) {
         coralos_rt::write(b"[iwlwifi] ");
         coralos_rt::write(line.as_bytes());
         coralos_rt::write(b"\n");
     }
+}
+
+/// One RDRAND, retried up to ten times as Intel's guidance says (the DRNG can be momentarily empty).
+#[target_feature(enable = "rdrand")]
+unsafe fn rdrand64() -> Option<u64> {
+    for _ in 0..10 {
+        let mut v = 0u64;
+        if core::arch::x86_64::_rdrand64_step(&mut v) == 1 {
+            return Some(v);
+        }
+    }
+    None
 }

@@ -32,6 +32,8 @@ pub mod event;
 pub mod fwfile;
 pub mod host;
 pub mod irqloop;
+pub mod join;
+pub mod link;
 #[cfg(target_arch = "x86_64")]
 pub mod rt;
 pub mod rt_up;
@@ -39,6 +41,7 @@ pub mod rxpath;
 pub mod scan;
 pub mod sha256;
 pub mod transport;
+pub mod txq;
 pub mod txpath;
 
 pub use driver::{Driver, DriverError, InitReport};

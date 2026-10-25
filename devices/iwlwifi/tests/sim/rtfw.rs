@@ -92,6 +92,8 @@ pub struct RtFw {
     pub scans: Vec<Vec<u8>>,
     pub aborts: Vec<u32>,
     pub cmd_log: Vec<String>,
+    /// The join half: the access point on the air and what the host built for it (tests/sim/ap.rs).
+    pub join: super::ap::Join,
 }
 
 impl RtFw {
@@ -131,6 +133,7 @@ impl RtFw {
             scans: vec![],
             aborts: vec![],
             cmd_log: vec![],
+            join: Default::default(),
         }
     }
 
@@ -154,6 +157,7 @@ impl RtFw {
         self.scan_cfg = None;
         self.mac_ctxt = None;
         self.running_uid = None;
+        self.join.reset_run();
     }
 
     /// The RT image started: remember where the paging image must end up. The layout is
@@ -197,22 +201,28 @@ pub fn queue_wrptr(w: &mut World, q: u8, idx: u16) {
         w.violation(format!("write pointer for queue {q}: the 9000 family has 31 queues"));
         return;
     }
-    if w.fw.rt.scd_done && w.fw.rt.q_wrptr[q as usize] != Some(idx) {
+    if w.fw.rt.join.q_on[q as usize] {
+        // The link queue is enabled: this is a doorbell, the card fetches the new TFDs.
+        super::ap::data_doorbell(w, q as usize, idx);
+        w.fw.rt.q_wrptr[q as usize] = Some(idx);
+        return;
+    }
+    if w.fw.rt.scd_done && q == 1 && w.fw.rt.q_wrptr[q as usize] != Some(idx) {
         w.violation(format!("queue {q} write pointer moved to {idx} after it was enabled: nothing was queued"));
     }
     w.fw.rt.q_wrptr[q as usize] = Some(idx);
 }
 
-fn le16(b: &[u8], o: usize) -> u16 {
+pub(super) fn le16(b: &[u8], o: usize) -> u16 {
     u16::from_le_bytes([b[o], b[o + 1]])
 }
-fn le32(b: &[u8], o: usize) -> u32 {
+pub(super) fn le32(b: &[u8], o: usize) -> u32 {
     u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
-struct Out {
-    viol: Vec<String>,
-    posts: Vec<(u64, u8, u8, u16, Vec<u8>)>,
+pub(super) struct Out {
+    pub(super) viol: Vec<String>,
+    pub(super) posts: Vec<(u64, u8, u8, u16, Vec<u8>)>,
     /// The scan whose completion frees its id when it is posted.
     complete_uid: Option<u32>,
     /// The firmware asserted: nothing is answered.
@@ -220,14 +230,14 @@ struct Out {
 }
 
 impl Out {
-    fn need(&mut self, ok: bool, msg: impl FnOnce() -> String) {
+    pub(super) fn need(&mut self, ok: bool, msg: impl FnOnce() -> String) {
         if !ok {
             self.viol.push(msg());
         }
     }
 }
 
-fn want_len(o: &mut Out, c: &SeenCmd, n: usize, what: &str) -> bool {
+pub(super) fn want_len(o: &mut Out, c: &SeenCmd, n: usize, what: &str) -> bool {
     o.need(c.payload.len() == n, || format!("{what} is {} bytes, not the {n} of its Linux struct", c.payload.len()));
     c.payload.len() == n
 }
@@ -294,6 +304,15 @@ pub fn handle(w: &mut World, c: &SeenCmd) {
             }
             w.fw.rt.dqa_done = true;
         }
+        (0, 0x1d) if c.payload.get(3) == Some(&(super::ap::QUEUE as u8)) => super::ap::scd(w, c, &mut o),
+        (0, 0x08) => super::ap::phy(w, c, &mut o),
+        (0, 0x2b) => reply = super::ap::binding(w, c, &mut o),
+        (0, 0x29) => reply = super::ap::time_event(w, c, &mut o),
+        (0, 0xd0) => super::ap::mcast(w, c, &mut o),
+        (0, 0x19) => super::ap::remove_sta(w, c, &mut o),
+        (0, 0x17) => reply = super::ap::add_sta_key(w, c, &mut o),
+        (0, 0x28) if c.payload.get(4) != Some(&1) => super::ap::mac_modify(w, c, &mut o),
+        (0, 0x18) if c.payload.get(16) == Some(&super::ap::STA_ID) => reply = super::ap::add_sta(w, c, &mut o),
         (0, 0x1d) => {
             if want_len(&mut o, c, 12, "SCD_QUEUE_CFG") {
                 let p = &c.payload;
@@ -579,7 +598,7 @@ fn scan_req(w: &mut World, c: &SeenCmd, o: &mut Out) {
     }
 }
 
-fn ie(id: u8, body: &[u8]) -> Vec<u8> {
+pub(super) fn ie(id: u8, body: &[u8]) -> Vec<u8> {
     let mut v = vec![id, body.len() as u8];
     v.extend_from_slice(body);
     v
@@ -612,10 +631,18 @@ fn frame(a: &SimAp, probe: bool) -> Vec<u8> {
     f.extend_from_slice(&(0x0401u16 | if privacy { 0x10 } else { 0 }).to_le_bytes());
     let name: &[u8] = if a.hidden && !probe { &[] } else { &a.ssid };
     f.extend(ie(0, name));
-    f.extend(ie(1, &[0x82, 0x84, 0x8b, 0x96]));
+    if a.channel > 14 {
+        // 5 GHz: OFDM only, 6/12/24 Mbit/s basic
+        f.extend(ie(1, &[0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c]));
+    } else {
+        // 2.4 GHz: 1/2/5.5/11 basic, then the OFDM rates
+        f.extend(ie(1, &[0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]));
+        f.extend(ie(50, &[0x30, 0x48, 0x60, 0x6c]));
+    }
     if a.ds {
         f.extend(ie(3, &[a.channel]));
     }
+    f.extend(ie(5, &[0, 2, 0, 0])); // TIM: DTIM count 0, period 2
     match a.sec {
         ApSec::Open | ApSec::Wep => {}
         ApSec::Wpa2Psk => f.extend(rsn(&[2], &[4])),
@@ -627,7 +654,7 @@ fn frame(a: &SimAp, probe: bool) -> Vec<u8> {
 }
 
 /// A REPLY_RX_MPDU_CMD payload: struct iwl_rx_mpdu_desc with the v1 tail (fw/api/rx.h) then the MPDU.
-fn rx_payload(mpdu: &[u8], status: u32, rssi_dbm: i16, channel: u8, flags2: u8) -> Vec<u8> {
+pub(super) fn rx_payload(mpdu: &[u8], status: u32, rssi_dbm: i16, channel: u8, flags2: u8) -> Vec<u8> {
     let mut p = vec![0u8; 48];
     p[0..2].copy_from_slice(&(mpdu.len() as u16).to_le_bytes()); // mpdu_len
     p[3] = flags2; // mac_flags2: header length in 2-byte words
