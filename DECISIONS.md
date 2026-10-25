@@ -202,6 +202,8 @@ The five numbers of `devices/avs/src/wire.rs` were proposed as 67..=71 (D14). Th
 integration landed (the touchpad-prefs batch, matrix.connector, messages.service's reader lane, and storage's vault compartment: `EP_FS_VAULT` = 69), so the device carries
 `AVS_LISTEN` 70, `AVS_FW_REQ` 71, `AVS_FW_REPLY` 72, `AVS_JACK` 73, `AVS_JACK_ACK` 74 and the registry's dynamic base is 75. Nothing else changes: the device reads them only
 in `rt`, and the wait mask already covers endpoints above 63. A later registry reshuffle renumbers this file again, in the same change that moves the loader's grants.
+*Renumbered 2026-10-25 (the Atlas stack rebase onto CoralOS v01-beta):* the registry gave 70 to `EP_INSPECT_READ` (inspect.service) first, so the five are
+71..=75 and the dynamic base 76; `i915.device`'s DISPLAY listen endpoint (D18) is 76 and the base 77. Same rule: the numbers move with the loader's grants.
 
 **D17 — the Pixelbook Go's speakers work, PROTECTED: SPEAKERS-ARE-REFUSED-UNTIL-PROTECTED is amended, not bypassed (2026-10-16).**
 Owner ruling 2026-10-16 (the speakers played on the real unit under Alpine Linux 6.18 and were heard): the speakers must work. D11/D14's "refused until a speaker-protection path exists" stays a rule; what "protected" MEANS changes to what can be built and shown now, in four parts, all enforced by tests in this repository.
@@ -231,7 +233,7 @@ SCANNING_OUT; only the owner begins / presents / waits; drawing into a COMMITTED
 a flip is `plan_surface_replacement`'s one `PLANE_SURF` write, armed only after the GPU work is complete, confirmed only by `PLANE_SURFLIVE`; the firmware's
 framebuffer is kept until the first replacement is proven latched; a suppressed latch is counted and releases NOTHING. (6) SERVED - feature `p4-present`
 (implies `p3-exec`; the live wrapper enables it): the transport binds the authority on a session opened over the DISPLAY listen endpoint (`wire::DISPLAY_EP`,
-75 - CoralOS `EP_I915_DISPLAY`, SEND held by the compositor's row alone); `uapi/calls_scanout.rs` makes the pair two GEM objects of the authority's session at
+76 - CoralOS `EP_I915_DISPLAY`, SEND held by the compositor's row alone); `uapi/calls_scanout.rs` makes the pair two GEM objects of the authority's session at
 the adopted layout (`set_caching(NONE)`, pages pinned, a `surf_alignment`-aligned mappable GGTT pin read back before use, a `prime_export` hold), so iris
 imports them as dma-buf descriptors through the ordinary PRIME path (D15); the EXECBUFFER2 write check refuses a GPU write into a held image
 (`[SCANOUT-REUSE VIOLATION]`); `poll` arms a committed flip once `object_busy` clears and reads `PLANE_SURFLIVE` while one is in flight

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The endpoints the device speaks on, as numbers. These are the CoralOS registry's entries (D16): the first five free static endpoints AFTER
-//! `EP_FS_VAULT` (69), so 70..=74, and the registry's dynamic base is 75. They were proposed as 67..=71 (D14) and renumbered whenever the registry moved
+//! `EP_INSPECT_READ` (70), so 71..=75 (76 is i915.device's DISPLAY endpoint; the dynamic base is 77). They were proposed as 67..=71 (D14) and renumbered whenever the registry moved
 //! under them; a number here that disagrees with the loader's grants is a device that talks to nobody. Nothing but [`crate::rt`] reads them.
 //!
 //! * `AVS_LISTEN` - the LISTEN endpoint Aura.engine `connect()`s to. Each connect is a kernel-minted (request, event) session the device serves
@@ -11,11 +11,11 @@
 //!
 //! The jack pair exists because one `WAIT_ANY_IRQ` waits on ONE interrupt line (the cAVS one) plus endpoints; the codec's interrupt is a
 //! pad of a controller other devices share, so its owner turns the pad event into a message.
-pub const AVS_LISTEN: u16 = 70;
-pub const AVS_FW_REQ: u16 = 71;
-pub const AVS_FW_REPLY: u16 = 72;
-pub const AVS_JACK: u16 = 73;
-pub const AVS_JACK_ACK: u16 = 74;
+pub const AVS_LISTEN: u16 = 71;
+pub const AVS_FW_REQ: u16 = 72;
+pub const AVS_FW_REPLY: u16 = 73;
+pub const AVS_JACK: u16 = 74;
+pub const AVS_JACK_ACK: u16 = 75;
 
 /// The frame the device sends on `AVS_JACK_ACK` after it serviced the codec's interrupt.
 pub const JACK_ACK_MAGIC: [u8; 4] = *b"AVSJ";
