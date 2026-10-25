@@ -180,3 +180,11 @@ fn firmware_replies_carry_status_then_data() {
     assert!(read_reply(1, Status::Ok, &too_big, &mut out).is_err());
     assert!(read_reply(1, Status::Ok, &vec![0u8; MAX_FW_SLICE as usize], &mut out).is_ok());
 }
+
+#[test]
+fn a_full_slice_reply_is_one_endpoint_message() {
+    let mut out = vec![0u8; MAX_FRAME_BYTES];
+    let n = read_reply(7, Status::Ok, &vec![0u8; FW_SLICE as usize], &mut out).unwrap();
+    assert!(n <= EP_MSG_CAP, "a {n} B reply would be truncated to {EP_MSG_CAP} B by the kernel");
+    assert_eq!(n, EP_MSG_CAP, "the slice is the largest that fits");
+}

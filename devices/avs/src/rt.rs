@@ -279,6 +279,8 @@ impl Machine for RtMachine {
         let now = coralos_rt::ticks();
         let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
         let irq = if want.avs_irq && !self.irq_denied { self.irq.as_ref().map_or(0, |i| i.line) } else { 0 };
+        // an empty wait set with no bound can never be woken and the kernel answers it at once: a loop that asked would spin, so it parks a second
+        let timeout = if (lo, hi, irq, timeout) == (0, 0, 0, 0) { 1000 } else { timeout };
         match coralos_rt::wait_any_irq(lo, hi, timeout, irq) {
             WAIT_TIMEOUT => Wake::Deadline,
             WAIT_IRQ_FIRED => Wake::AvsIrq,

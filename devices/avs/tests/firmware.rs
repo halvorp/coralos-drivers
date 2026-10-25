@@ -104,8 +104,8 @@ fn a_file_larger_than_a_slice_arrives_whole_and_in_order() {
     let mut m = chan(honest(data.clone()));
     let got = fetch(&mut m, "skl/dsp_basefw.bin", 1 << 20).unwrap();
     assert_eq!(got, data);
-    // one stat then ceil(100000 / 16384) = 7 reads, each for at most a slice, at consecutive offsets
-    assert_eq!(m.sent.len(), 1 + 7);
+    // one stat then ceil(100000 / FW_SLICE) reads, each for at most a slice, at consecutive offsets
+    assert_eq!(m.sent.len(), 1 + (100_000usize).div_ceil(FW_SLICE as usize));
     let mut next = 0u64;
     for f in &m.sent[1..] {
         let (h, p) = Header::decode(f).unwrap();

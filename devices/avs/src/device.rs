@@ -114,6 +114,8 @@ pub struct Device<M: Machine> {
     /// The receive buffer for request frames, allocated once.
     pub(crate) rx: alloc::vec::Vec<u8>,
     pub stats: Stats,
+    /// The busy-wake guard (spinguard.rs): the serve loop parks, and says which wake, when it would otherwise burn a core.
+    spin: crate::spinguard::SpinGuard,
 }
 
 impl<M: Machine> Device<M> {
@@ -154,6 +156,7 @@ impl<M: Machine> Device<M> {
             next_stream: 1,
             rx: alloc::vec::Vec::new(),
             stats: Stats::default(),
+            spin: crate::spinguard::SpinGuard::default(),
         }
     }
 
@@ -638,6 +641,14 @@ impl<M: Machine> Device<M> {
                 self.publish_after_climb();
             }
             Wake::Deadline => self.on_deadline(),
+        }
+        let now = self.rig.now();
+        if let crate::spinguard::Verdict::Park { say, steps } = self.spin.note(now) {
+            if say {
+                emit(&mut self.rig.m, format_args!("[AVS-DEV SPIN-GUARD wake={} session={} state={} parked={}ms firings={}]", crate::spinguard::wake_name(wake), self.session, self.st.state.name(), crate::spinguard::PARK_MS, steps));
+            }
+            // nothing wanted but the bound: a timed park, never a spin
+            let _ = self.rig.wait(Some(now + crate::spinguard::PARK_MS), Want::default());
         }
         wake
     }

@@ -11,12 +11,15 @@
 //! Names are relative paths below the avs firmware directory, `/`-separated, printable ASCII (a subset of UTF-8), no `..`, at most [`crate::MAX_FW_NAME`] bytes (the
 //! device checks, and a broker must too). Examples: `skl/dsp_basefw.bin`, `skl/dsp_mod_<UUID>.bin`, `da7219-tplg.bin`, `nhlt.bin`.
 use crate::codec::{Reader, Writer};
-use crate::{frame, Opcode, Status, WireError, FLAG_REPLY, MAX_FW_NAME, MAX_PAYLOAD, STATUS_BYTES};
+use crate::{frame, Opcode, Status, WireError, FLAG_REPLY, HEADER_BYTES, MAX_FW_NAME, MAX_PAYLOAD, STATUS_BYTES};
 
 /// The most bytes one FW-READ reply carries: the largest inline slice (the payload also holds the 4-byte status).
 pub const MAX_FW_SLICE: u32 = MAX_PAYLOAD - STATUS_BYTES as u32;
-/// What the device asks for per request. Smaller than the maximum so a reply fits a single endpoint message with room to spare.
-pub const FW_SLICE: u32 = 16 * 1024;
+/// The most bytes ONE endpoint message carries on CoralOS (the kernel's `EP_CAP`): a send longer than this is TRUNCATED, and the
+/// device reads a reply as exactly one message, so a whole reply frame (header + status + slice) must not exceed it.
+pub const EP_MSG_CAP: usize = 4096;
+/// What the device asks for per request: the largest slice whose reply frame is ONE endpoint message.
+pub const FW_SLICE: u32 = (EP_MSG_CAP - HEADER_BYTES - STATUS_BYTES) as u32;
 
 /// A file name that is safe to hand to a broker: relative, ASCII, `/`-separated components, none empty or `..`, no control bytes.
 pub fn check_name(name: &[u8]) -> Result<(), WireError> {

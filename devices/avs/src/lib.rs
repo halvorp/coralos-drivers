@@ -48,6 +48,7 @@ pub mod rt;
 pub mod serve;
 pub mod session;
 pub mod speakers;
+pub mod spinguard;
 pub mod stream;
 pub mod wire;
 
