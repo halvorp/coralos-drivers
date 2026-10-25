@@ -98,6 +98,11 @@ pub trait Transport {
     fn peer(&self, _conn: ConnId) -> Option<Peer> {
         None
     }
+    /// Did `conn` arrive on the DISPLAY listen endpoint (D18: a capability only the compositor's row holds SEND on)? A session such a
+    /// connection opens is the display authority. `false` for a transport with no display endpoint.
+    fn is_display(&self, _conn: ConnId) -> bool {
+        false
+    }
     /// The connection is over (its client died or the device closed it): forget it and give its endpoints back. `false` = the kernel
     /// refused the release (the pair stays held until this task exits); the connection is forgotten either way.
     fn release(&mut self, conn: ConnId) -> bool;

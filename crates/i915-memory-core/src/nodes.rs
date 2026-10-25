@@ -66,8 +66,8 @@ pub(crate) struct Node {
     /// Whole pages bound at `start + guard`; the rest of the data area is scratch.
     pub bound_pages: u64,
     pub pinned: bool,
-    /// A driver reservation (GGTT error-capture slot): never evicted, never unbound.
-    pub reserved: bool,
+    /// A driver reservation, named by what holds it (`"error-capture"`, `"adopted-scanout"`): never evicted, never unbound.
+    pub reserved: Option<&'static str>,
     pub last_use: u64,
 }
 
@@ -82,7 +82,7 @@ impl Node {
         self.start + self.size - self.guard
     }
     const fn evictable(&self) -> bool {
-        !self.pinned && !self.reserved
+        !self.pinned && self.reserved.is_none()
     }
 }
 
@@ -216,6 +216,10 @@ impl Nodes {
             let end = start + size;
             for (i, n) in self.arr.iter().enumerate() {
                 if n.start < end && start < n.end() {
+                    // a reservation is never a victim and is named as itself: a fixed offset over the live scanout is refused AS that
+                    if let Some(by) = n.reserved {
+                        return Err(MemError::RangeReserved { start, len: size, by });
+                    }
                     if !evict || !n.evictable() {
                         return Err(MemError::RangeOccupied { start, len: size });
                     }

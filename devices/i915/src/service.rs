@@ -7,6 +7,8 @@ use crate::regio::{RegRead, GMCH_CTRL_DWORD};
 use crate::startup::bringup;
 use crate::conn::RtTransport;
 use crate::wire::{exit_code, SERVICE_EP};
+#[cfg(feature = "p3-exec")]
+use crate::wire::DISPLAY_EP;
 use coralos_rt::mmio::{Kernel, ReadWindow, WriteWindow};
 use coralos_rt::{exit, write};
 
@@ -45,8 +47,8 @@ pub fn on_panic() -> ! {
 /// CoralOS-side wrapper that has them calls `service_with` instead.
 pub fn service() -> ! {
     let mut lg = TaskLog;
-    let _ = start(&mut lg);
-    parked(lg)
+    let (_, _, _, adoption) = start(&mut lg);
+    parked(lg, adoption)
 }
 
 /// The host's contribution to the uAPI service (feature `p3-exec`); see [`service_with`].
@@ -58,7 +60,6 @@ pub struct UapiHost<M: crate::exec::dma::CpuMem> {
     pub gmadr_len: u64,
     /// The machine's memory as the kernel accounts it.
     pub system_memory_bytes: u64,
-    pub quirks: i915_gt_core::emit::FlushQuirks,
     /// The engine's stall bound in milliseconds.
     pub stall_bound_ms: u64,
 }
@@ -71,7 +72,13 @@ pub fn service_with<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
 }
 
 /// Open the windows and run the read-only bring-up and the forcewake proof of life; exits (named) on any refusal.
-fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof) {
+fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, crate::display::Adoption) {
+    let (bar, cfg, proof, adoption, _) = start_full(lg);
+    (bar, cfg, proof, adoption)
+}
+
+/// [`start`], and the firmware's scanout as the readout found it - the scanout pair's flip planner starts from it (D18).
+fn start_full(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, crate::display::Adoption, Option<i915_display_modeset_core::adopt::FirmwareScanout>) {
     emit(lg, format_args!("[I915-KBL-DEV LAUNCH] bar0=mmio-slot-{} (writes: forcewake set x{} only) config=mmio-slot-{} (read-only)", BAR0_SLOT, BAR0_WRITE_RANGES.len(), CFG_SLOT));
     emit(lg, format_args!("[I915-CONTRACT abi={} wire={}.{} write_allow={}]", i915_common_core::CONTRACT_ABI, i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, BAR0_WRITE_RANGES.len()));
     let mut cfg = match ReadWindow::open(&mut Kernel, CFG_SLOT, CFG_NEED_BYTES) {
@@ -89,7 +96,10 @@ fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof) {
         }
     };
     match bringup(&mut bar, &mut cfg, lg) {
-        Ok((_, proof)) => (bar, cfg, proof),
+        Ok((ready, proof)) => {
+            let firmware = ready.adoption.adopted().and_then(|a| i915_display_modeset_core::adopt::FirmwareScanout::from_readout(&ready.state, a.pipe, a.fb.base).ok());
+            (bar, cfg, proof, ready.adoption, firmware)
+        }
         // the failing stage already printed its named line
         Err(crate::startup::BringupError::Proof(_)) | Err(crate::startup::BringupError::Window(_)) => exit(exit_code::PROOF_FAILED),
         Err(_) => exit(exit_code::STARTUP_FAILED),
@@ -98,12 +108,13 @@ fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof) {
 
 /// The parked loop: every request is answered, none is served. The device's endpoint is a LISTEN endpoint; each client `connect()`s and is
 /// answered on its own pair, frames reassembled from messages exactly as the live loop does ([`crate::conn::Parked`]).
-fn parked(mut lg: TaskLog) -> ! {
-    emit(&mut lg, format_args!("[I915-KBL-DEV PARKED] every request is answered UNSUPPORTED (HELLO excepted); connect() sessions on LISTEN ep {}", SERVICE_EP));
-    let Some(mut p) = crate::conn::Parked::new(RtTransport::new(SERVICE_EP, None), lg) else {
+fn parked(mut lg: TaskLog, adoption: crate::display::Adoption) -> ! {
+    emit(&mut lg, format_args!("[I915-KBL-DEV PARKED] every request is answered UNSUPPORTED (HELLO and DISPLAY-QUERY excepted); connect() sessions on LISTEN ep {}", SERVICE_EP));
+    let Some(p) = crate::conn::Parked::new(RtTransport::new(SERVICE_EP, None), lg) else {
         write(b"[I915-KBL-DEV FAIL step=PARKED-BUFFERS why=LIVE-NOMEM]\n");
         exit(exit_code::STARTUP_FAILED)
     };
+    let mut p = p.with_display(adoption);
     p.run();
     exit(0)
 }
@@ -113,7 +124,7 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
     use crate::live::{assemble::{assemble, UapiFacts}, rt_regions::RtRegionSys, Live, SessionRegions};
     use crate::uapi::rt_lease::RtLeaseSys;
     let mut lg = TaskLog;
-    let (bar, mut cfg, proof) = start(&mut lg);
+    let (bar, mut cfg, proof, adoption, firmware) = start_full(&mut lg);
     let gmch_ctl = match RegRead::read32(&mut cfg, GMCH_CTRL_DWORD) {
         Ok(v) => (v & 0xffff) as u16,
         Err(e) => {
@@ -121,18 +132,22 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
             exit(exit_code::UAPI_FAILED)
         }
     };
+    let pci_revision = match crate::identity::read_identity(&mut cfg) {
+        Ok(i) => i.revision,
+        Err(_) => exit(exit_code::STARTUP_FAILED),
+    };
     let facts = UapiFacts {
-        pci_revision: match crate::identity::read_identity(&mut cfg) {
-            Ok(i) => i.revision,
-            Err(_) => exit(exit_code::STARTUP_FAILED),
-        },
+        pci_revision,
         gmch_ctl,
         bar0_len: RegRead::len(&bar),
         gmadr_len: host.gmadr_len,
         system_memory_bytes: host.system_memory_bytes,
         dma_endowment_bytes: (coralos_rt::dma_quota() as usize).saturating_mul(4096),
-        quirks: host.quirks,
+        // the platform's flush workarounds from the devinfo row and the stepping, never from the host (GPU work stays generation-agnostic)
+        quirks: crate::gt::flush_quirks(&proof.desc, pci_revision),
         stall_bound_ms: host.stall_bound_ms,
+        adoption,
+        firmware,
     };
     let mut a = match assemble(bar, coralos_rt::RtDma, host.mem, &proof, &facts, &mut lg) {
         Ok(a) => a,
@@ -143,14 +158,14 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
     };
     // GEM CPU mappings are kernel DMA leases (revoked after the GPU retires the object, or when the session ends)
     a.svc.set_lease_sys(alloc::boxed::Box::new(RtLeaseSys));
-    let mut live = match Live::new(RtTransport::new(SERVICE_EP, None), SessionRegions::new(RtRegionSys), a.svc, a.ex, a.gm, TaskLog) {
+    let mut live = match Live::new(RtTransport::with_display(SERVICE_EP, DISPLAY_EP, None), SessionRegions::new(RtRegionSys), a.svc, a.ex, a.gm, TaskLog) {
         Ok(l) => l,
         Err(e) => {
             emit(&mut lg, format_args!("[I915-KBL-DEV FAIL step=LIVE-LOOP why={}]", e.name()));
             exit(exit_code::UAPI_FAILED)
         }
     };
-    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {} (one connect() session per client); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: session REGION_MAP (request snapshotted, reply written); GEM mmap: DMA leases", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP));
+    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {} and DISPLAY ep {} (one connect() session per client; a DISPLAY session is the display authority); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: session REGION_MAP (request snapshotted, reply written); GEM mmap: DMA leases", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP, DISPLAY_EP));
     live.run();
     emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE END waits={}]", live.stats.waits));
     exit(0)

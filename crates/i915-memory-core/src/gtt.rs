@@ -64,6 +64,18 @@ pub struct PpgttInit {
     pub scratch: [u64; 4],
 }
 
+/// A GGTT range that is live before the driver starts and that [`Gtt::new_ggtt_preserving`] must keep exactly as found: its entries
+/// are never written and no bind may land on it. `what` names the holder in every refusal (`"adopted-scanout"`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Preallocated {
+    pub start: u64,
+    pub size: u64,
+    pub what: &'static str,
+}
+
+/// The name of the GGTT error-capture reservation (intel_ggtt.c:914, `ggtt->error_capture`).
+pub const ERROR_CAPTURE: &str = "error-capture";
+
 /// What a bind needs.
 #[derive(Clone, Copy, Debug)]
 pub struct BindRequest<'a> {
@@ -155,23 +167,76 @@ impl Gtt {
         Ok(desc.info.dma_mask_size)
     }
 
-    /// The Global GTT (`gen8_gmch_probe` + `ggtt_probe_common` + `init_ggtt`). Returns the space and the plan that points every
-    /// entry at the scratch page and keeps the last page as a guard (`init_ggtt`, intel_ggtt.c:868-953). The first two pages
-    /// of the mappable aperture are reserved as the error-capture slot (intel_ggtt.c:912-931) when an aperture exists.
+    /// The Global GTT (`gen8_gmch_probe` + `ggtt_probe_common` + `init_ggtt`) with nothing preallocated: every entry is pointed at
+    /// the scratch page and the last page is kept as a guard (`init_ggtt`, intel_ggtt.c:868-953). See [`Gtt::new_ggtt_preserving`].
     pub fn new_ggtt(desc: &PlatformDescriptor, geom: &GgttGeometry, scratch_page: u64) -> Result<(Self, UnbindPlan), MemError> {
+        Self::new_ggtt_preserving(desc, geom, scratch_page, &[])
+    }
+
+    /// The Global GTT around ranges that are LIVE before the driver starts - the firmware's framebuffer the display engine is scanning
+    /// out (i915_initial_plane.c `initial_plane_vma`: pinned `PIN_OFFSET_FIXED` at the base the plane reads, :185) - and that must
+    /// therefore survive the init exactly as found. In Linux order (`init_ggtt`, intel_ggtt.c:868-953):
+    ///  1. each `keep` range becomes a RESERVED node named by its `what` (never evicted, never unbound; a fixed bind over it is
+    ///     [`MemError::RangeReserved`]);
+    ///  2. the error-capture slot (2 pages) is reserved at 0 when 0 is free, else at the lowest free address in the mappable aperture
+    ///     (`drm_mm_reserve_node` then `drm_mm_insert_node_in_range(.., DRM_MM_INSERT_LOW)`, :914-922: "Since 0 may already be in use
+    ///     by the system (e.g. the BIOS framebuffer), we let the reservation fail quietly"), and none at all when nothing fits;
+    ///  3. every entry NOT inside a `keep` range is pointed at scratch - the error-capture slot (`scratch_range`, :926), the holes
+    ///     ("Clear any non-preallocated blocks", :943-949) and the guard page (:952). A kept range's entries are never written.
+    /// A `keep` range must be page-aligned, non-empty, below the guard page and disjoint from the others; each refusal is named.
+    pub fn new_ggtt_preserving(desc: &PlatformDescriptor, geom: &GgttGeometry, scratch_page: u64, keep: &[Preallocated]) -> Result<(Self, UnbindPlan), MemError> {
         let bits = Self::require_gen9(desc)?;
         let mut g = Self::blank(GttKind::Ggtt, geom.total, geom.total - GTT_PAGE, geom.mappable_end, bits);
         g.check_page(scratch_page)?;
         // ggtt->vm.scratch[0]->encode = pte_encode(scratch dma, I915_CACHE_NONE, 0), intel_ggtt.c:1236
         g.enc[0] = gen8_ggtt_pte_encode(scratch_page);
-        if geom.mappable_end >= 2 * GTT_PAGE {
-            g.nodes.insert(Node { id: 0, start: 0, size: 2 * GTT_PAGE, guard: 0, bound_pages: 0, pinned: false, reserved: true, last_use: 0 })?;
+        for k in keep {
+            if k.size == 0 {
+                return Err(MemError::ZeroLength);
+            }
+            if k.start % GTT_PAGE != 0 || k.size % GTT_PAGE != 0 {
+                return Err(MemError::Misaligned { what: k.what, value: if k.start % GTT_PAGE != 0 { k.start } else { k.size }, align: GTT_PAGE });
+            }
+            if k.start.checked_add(k.size).map_or(true, |e| e > g.alloc_end) {
+                return Err(MemError::BeyondSpace { va: k.start, len: k.size, total: g.alloc_end });
+            }
+            // i915_gem_gtt_reserve semantics: the exact range or nothing; two kept ranges that overlap are one range named twice
+            let c = g.nodes.choose(k.size, GTT_PAGE, 0, g.alloc_end, Mode::Fixed(k.start), false)?;
+            debug_assert!(c.victims.is_empty());
+            g.nodes.insert(Node { id: 0, start: k.start, size: k.size, guard: 0, bound_pages: 0, pinned: false, reserved: Some(k.what), last_use: 0 })?;
         }
+        if geom.mappable_end >= 2 * GTT_PAGE {
+            let size = 2 * GTT_PAGE;
+            let at = match g.nodes.choose(size, GTT_PAGE, 0, geom.mappable_end, Mode::Fixed(0), false) {
+                Ok(c) => Some(c.start),
+                Err(MemError::RangeReserved { .. } | MemError::RangeOccupied { .. }) => g.nodes.choose(size, GTT_PAGE, 0, geom.mappable_end, Mode::Low, false).ok().map(|c| c.start),
+                Err(e) => return Err(e),
+            };
+            if let Some(start) = at {
+                g.nodes.insert(Node { id: 0, start, size, guard: 0, bound_pages: 0, pinned: false, reserved: Some(ERROR_CAPTURE), last_use: 0 })?;
+            }
+        }
+        // every entry outside the kept ranges, in address order, last page (the guard) included
         let mut ops = Ops::new();
-        // clear every entry, last page included (the "guard page", intel_ggtt.c:953)
-        ops.push(Op::GgttFill { first: 0, count: geom.entries as u32, value: g.enc[0] })?;
+        let mut kept: Vec<(u64, u64)> = Vec::new();
+        kept.try_reserve_exact(keep.len()).map_err(|_| MemError::OutOfMemory { what: "plan ops" })?;
+        kept.extend(keep.iter().map(|k| (k.start / GTT_PAGE, (k.start + k.size) / GTT_PAGE)));
+        kept.sort_unstable();
+        let mut next = 0u64;
+        for (first, end) in kept.iter().copied().chain(core::iter::once((geom.entries, geom.entries))) {
+            if first > next {
+                ops.push(Op::GgttFill { first: next as u32, count: (first - next) as u32, value: g.enc[0] })?;
+            }
+            next = next.max(end);
+        }
         let p = g.plan(ops, VmaId(0), 0, 0, 0, &[], CacheLevel::None, 0, Vec::new(), 0);
         Ok((g, p))
+    }
+
+    /// The reservation, if any, that holds `va` - `Some(what)` for an address inside a kept range or the error-capture slot.
+    pub fn reservation_at(&self, va: u64) -> Option<&'static str> {
+        let (i, _) = self.nodes.find_va(va)?;
+        self.nodes.get(i).reserved
     }
 
     /// A full 48-bit PPGTT (`gen8_ppgtt_create`, gen8_ppgtt.c:1002): scratch chain + PML4, all as fills.
@@ -318,7 +383,7 @@ impl Gtt {
         }
         let (i, in_data) = self.nodes.find_va(va).ok_or(MemError::StaleMapping { va })?;
         let n = self.nodes.get(i);
-        if n.reserved {
+        if n.reserved.is_some() {
             return Err(MemError::StaleMapping { va });
         }
         if !in_data {
@@ -504,7 +569,7 @@ impl Gtt {
         for &vi in &order {
             self.nodes.remove(vi);
         }
-        let id = self.nodes.insert(Node { id: 0, start, size: node_size, guard, bound_pages: npages, pinned: false, reserved: false, last_use: 0 })?;
+        let id = self.nodes.insert(Node { id: 0, start, size: node_size, guard, bound_pages: npages, pinned: false, reserved: None, last_use: 0 })?;
         let offset = start + guard;
         Ok(self.plan(ops, VmaId(id), offset, start, node_size, req.pages, req.cache, req.flags, evicted, made))
     }
@@ -514,7 +579,7 @@ impl Gtt {
     pub fn plan_unbind(&mut self, id: VmaId) -> Result<UnbindPlan, MemError> {
         let i = self.nodes.index_of(id.0).ok_or(MemError::NotBound { id: id.0 })?;
         let n = *self.nodes.get(i);
-        if n.pinned || n.reserved {
+        if n.pinned || n.reserved.is_some() {
             return Err(MemError::Pinned { id: id.0 });
         }
         let mut ops = Ops::new();

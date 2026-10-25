@@ -66,6 +66,8 @@ pub struct Net {
     /// Event ring depth (messages the client has not drained before a send finds it full).
     pub depth: usize,
     pub released: Vec<ConnId>,
+    /// Connections announced on the DISPLAY listen endpoint (D18).
+    pub display: Vec<ConnId>,
 }
 
 impl Default for Net {
@@ -86,6 +88,7 @@ impl Default for Net {
             refuse_next: None,
             depth: usize::MAX,
             released: vec![],
+            display: vec![],
         }
     }
 }
@@ -95,6 +98,13 @@ pub struct FakeT(pub Rc<RefCell<Net>>);
 
 impl FakeT {
     /// A client connects: it exists and its announce is queued. Returns its connection id.
+    /// A client connects on the DISPLAY listen endpoint (only the compositor's row can).
+    pub fn connect_display(&self) -> ConnId {
+        let id = self.connect();
+        self.0.borrow_mut().display.push(id);
+        id
+    }
+
     pub fn connect(&self) -> ConnId {
         let mut s = self.0.borrow_mut();
         let id = ConnId(s.next);
@@ -242,6 +252,9 @@ impl Transport for FakeT {
     }
     fn peer(&self, conn: ConnId) -> Option<Peer> {
         Some(Peer { req_ep: 100 + conn.0 as u16, node: 0x7000 + conn.0 })
+    }
+    fn is_display(&self, conn: ConnId) -> bool {
+        self.0.borrow().display.contains(&conn)
     }
     fn release(&mut self, conn: ConnId) -> bool {
         let mut s = self.0.borrow_mut();

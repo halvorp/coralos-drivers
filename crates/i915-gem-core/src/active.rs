@@ -184,6 +184,12 @@ impl Gem {
     }
 
     /// Is any incomplete request using the object?
+    /// Is a request still using object `id`, whichever session's handle named it (`i915_gem_object_is_active`)? The display flips a
+    /// scanout image only once this is false: the GPU work writing it has completed.
+    pub fn object_busy(&self, id: ObjId) -> bool {
+        self.object_active(id)
+    }
+
     pub(crate) fn object_active(&self, id: ObjId) -> bool {
         self.pending_on(id) != 0
     }

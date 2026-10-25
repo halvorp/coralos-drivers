@@ -27,7 +27,7 @@ fn every_uapi_opcode_is_unsupported_with_the_named_reason_when_the_increment_is_
         assert_eq!((r.status, r.errno, r.body.reason), (Status::Unsupported, -errno::EOPNOTSUPP, unsupported::INCREMENT_NOT_ENABLED), "{}", op.name());
         n += 1;
     }
-    assert_eq!(n, 50, "every uAPI opcode was asked (50 of them)");
+    assert_eq!(n, 56, "every uAPI opcode was asked (56 of them: 50 of ABI 1.4 and the six display opcodes of 1.5 - without the display answers, which the parked loop adds, they are Unsupported too)");
 }
 
 #[test]

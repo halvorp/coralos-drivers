@@ -7,7 +7,8 @@
 //! `p2-memory` adds [`P2_MEMORY_REGS`] and opens the GGTT window ([`GGTT_WINDOW`]); `p3-exec` (which implies `p2-memory`) adds
 //! [`P3_EXEC_REGS`]. Each list is the write set of that increment's planners, no more: the tests in `tests/exec_allow.rs` RUN the
 //! planners and require set equality, so a register that no planner writes cannot be granted and a planner write that is not
-//! granted fails there before it can fail on silicon. Display registers are in no list: a clock or link plan is refused whole.
+//! granted fails there before it can fail on silicon. `p4-present` (D18) adds ONE display register, the adopted plane's `PLANE_SURF`; every
+//! other display register is in no list: a clock or link plan is refused whole.
 //!
 //! The same lists size the BAR0 WINDOW grant ([`BAR0_WRITE_RANGES`]), so the hardware-facing half (`rt::mmio::WriteWindow`) and the
 //! in-code half (`i915_common_core::WriteGuard`) can never disagree about what the increment may write.
@@ -20,6 +21,8 @@ use i915_uncore_core::WRITE_ALLOWLIST;
 pub const P2_ON: bool = cfg!(feature = "p2-memory");
 /// Is increment P3 (execlists + reset) compiled in?
 pub const P3_ON: bool = cfg!(feature = "p3-exec");
+/// Is increment P4 (the scanout pair's flips, D18) compiled in?
+pub const P4_ON: bool = cfg!(feature = "p4-present");
 
 /// The GGTT's place in BAR0 (`gen6_gttadr_offset`, gt/intel_ggtt.c:1192: GTTMMADR is 16 MiB and the GTT starts halfway) and the
 /// most it can occupy (the upper half). The RUNTIME window is narrowed to the probed table size by [`GgttWindow`].
@@ -73,6 +76,11 @@ pub const P3_EXEC_REGS: [Reg; 11] = [
     r::GEN6_GDRST,
 ];
 
+/// P4 (D18): the ONE register the scanout pair's flip writes - `PLANE_SURF` of the adopted plane, exactly the adoption planner's write
+/// set (`i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST`, `plan_surface_replacement`). No other display register is writable:
+/// the pipe, transcoder, link, clocks, scaler and watermarks stay as the firmware left them.
+pub const P4_PRESENT_REGS: [Reg; 1] = i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST;
+
 const fn on(b: bool, n: usize) -> usize {
     if b {
         n
@@ -82,7 +90,7 @@ const fn on(b: bool, n: usize) -> usize {
 }
 
 /// How many registers the compiled-in allow-list holds.
-pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len());
+pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len());
 
 const fn compose() -> [Reg; N_ALLOW] {
     let mut out = [Reg::new(0); N_ALLOW];
@@ -105,6 +113,14 @@ const fn compose() -> [Reg; N_ALLOW] {
         let mut i = 0;
         while i < P3_EXEC_REGS.len() {
             out[n] = P3_EXEC_REGS[i];
+            n += 1;
+            i += 1;
+        }
+    }
+    if P4_ON {
+        let mut i = 0;
+        while i < P4_PRESENT_REGS.len() {
+            out[n] = P4_PRESENT_REGS[i];
             n += 1;
             i += 1;
         }

@@ -17,6 +17,8 @@ struct Row {
     /// The connecting task's node, from the announce.
     client: u64,
     held: bool,
+    /// Announced on the DISPLAY listen endpoint (D18).
+    display: bool,
 }
 
 pub struct RtTransport {
@@ -24,6 +26,8 @@ pub struct RtTransport {
     /// allow-list until the owner-attended silicon increment, so completion is found by the service's own timer while work is in flight.
     pub irq: Option<u32>,
     listen: u16,
+    /// The DISPLAY listen endpoint (D18): only the compositor's row holds SEND on it, so a connection announced here is the compositor's.
+    display: Option<u16>,
     next_id: u64,
     rows: Vec<Row>,
 }
@@ -31,7 +35,12 @@ pub struct RtTransport {
 impl RtTransport {
     /// A transport serving connects on `listen_ep` (the endpoint this task holds RECV on).
     pub fn new(listen_ep: u16, irq: Option<u32>) -> RtTransport {
-        RtTransport { irq, listen: listen_ep, next_id: 1, rows: Vec::new() }
+        RtTransport { irq, listen: listen_ep, display: None, next_id: 1, rows: Vec::new() }
+    }
+
+    /// A transport that also accepts on the DISPLAY listen endpoint `display_ep` (D18).
+    pub fn with_display(listen_ep: u16, display_ep: u16, irq: Option<u32>) -> RtTransport {
+        RtTransport { irq, listen: listen_ep, display: Some(display_ep), next_id: 1, rows: Vec::new() }
     }
 
     fn row(&self, id: ConnId) -> Option<&Row> {
@@ -51,8 +60,9 @@ impl Transport for RtTransport {
     }
     fn wait(&mut self, deadline_ms: Option<u64>, accept: bool) -> Wake {
         let listen = accept.then_some(self.listen);
+        let display = if accept { self.display } else { None };
         // every endpoint was checked to fit the wait set when its announce was accepted, so this cannot name a wrapped endpoint
-        let (lo, hi) = ep_set(listen.into_iter().chain(self.rows.iter().filter(|r| !r.held).map(|r| r.req))).unwrap_or((0, 0));
+        let (lo, hi) = ep_set(listen.into_iter().chain(display).chain(self.rows.iter().filter(|r| !r.held).map(|r| r.req))).unwrap_or((0, 0));
         let now = coralos_rt::ticks();
         let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
         match coralos_rt::wait_any_irq(lo, hi, timeout, self.irq.unwrap_or(0)) {
@@ -63,7 +73,7 @@ impl Transport for RtTransport {
                 Wake::Deadline
             }
             PEER_DEAD => Wake::Deadline,
-            ep if listen.map_or(false, |l| l as u64 == ep) => Wake::Accept,
+            ep if listen.map_or(false, |l| l as u64 == ep) || display.map_or(false, |l| l as u64 == ep) => Wake::Accept,
             ep => match self.rows.iter().find(|r| r.req as u64 == ep) {
                 Some(r) => Wake::Request(r.id),
                 None => Wake::Deadline,
@@ -72,7 +82,14 @@ impl Transport for RtTransport {
     }
     fn accept(&mut self) -> Accepted {
         let mut buf = [0u8; ANNOUNCE_LEN + 3];
-        let n = coralos_rt::try_recv(self.listen as u64, &mut buf);
+        let mut from_display = false;
+        let mut n = coralos_rt::try_recv(self.listen as u64, &mut buf);
+        if n == 0 {
+            if let Some(d) = self.display {
+                n = coralos_rt::try_recv(d as u64, &mut buf);
+                from_display = true;
+            }
+        }
         if n == 0 {
             return Accepted::Empty;
         }
@@ -96,7 +113,7 @@ impl Transport for RtTransport {
         }
         let id = ConnId(self.next_id);
         self.next_id += 1;
-        self.rows.push(Row { id, req: a.req, evt: a.evt, client: a.client, held: false });
+        self.rows.push(Row { id, req: a.req, evt: a.evt, client: a.client, held: false, display: from_display });
         Accepted::Conn(id)
     }
     fn hold(&mut self, conn: ConnId, held: bool) {
@@ -126,6 +143,9 @@ impl Transport for RtTransport {
     }
     fn peer(&self, conn: ConnId) -> Option<Peer> {
         self.row(conn).map(|r| Peer { req_ep: r.req, node: r.client })
+    }
+    fn is_display(&self, conn: ConnId) -> bool {
+        self.row(conn).map_or(false, |r| r.display)
     }
     fn release(&mut self, conn: ConnId) -> bool {
         match self.rows.iter().position(|r| r.id == conn) {

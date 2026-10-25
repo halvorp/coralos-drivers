@@ -16,7 +16,8 @@
 //! write increment is [`adopt::ADOPT_WRITE_ALLOWLIST`] (this task does not edit the device's own list).
 //!
 //! Modules: [`enable`] (the transaction), [`plane_plan`] (plane + watermark + cursor effect plans), [`latency`] (the PCU read),
-//! [`adopt`] (P4), [`plan`] (stage vocabulary), [`error`] (named refusals).
+//! [`adopt`] (P4), [`initial`] (what the firmware scans out, its GGTT extent, the one mode an adopting driver offers), [`plan`] (stage
+//! vocabulary), [`error`] (named refusals).
 #![no_std]
 #![forbid(unsafe_code)]
 extern crate alloc;
@@ -24,6 +25,7 @@ extern crate alloc;
 pub mod adopt;
 pub mod enable;
 pub mod error;
+pub mod initial;
 pub mod latency;
 pub mod plan;
 pub mod plane_plan;

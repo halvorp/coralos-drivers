@@ -31,6 +31,7 @@ dependencies = [
  "i915-devinfo-core",
  "i915-display-clock-core",
  "i915-display-link-core",
+ "i915-display-modeset-core",
  "i915-gem-core",
  "i915-gt-core",
  "i915-gt-regs-core",
@@ -69,6 +70,17 @@ dependencies = [
  "i915-gt-regs-core",
  "i915-kbl-display-core",
  "i915-vbt-core",
+]
+
+[[package]]
+name = "i915-display-modeset-core"
+version = "0.1.0"
+dependencies = [
+ "i915-common-core",
+ "i915-display-clock-core",
+ "i915-display-link-core",
+ "i915-gt-regs-core",
+ "i915-kbl-display-core",
 ]
 
 [[package]]

@@ -122,3 +122,22 @@ pub fn bar_vector_a() -> Window {
     r
 }
 
+
+/// BAR0 as the Pixelbook Go's firmware really leaves it (the 2026-10-16 Atlas ring): vector A's power, clocks and link, a 3840x2160
+/// eDP raster (4000x2222 total), the pipe source 1920x1080, the primary plane linear XRGB8888 (PLANE_CTL 0x84002000), stride 120 x 64 =
+/// 7680, at GGTT 0, and pipe A's first scaler enabled and bound to the PIPE over the whole panel (the 1920x1080 -> 3840x2160 fit).
+pub fn bar_atlas() -> Window {
+    let mut r = bar_vector_a();
+    for (i, v) in [0x0f9f_0effu32, 0x0f9f_0eff, 0x0f4f_0f2f, 0x08ad_086f, 0x08ad_086f, 0x0877_0872].iter().enumerate() {
+        r.set(0x6f000 + 4 * i as u32, *v);
+    }
+    r.set(0x6001c, 0x077f_0437);
+    r.set(0x70180, 0x8400_2000);
+    r.set(0x70188, 120);
+    r.set(0x70190, 0x0437_077f);
+    r.set(0x7019c, 0);
+    r.set(0x68180, 0x8000_0000);
+    r.set(0x68170, 0);
+    r.set(0x68174, 0x0f00_0870);
+    r
+}

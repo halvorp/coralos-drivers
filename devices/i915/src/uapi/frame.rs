@@ -52,3 +52,18 @@ pub const fn is_uapi(op: Opcode) -> bool {
     op as u32 >= 0x100
 }
 
+
+/// The PARKED device's answer: a display opcode is answered from the adoption (`DISPLAY-QUERY` described; an authority call refused
+/// `DISPLAY-NOT-AUTHORIZED` - the parked device has no sessions, so it has no authority), everything else as
+/// [`answer_without_service`]. Returns the frame length and the refusal name, if the answer was a named display refusal.
+pub fn answer_parked(frame: &[u8], adoption: &crate::display::Adoption, out: &mut [u8]) -> Result<(usize, Option<&'static str>), WireError> {
+    if let Ok((h, payload)) = Header::decode(frame) {
+        let have = out.len();
+        let area = out.get_mut(HEADER_BYTES..).ok_or(WireError::OutputTooSmall { need: HEADER_BYTES + 8, have })?;
+        if let Some(a) = crate::display::answer::answer_without_authority(&h, payload, adoption, area) {
+            let a = a?;
+            return finish(h, a.len, out).map(|n| (n, a.refused));
+        }
+    }
+    answer_without_service(frame, out).map(|n| (n, None))
+}

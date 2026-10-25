@@ -15,6 +15,7 @@ use crate::{Status, WireError};
 
 pub mod ctx;
 pub mod device;
+pub mod display;
 pub mod exec;
 pub mod gem;
 pub mod prime;

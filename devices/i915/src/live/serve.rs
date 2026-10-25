@@ -324,6 +324,13 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
                 if let Some(p) = peer {
                     self.svc.set_session_peer(rh.session_incarnation, p);
                 }
+                // D18: a session opened over the DISPLAY listen endpoint (a capability only the compositor's row holds) is the display
+                // authority; nothing in the request decides it
+                if self.t.is_display(self.cur) {
+                    if let Err(f) = self.svc.bind_display_authority(&mut self.log, rh.session_incarnation) {
+                        emit(&mut self.log, format_args!("[I915-DISPLAY authority NOT bound inc={} name={}]", rh.session_incarnation, f.name));
+                    }
+                }
             }
             (Opcode::SessionClose, _) => {
                 if let Some(inc) = c.session {
