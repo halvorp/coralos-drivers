@@ -3,11 +3,12 @@
 //! subscriber (status, jack, period). One `impl Device` block; the state is [`crate::device`]'s.
 //!
 //! The cause priority is: the backend cannot be driven (windows, identity, controller, the jack owner), then a file is missing or refused,
-//! then a step failed, then no headphones. Speakers are refused in every state and say so in their own field, never as the primary cause.
+//! then a step failed, then nowhere to play (no headphones, and the speakers not offered or not asked for). The speakers say whether they are
+//! offered in their own field; they are the primary cause only for a stream that asked for them and cannot have them.
 use crate::device::Device;
 use crate::machine::Machine;
 use avs_wire::msg::{self, SUB_JACK, SUB_PERIOD, SUB_STATUS};
-use avs_wire::{Cause, Jack, Opcode, State, StreamPhase};
+use avs_wire::{Cause, Jack, Opcode, Output, Route, Speaker, State, StreamPhase};
 
 impl<M: Machine> Device<M> {
     /// Recompute the STATUS from the state. True when it changed (the generation moved).
@@ -20,17 +21,33 @@ impl<M: Machine> Device<M> {
             Some(s) if s.want_running => StreamPhase::Suspended,
             Some(_) => StreamPhase::Open,
         };
+        // where the open stream (or, with none, a stream that could be opened) may play
+        let route = self.stream.as_ref().map_or(Route::Auto, |s| s.route);
+        let plug = self.jack != Jack::Absent;
+        let spk = self.speaker_ready();
+        let can_play = match route {
+            Route::Headphones => plug,
+            Route::Speakers => spk,
+            Route::Auto => plug || spk,
+        };
         let (cause, why) = if let Some(w) = self.backend_fail {
             (Cause::BackendUnavailable, Some(w))
         } else if let Some(w) = self.fw_fail {
             (Cause::FirmwareUnavailable, Some(w))
         } else if let Some(w) = self.fault {
             (Cause::InitFailed, Some(w))
-        } else if self.jack == Jack::Absent {
+        } else if !can_play && route == Route::Speakers {
+            match self.speaker_fw_fail {
+                Some(w) => (Cause::FirmwareUnavailable, Some(w)),
+                None => (Cause::SpeakerProtectionUnavailable, None),
+            }
+        } else if !can_play {
             (Cause::HeadphoneDisconnected, None)
         } else {
             (Cause::None, None)
         };
+        n.speaker = if spk { Speaker::Protected } else { Speaker::Refused };
+        n.output = self.dsp.as_ref().map_or(Output::None, |d| d.out);
         n.cause = cause;
         n.detail = why.map_or(0, |w| w.detail);
         match why {

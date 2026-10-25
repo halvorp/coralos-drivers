@@ -24,14 +24,19 @@
 //! [`error::BootFailure`] naming the stage, the step and the reason; after the first failure nothing further is asked of the DSP except
 //! restoring the PCI gating, and the caller is told whether the DSP must be powered down ([`error::BootFailure::dsp_dirty`]).
 //!
-//! SPEAKERS ARE NEVER PLANNED. The only gateways a path may hold are the host-output copier and the I2S-output copier of the SSP the
-//! board row names for the headset; a path whose I2S gateway is one of the board's speaker SSPs ([`config::PlaybackSel::speaker_ssp`])
-//! is refused by name before a single message is sent ([`plan::PlanError::SpeakerPathRefused`]).
+//! SPEAKERS ARE PLANNED ONLY AS THE PROTECTED SPEAKER PATH (DECISIONS D17, amending D11/D14). The only gateways a path may hold are the
+//! host-output copier, a gateway-less copier in the front end ([`plan::AVS_DMA_NO_GATEWAY`]) and the I2S-output copier of the one SSP the caller
+//! asked for. A back end on one of the board's speaker SSPs ([`config::PlaybackSel::speaker_ssp`]) is refused by name before a single message is
+//! sent ([`plan::PlanError::SpeakerPathRefused`]) UNLESS the caller names the speaker ceiling ([`config::PlaybackSel::speaker_ceiling`]): then the
+//! back end MUST be on a speaker SSP, the path MUST hold a peakvol module (a path nothing in the DSP could attenuate is refused,
+//! [`plan::PlanError::SpeakerPathWithoutVolume`]) and that module's ceiling is the caller's, lowered - never raised - by what the topology
+//! declares.
 //!
 //! THE VOLUME CEILING. A peakvol module's `target_volume` in the TOPOLOGY is its ceiling ([`volume`]): the module is initialised silent
 //! (Linux initialises it at `S32_MAX`, path.c:589-593, and sets the user volume afterwards), a topology that declares a zero or
-//! unrepresentable ceiling is refused, and [`volume::PeakvolHandle::set_volume`] refuses a request above it. A path with no peakvol module
-//! (the da7219 topology has none) reports that fact; the DA7219 gain ceiling (da7219-core) is then the hardware limit.
+//! unrepresentable ceiling is refused, and [`volume::PeakvolHandle::set_volume`] refuses a request above it. A headphone path with no peakvol
+//! module (the da7219 topology has none) reports that fact; the DA7219 gain ceiling (da7219-core) is then the hardware limit. A SPEAKER path
+//! with none is refused.
 
 #![no_std]
 #![forbid(unsafe_code)]

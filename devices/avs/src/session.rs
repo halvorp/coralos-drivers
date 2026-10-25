@@ -5,6 +5,11 @@
 //! stages powered up (muted) and unmuted at the client's volume. Stopping one is the reverse, and ends with the codec's SAFE STATE
 //! proven by readback and the DSP core off.
 //!
+//! A SPEAKER session (DECISIONS D17) differs in four places and nowhere else: the amplifiers are brought out of reset, configured and
+//! READ BACK before the DSP boots ([`Speakers::begin`]); the topology is the speaker one (SSP0, a peakvol stage, the gain ceiling named to
+//! the planner); the output stage is powered up after the pipelines run, silent, and raised to the client's level by the DSP's volume
+//! stage under the hard ceiling; and stopping silences the stage, switches the parts off, and puts them back in reset.
+//!
 //! Why per-stream and not resident: no idle power, no state to go stale between streams, and one path to verify instead of two. The cost
 //! is the boot time at every start (the base firmware is 243 KB over the code loader's DMA); the wire says a START may take that long.
 use crate::codec::{Codec, CodecFail};
@@ -15,6 +20,7 @@ use crate::ipcrun::{self, Drive, IpcFail};
 use crate::machine::{Machine, Want, Wake};
 use crate::pump::{Pump, PumpError};
 use crate::rig::Rig;
+use crate::speakers::{SpkFail, Speakers};
 use crate::stream::{Fifo, RingAcct};
 use alloc::vec::Vec;
 use avs_boot_core::boot::{Action, Boot, Event};
@@ -26,10 +32,13 @@ use avs_fw_core::bdl::{ClDmaLayout, Extent};
 use avs_fw_core::effect::{Input as FwInput, Reg, Space, Width};
 use avs_fw_core::regs::{AVS_CL_DEFAULT_BUFFER_SIZE, AVS_CL_STREAM_TAG, SKL_MIN_FW_VERSION};
 use avs_ipc_core::txn::Correlation;
+use avs_topology_core::model::SspBinding;
 use avs_topology_core::nhlt::Nhlt;
 use avs_topology_core::topology::Topology;
 use avs_wire::board::Board;
 use avs_wire::msg::Format;
+use avs_wire::Output;
+use max98373_core::gain;
 use coralos_hal::{DmaRefusal, DmaRegion};
 use hda_ext_core::bdl::plan_bdl;
 use hda_ext_core::regs::AZX_REG_SD_LPIB;
@@ -75,6 +84,10 @@ pub struct Dsp {
     last_tick_ms: u64,
     /// The codec is still coming up: the ring gets silence, the queue is left alone ([`Mode::Hold`]).
     pub hold: bool,
+    /// Which path this session is.
+    pub out: Output,
+    /// The speaker path's DSP gain as last applied (Q1.31 linear; 0 is silence). Always at or below [`gain::CEILING_LINEAR`].
+    pub gain: u32,
 }
 
 /// Why a session did not start.
@@ -89,6 +102,10 @@ pub enum StartFail {
     Exec(ExecFail),
     Pump(PumpError),
     OutOfMemory,
+    /// The speaker amplifiers: bring-up, protection, power sequence.
+    Speaker(SpkFail),
+    /// The speaker path's DSP volume stage could not be set.
+    Gain(GainFail),
 }
 
 impl StartFail {
@@ -103,6 +120,8 @@ impl StartFail {
             StartFail::Exec(e) => e.name(),
             StartFail::Pump(e) => e.name(),
             StartFail::OutOfMemory => "out-of-memory",
+            StartFail::Speaker(f) => f.step(),
+            StartFail::Gain(f) => f.name(),
         }
     }
     /// A number that helps: the firmware's refusal status, the bus abort source.
@@ -118,6 +137,7 @@ impl StartFail {
                 _ => 0,
             },
             StartFail::Codec(c) => c.detail(),
+            StartFail::Speaker(f) => f.detail(),
             _ => 0,
         }
     }
@@ -126,6 +146,8 @@ impl StartFail {
         match self {
             StartFail::Boot(f) => f.stage.name(),
             StartFail::Codec(_) => "codec",
+            StartFail::Speaker(_) => "speakers",
+            StartFail::Gain(_) => "speaker-gain",
             StartFail::Chip(_) => "controller",
             _ => "setup",
         }
@@ -254,24 +276,94 @@ pub struct StartArgs<'a> {
     pub board: &'a Board,
     /// The volume to come up at (`Some(0)` is muted); `None` is the conservative initial gain.
     pub level: Option<u16>,
+    /// Which path to bring up. Never [`Output::None`].
+    pub out: Output,
+    /// The speaker topology file (`max98373-tplg.bin`); required for [`Output::Speakers`].
+    pub speaker_topology: Option<&'a [u8]>,
 }
 
-/// Bring the DSP up and start the stream. On any failure everything that was started is taken down again and the codec is left safe.
-pub fn start_dsp<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Codec, fifo: &mut Fifo) -> Result<Dsp, StartFail> {
+/// The level a speaker stream plays at before its client has chosen one: quiet (level 100 is 42.75 dB under the ceiling).
+pub const SPEAKER_INITIAL_LEVEL: u16 = 100;
+
+/// Why the speaker gain could not be set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GainFail {
+    /// The path has no volume stage (the planner refuses such a speaker path; defensive).
+    NoVolumeStage,
+    /// A request above the ceiling reached the handle: it was refused there. (The mapping never produces one.)
+    AboveCeiling,
+    Ipc(ipcrun::IpcFail),
+}
+
+impl GainFail {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            GainFail::NoVolumeStage => "speaker-no-volume-stage",
+            GainFail::AboveCeiling => "speaker-gain-above-ceiling",
+            GainFail::Ipc(_) => "speaker-gain-ipc",
+        }
+    }
+}
+
+/// The DSP gain a client's level means on the speaker path: the ONLY place a speaker gain is derived. `None` is the initial level.
+pub fn speaker_gain_for(level: Option<u16>, mute: bool) -> u32 {
+    gain::linear_for(level.unwrap_or(SPEAKER_INITIAL_LEVEL), mute)
+}
+
+/// Set the speaker path's DSP volume. The number is clamped to the ceiling here, and the handle refuses anything above its own ceiling a
+/// second time, so there are two checks between any caller and the module.
+pub fn set_speaker_gain<M: Machine>(rig: &mut Rig<M>, dsp: &mut Dsp, linear: u32) -> Result<(), GainFail> {
+    let linear = gain::clamp(linear);
+    let handle = dsp.running.peakvols.first().copied().ok_or(GainFail::NoVolumeStage)?;
+    let msgs = handle.set_volume(linear).map_err(|_| GainFail::AboveCeiling)?;
+    for m in &msgs {
+        let req = m.as_request();
+        ipcrun::begin(rig, &mut dsp.pump, &req, m.expected_reply, false).map_err(GainFail::Ipc)?;
+    }
+    dsp.gain = linear;
+    Ok(())
+}
+
+/// Bring the DSP up and start the stream. On any failure everything that was started is taken down again and the output stage is left safe.
+pub fn start_dsp<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Codec, speakers: Option<&mut Speakers>, fifo: &mut Fifo) -> Result<Dsp, StartFail> {
     let ctl = a.ctl;
-    ctl.start_chip(rig).map_err(StartFail::Chip)?;
-    let r = start_inner(rig, a, codec, fifo);
+    let mut speakers = speakers;
+    if a.out == Output::Speakers {
+        // the amplifiers first: configured, protected and read back before a DSP exists to feed them. Nothing is enabled.
+        let Some(s) = speakers.as_deref_mut() else { return Err(StartFail::Layout("no-speakers")) };
+        if let Err(e) = s.begin(rig, &mut |_| Ok(())) {
+            let _ = s.safe(rig, true);
+            return Err(StartFail::Speaker(e));
+        }
+    }
+    if let Err(e) = ctl.start_chip(rig) {
+        if let Some(s) = speakers.as_deref_mut() {
+            let _ = s.safe(rig, true);
+        }
+        return Err(StartFail::Chip(e));
+    }
+    let r = start_inner(rig, a, codec, speakers.as_deref_mut(), fifo);
     if r.is_err() {
-        // whatever stage failed: the DSP core off, the controller down, the codec safe. Errors from the clean-up are secondary.
+        // whatever stage failed: the DSP core off, the controller down, the output stage safe. Errors from the clean-up are secondary.
         let _ = dsp_off(rig);
         let _ = ctl.stop_chip(rig);
-        let _ = codec.safe_state(rig);
+        match a.out {
+            Output::Speakers => {
+                if let Some(s) = speakers.as_deref_mut() {
+                    let _ = s.safe(rig, true);
+                }
+            }
+            _ => {
+                let _ = codec.safe_state(rig);
+            }
+        }
     }
     r
 }
 
-fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Codec, fifo: &mut Fifo) -> Result<Dsp, StartFail> {
-    let StartArgs { ctl, files, bufs, board, level } = *a;
+fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Codec, mut speakers: Option<&mut Speakers>, fifo: &mut Fifo) -> Result<Dsp, StartFail> {
+    let StartArgs { ctl, files, bufs, board, level, out, speaker_topology } = *a;
+    let speaker_path = out == Output::Speakers;
     // ---- the code loader's buffer and descriptor list ----
     let layout = ClDmaLayout::plan(&[Extent { addr: bufs.cldma.phys, len: AVS_CL_DEFAULT_BUFFER_SIZE }], bufs.cldma_bdl.phys, AVS_CL_DEFAULT_BUFFER_SIZE, AVS_CL_STREAM_TAG).map_err(|e| StartFail::Layout(e.name()))?;
     for (i, e) in layout.entries().iter().enumerate() {
@@ -282,15 +374,31 @@ fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Code
     let mut acct = RingAcct::new(RING_BYTES, PERIOD_BYTES, FRAME_BYTES);
     refill(rig, &bufs.ring, &mut acct, fifo, Mode::Prime);
     // ---- what Boot is given ----
-    let topology = Topology::parse(&files.topology, None).map_err(|_| StartFail::Layout("topology-parse"))?;
+    // the speaker card is a machine with ONE SSP and no TDM split: `%d` in the topology's names becomes the port, and its copier's I2S gateway
+    // gets its virtual index (avs-topology-core `SspBinding`, topology.c:398-422)
+    let speaker_ssp_port = board.speaker_ssps().first().copied().unwrap_or(0);
+    let (topology, speaker_path_libs) = if speaker_path {
+        let bytes = speaker_topology.ok_or(StartFail::Layout("no-speaker-topology"))?;
+        let t = Topology::parse(bytes, Some(SspBinding { port: speaker_ssp_port as u32, tdm: 0 })).map_err(|_| StartFail::Layout("speaker-topology-parse"))?;
+        (t, true)
+    } else {
+        (Topology::parse(&files.topology, None).map_err(|_| StartFail::Layout("topology-parse"))?, false)
+    };
     let nhlt = Nhlt::parse(&files.nhlt, true).map_err(|_| StartFail::Layout("nhlt-parse"))?;
     let mut libs: Vec<LibImage> = Vec::new();
-    libs.try_reserve_exact(files.libs.len()).map_err(|_| StartFail::OutOfMemory)?;
-    libs.extend(files.libs.iter().map(|l| LibImage { name: l.name, image_len: (l.bytes.len() - l.body_at) as u32 }));
+    if speaker_path_libs {
+        // the speaker topology's libraries would be fetched with it; the upstream one names none, and one that does is refused rather than run without
+        if !topology.libs.is_empty() {
+            return Err(StartFail::Layout("speaker-topology-needs-libraries"));
+        }
+    } else {
+        libs.try_reserve_exact(files.libs.len()).map_err(|_| StartFail::OutOfMemory)?;
+        libs.extend(files.libs.iter().map(|l| LibImage { name: l.name, image_len: (l.bytes.len() - l.body_at) as u32 }));
+    }
     let mut speaker_ssp: Vec<u32> = Vec::new();
     speaker_ssp.try_reserve_exact(board.n_speaker_ssp as usize).map_err(|_| StartFail::OutOfMemory)?;
     speaker_ssp.extend(board.speaker_ssps().iter().map(|s| *s as u32));
-    let (fe, be, wn) = widget_names(board.headset_ssp);
+    let (fe, be, wn) = widget_names(if speaker_path { speaker_ssp_port } else { board.headset_ssp });
     let params = StreamParams { rate: FORMAT.rate, channels: FORMAT.channels as u32, container_bits: FORMAT.container_bits as u32, valid_bits: FORMAT.valid_bits as u32 };
     let cfg = BootConfig {
         topology: &topology,
@@ -298,7 +406,7 @@ fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Code
         layout,
         basefw_len: files.base_body().len() as u32,
         libs,
-        playback: PlaybackSel { fe_widget: &fe[..wn], be_widget: &be[..wn], fe: params, be: params, ssp_instance: board.headset_ssp as u32, speaker_ssp: &speaker_ssp },
+        playback: PlaybackSel { fe_widget: &fe[..wn], be_widget: &be[..wn], fe: params, be: params, ssp_instance: if speaker_path { speaker_ssp_port as u32 } else { board.headset_ssp as u32 }, speaker_ssp: &speaker_ssp, speaker_ceiling: if speaker_path { Some(gain::CEILING_LINEAR) } else { None } },
         host: HostSetup {
             streams: ctl.streams,
             playback_stream: board.playback_stream as u32,
@@ -352,7 +460,11 @@ fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Code
                     rig.m.dma_write(&bufs.ring_bdl, 0, &bytes);
                     Event::BdlWritten
                 }
-                Action::AskCodecSafe => Event::CodecSafe(codec.safe_state(rig).is_ok()),
+                Action::AskCodecSafe => Event::CodecSafe(match speakers.as_deref_mut() {
+                    // before any I2S clock starts: neither amplifier is enabled or receiving (or both are in reset), and the codec is safe too
+                    Some(s) if speaker_path => s.is_idle(rig) && codec.is_safe(rig),
+                    _ => codec.safe_state(rig).is_ok(),
+                }),
                 Action::Finished(r) => break 'drive Ok(r),
                 Action::Failed(f) => break 'drive Err(StartFail::Boot(f)),
             };
@@ -361,11 +473,15 @@ fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Code
         Err(StartFail::Layout("boot-never-ended"))
     }?;
     let _ = FwInput::Done;
-    let mut dsp = Dsp { pump, running, host, acct, last_period_ms: rig.now(), last_tick_ms: rig.now(), hold: true };
+    let mut dsp = Dsp { pump, running, host, acct, last_period_ms: rig.now(), last_tick_ms: rig.now(), hold: true, out, gain: 0 };
 
-    // ---- the codec: clocks, route, output stages, volume ----
-    let up = codec_up(rig, &mut dsp, bufs, fifo, codec, level);
-    up?;
+    // ---- the output stage: clocks, route, output stages, volume ----
+    if speaker_path {
+        let Some(s) = speakers.as_deref_mut() else { return Err(StartFail::Layout("no-speakers")) };
+        speakers_up(rig, &mut dsp, bufs, fifo, s, level)?;
+    } else {
+        codec_up(rig, &mut dsp, bufs, fifo, codec, level)?;
+    }
     Ok(dsp)
 }
 
@@ -380,22 +496,55 @@ fn codec_up<M: Machine>(rig: &mut Rig<M>, dsp: &mut Dsp, bufs: &Bufs, fifo: &mut
     Ok(())
 }
 
+/// The speaker path's last step: the parts enabled (the pipelines run, the clocks exist, the protection was read back), the DSP volume stage
+/// raised from silence to the client's level under the ceiling, and the client's samples let in.
+fn speakers_up<M: Machine>(rig: &mut Rig<M>, dsp: &mut Dsp, bufs: &Bufs, fifo: &mut Fifo, speakers: &mut Speakers, level: Option<u16>) -> Result<(), StartFail> {
+    speakers.power_up(rig, &mut |rig| dsp.tick(rig, bufs, fifo)).map_err(StartFail::Speaker)?;
+    dsp.tick(rig, bufs, fifo).map_err(StartFail::Pump)?;
+    set_speaker_gain(rig, dsp, speaker_gain_for(level, false)).map_err(StartFail::Gain)?;
+    dsp.hold = false;
+    dsp.on_periods(rig, bufs, fifo).map_err(StartFail::Pump)?;
+    Ok(())
+}
+
 /// What a stop managed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StopReport {
-    /// The codec's safe state was proven by readback.
+    /// The output stage is in its verified safe state: the codec by readback (headphones), the amplifiers in hardware reset by the pad's
+    /// readback (speakers); and the stage that was not in use still is.
     pub codec_safe: bool,
     /// The DSP core was switched off and the controller stopped.
     pub dsp_off: bool,
     /// Steps of the graceful path that failed (ignored: the next step still ran).
     pub errors: u32,
+    /// For a speaker session: what the amplifiers' reset line is after the stop.
+    pub spk_hold: Option<avs_wire::SpeakerHold>,
 }
 
 /// Stop the stream and take everything down. `graceful`: also pause the pipelines through the DSP (skipped when the DSP is not to be
 /// trusted - after an exception or a time-out - so a dead DSP does not cost a time-out per message).
-pub fn stop_dsp<M: Machine>(rig: &mut Rig<M>, ctl: &Controller, codec: &mut Codec, mut dsp: Dsp, graceful: bool) -> StopReport {
-    // 1. the codec first: the cheapest thing to hear, and the one safety property that matters
-    let mut rep = StopReport { codec_safe: codec.power_down(rig).is_ok() && codec.is_safe(rig), ..StopReport::default() };
+pub fn stop_dsp<M: Machine>(rig: &mut Rig<M>, ctl: &Controller, codec: &mut Codec, speakers: Option<&mut Speakers>, mut dsp: Dsp, graceful: bool) -> StopReport {
+    let mut errors = 0;
+    // 1. the output stage first: the cheapest thing to hear, and the one safety property that matters
+    let mut rep = if dsp.out == Output::Speakers {
+        // silence in the DSP (when it can still answer), the parts off and proven, the reset low and proven; then the codec is checked too
+        if graceful && dsp.pump.pend.exception.is_none() && set_speaker_gain(rig, &mut dsp, 0).is_err() {
+            errors += 1;
+        }
+        let spk = match speakers {
+            Some(s) => s.safe(rig, true),
+            None => crate::speakers::SpkSafe { amps_off: false, held: avs_wire::SpeakerHold::NotGranted },
+        };
+        StopReport { codec_safe: spk.verified() && codec.is_safe(rig), spk_hold: Some(spk.held), ..StopReport::default() }
+    } else {
+        let mut r = StopReport { codec_safe: codec.power_down(rig).is_ok() && codec.is_safe(rig), ..StopReport::default() };
+        if let Some(s) = speakers {
+            // the amplifiers were in reset all along; prove it again, cheaply, without writing
+            r.codec_safe = r.codec_safe && crate::gpio::speakers_held(rig, s.pad());
+        }
+        r
+    };
+    rep.errors = errors;
     // 2. the host stream
     for p in [stop(&ctl.streams, dsp.host.index), cleanup(&ctl.streams, dsp.host.index)] {
         match p {
@@ -425,7 +574,7 @@ pub fn stop_dsp<M: Machine>(rig: &mut Rig<M>, ctl: &Controller, codec: &mut Code
     let off = dsp_off(rig).is_ok();
     let chip = ctl.stop_chip(rig).is_ok();
     rep.dsp_off = off && chip;
-    // the codec is checked once more AFTER the clocks are gone: stopping the I2S clocks must not have un-safed it
+    // the output stage is checked once more AFTER the clocks are gone: stopping the I2S clocks must not have un-safed it
     rep.codec_safe = rep.codec_safe && codec.is_safe(rig);
     rep
 }

@@ -6,11 +6,13 @@
 //! Every register write, I2C transaction and pad write is RECORDED, and the window grants a real loader would give (read-only until the
 //! device narrows them from its own lists) are enforced here too, so a test can assert what was touched and what never was.
 #![allow(dead_code)]
+pub mod amp;
 pub mod codec;
 pub mod defaults;
 pub mod dsp;
 pub mod harness;
 pub mod hda;
+pub mod ucm_image;
 pub mod world;
 
 use avs_device::machine::*;
@@ -69,6 +71,12 @@ pub struct Sim {
     pub hda: hda::Hda,
     pub dsp: dsp::Dsp,
     pub codec: codec::Codec,
+    /// The speaker amplifiers: the right one (0x31) then the left (0x32).
+    pub amps: [amp::Amp; 2],
+    /// A global sequence number, bumped on every register write, I2C transaction and pad write, so a test can order them.
+    pub tx_seq: u64,
+    /// The sequence number of the first register write after which the playback stream's DMA engine was running.
+    pub first_dma_seq: Option<u64>,
     pub cfg: [u8; 256],
     pub pad2: Vec<u8>,
     /// The write grants a real loader would have narrowed to the device's lists (None: still read-only).
@@ -84,6 +92,8 @@ pub struct Sim {
     pub refused_writes: Vec<WriteRec>,
     pub i2c: Vec<I2cRec>,
     pub pad_writes: Vec<(u32, u32)>,
+    /// The virtual time (us) of each pad write, aligned with `pad_writes`.
+    pub pad_times_us: Vec<u64>,
     pub inbox: VecDeque<Vec<u8>>,
     pub outbox: Vec<Vec<u8>>,
     pub client_dead: bool,
@@ -112,6 +122,8 @@ pub struct Sim {
     pub force_irq: bool,
     /// The speaker-reset pad reads high whatever is driven (something else holds the amplifiers out of reset).
     pub pad_stuck_high: bool,
+    /// The speaker-reset pad reads low whatever is driven (the amplifiers can never be released from reset).
+    pub pad_stuck_low: bool,
 }
 
 pub fn read_region(regions: &[Region], addr: u64, len: usize) -> Vec<u8> {
@@ -142,6 +154,9 @@ impl Sim {
             hda: hda::Hda::new(),
             dsp: dsp::Dsp::new(fw, basefw_len),
             codec: codec::Codec::new(),
+            amps: [amp::Amp::new(0x31), amp::Amp::new(0x32)],
+            tx_seq: 0,
+            first_dma_seq: None,
             cfg,
             pad2,
             grant_hda: None,
@@ -156,6 +171,7 @@ impl Sim {
             refused_writes: vec![],
             i2c: vec![],
             pad_writes: vec![],
+            pad_times_us: vec![],
             inbox: VecDeque::new(),
             outbox: vec![],
             client_dead: false,
@@ -181,6 +197,7 @@ impl Sim {
             i2c_cost_us: 300,
             force_irq: false,
             pad_stuck_high: false,
+            pad_stuck_low: false,
         }
     }
 
@@ -333,6 +350,31 @@ impl Sim {
         self.i2c.iter().filter(|t| t.addr == 0x31 || t.addr == 0x32).count()
     }
 
+    /// Is the amplifiers' reset line asserted (low) right now? The pad pulls up when its transmitter is off.
+    pub fn amp_reset_asserted(&self) -> bool {
+        if self.pad_stuck_low {
+            return true;
+        }
+        if self.pad_stuck_high {
+            return false;
+        }
+        let o = 0x400 + 11 * 8;
+        let v = u32::from_le_bytes(self.pad2[o..o + 4].try_into().unwrap());
+        v & 0x100 == 0 && v & 1 == 0
+    }
+
+    fn sync_amp_reset(&mut self) {
+        let asserted = self.amp_reset_asserted();
+        let seq = self.tx_seq;
+        for a in self.amps.iter_mut() {
+            a.reset_line(asserted, seq);
+        }
+    }
+
+    pub fn amp(&self, addr: u16) -> &amp::Amp {
+        self.amps.iter().find(|a| a.addr == addr).expect("an amplifier address")
+    }
+
     fn granted(list: &Option<Vec<(u32, u32)>>, off: u32, width: Width) -> bool {
         let w = match width {
             Width::B8 => 1,
@@ -397,6 +439,7 @@ impl Machine for Sim {
             return Err(RegFault::NotAllowed { space, off });
         }
         self.writes.push(rec);
+        self.tx_seq += 1;
         let t = self.t_us;
         let regions = &self.regions;
         self.hda.advance(t, &|a, n| read_region(regions, a, n));
@@ -404,6 +447,9 @@ impl Machine for Sim {
             Space::Hda => {
                 self.hda.write(off, n, value);
                 self.hda.after_write(t);
+                if self.first_dma_seq.is_none() && self.hda.running(7) {
+                    self.first_dma_seq = Some(self.tx_seq);
+                }
             }
             Space::Dsp => {
                 let regions = &self.regions;
@@ -453,7 +499,15 @@ impl Machine for Sim {
     fn i2c_write(&mut self, addr: u16, data: &[u8]) -> Result<(), I2cFault> {
         let t = self.t_us + self.i2c_cost_us;
         self.advance_to(t);
-        let acked = if addr == codec::ADDR { self.codec.write(data) } else { false };
+        self.tx_seq += 1;
+        let seq = self.tx_seq;
+        let acked = if addr == codec::ADDR {
+            self.codec.write(data)
+        } else if let Some(a) = self.amps.iter_mut().find(|a| a.addr == addr) {
+            a.write(data, seq)
+        } else {
+            false
+        };
         self.i2c.push(I2cRec { addr, write: data.to_vec(), read_len: 0, acked });
         self.update_jack_line();
         if acked {
@@ -466,7 +520,15 @@ impl Machine for Sim {
     fn i2c_write_read(&mut self, addr: u16, write: &[u8], read: &mut [u8]) -> Result<(), I2cFault> {
         let t = self.t_us + self.i2c_cost_us;
         self.advance_to(t);
-        let acked = if addr == codec::ADDR { self.codec.write_read(write, read) } else { false };
+        self.tx_seq += 1;
+        let seq = self.tx_seq;
+        let acked = if addr == codec::ADDR {
+            self.codec.write_read(write, read)
+        } else if let Some(a) = self.amps.iter_mut().find(|a| a.addr == addr) {
+            a.write_read(write, read, seq)
+        } else {
+            false
+        };
         self.i2c.push(I2cRec { addr, write: write.to_vec(), read_len: read.len(), acked });
         if acked {
             Ok(())
@@ -497,6 +559,9 @@ impl Machine for Sim {
         if o == f11 && self.pad_stuck_high {
             v |= 2;
         }
+        if o == f11 && self.pad_stuck_low {
+            v &= !2;
+        }
         Ok(v)
     }
 
@@ -507,9 +572,12 @@ impl Machine for Sim {
         if !self.pad_granted || reg.off != 0x400 + 11 * 8 {
             return Err(PadFault::NotAllowed { community: 2, off: reg.off });
         }
+        self.tx_seq += 1;
         self.pad_writes.push((reg.off, value));
+        self.pad_times_us.push(self.t_us);
         let o = reg.off as usize;
         self.pad2[o..o + 4].copy_from_slice(&value.to_le_bytes());
+        self.sync_amp_reset();
         Ok(())
     }
 

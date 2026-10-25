@@ -41,6 +41,12 @@ pub struct PlaybackSel<'a> {
     /// The SSPs of the board's speaker amplifiers, from the same row (Atlas: SSP0, the two MAX98373). A back end on any of them is the
     /// speaker path and is refused by name ([`crate::plan::PlanError::SpeakerPathRefused`]), whatever `ssp_instance` says.
     pub speaker_ssp: &'a [u32],
+    /// `Some(ceiling)`: this is the PROTECTED SPEAKER path (DECISIONS D17, amending D14). Its back end must be on one of `speaker_ssp` (and
+    /// on `ssp_instance`), its path must hold a peakvol module (a path with no volume stage cannot honour a ceiling and is refused by
+    /// name), and that module's ceiling is `min(the topology's declared target volume if it declares one, ceiling)` - the topology need
+    /// not declare one (the upstream `max98373-tplg.bin` does not), the caller's number is then the ceiling. `None`: the headphone path,
+    /// where a back end on a speaker SSP is still refused by name.
+    pub speaker_ceiling: Option<u32>,
 }
 
 /// The host stream and its DMA memory, prepared by the `.device` from hda-ext-core's walks and planners.

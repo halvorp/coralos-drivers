@@ -23,6 +23,9 @@ use avs_wire::{frame, Header, Opcode, Status, FLAG_REPLY, MAX_FRAME_BYTES};
 pub const BASEFW_FILE: &str = "skl/dsp_basefw.bin";
 /// The headset's topology: DA7219 on SSP1 (`avs/boards/da7219.c` names `da7219-tplg.bin`).
 pub const TOPOLOGY_FILE: &str = "da7219-tplg.bin";
+/// The speakers' topology: the UPSTREAM DSM-free `max98373-tplg.bin` (thesofproject/avs-topology-xml@221e4a6 `i2s/max98373-tplg.xml`, built by
+/// avsdk and alsatplg; DECISIONS D17). ChromeOS's own file of the same name carries a DSM control mainline cannot load and is NOT this one.
+pub const SPEAKER_TOPOLOGY_FILE: &str = "max98373-tplg.bin";
 /// The ACPI NHLT table, extracted by the loader from the platform tables.
 pub const NHLT_FILE: &str = "nhlt.bin";
 /// Library images are `skl/<name>` where `<name>` is the topology's library name (loader.c:509-510 below the avs root).
@@ -185,4 +188,28 @@ pub fn load_all<M: Machine>(m: &mut M) -> Result<Files, FwFail> {
         libs.push(LibFile { bytes, body_at, name: lib_name });
     }
     Ok(Files { base, base_body_at, topology, nhlt, libs })
+}
+
+/// Fetch and check the speaker topology: the broker verified it against its baked digest; this proves it is one the speaker path can plan (it
+/// parses with the board's single speaker SSP bound, names no library the device would have to fetch, and holds the speaker path's two
+/// widgets). Failing is not fatal to the device: the headphones do not depend on it. `ssp` is the board's speaker SSP port.
+pub fn load_speaker_topology<M: Machine>(m: &mut M, ssp: u8) -> Result<Vec<u8>, FwFail> {
+    use avs_topology_core::model::SspBinding;
+    let bytes = fetch(m, SPEAKER_TOPOLOGY_FILE, MAX_TOPOLOGY_BYTES).map_err(|e| fail("speaker-topology", e.name()))?;
+    {
+        let t = Topology::parse(&bytes, Some(SspBinding { port: ssp as u32, tdm: 0 })).map_err(|_| fail("speaker-topology", "topology-parse"))?;
+        if !t.libs.is_empty() {
+            return Err(fail("speaker-topology", "topology-needs-libraries"));
+        }
+        let (fe, be) = (speaker_widget(ssp, b"fe"), speaker_widget(ssp, b"be"));
+        if t.template_by_widget(&fe).is_none() || t.template_by_widget(&be).is_none() {
+            return Err(fail("speaker-topology", "no-speaker-widgets"));
+        }
+    }
+    Ok(bytes)
+}
+
+/// `ssp<N>p_fe` / `ssp<N>p_be`: the widget names the upstream topologies give a single-SSP machine's playback path.
+pub fn speaker_widget(ssp: u8, end: &[u8; 2]) -> [u8; 8] {
+    [b's', b's', b'p', b'0' + ssp.min(9), b'p', b'_', end[0], end[1]]
 }

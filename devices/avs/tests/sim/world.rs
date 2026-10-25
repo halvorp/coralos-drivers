@@ -20,6 +20,19 @@ pub fn tplg_bytes() -> Option<Vec<u8>> {
     Some(std::fs::read(p).unwrap())
 }
 
+/// The upstream speaker topology (thesofproject/avs-topology-xml@221e4a6 `i2s/max98373-tplg.xml` built by avsdk + alsatplg, DECISIONS D17), or
+/// None (loudly). `CORAL_AVS_REQUIRE_BLOBS=1` makes its absence a failure.
+pub fn spk_tplg_bytes() -> Option<Vec<u8>> {
+    let p = std::env::var("CORAL_AVS_SPK_TPLG").unwrap_or_else(|_| "/home/peter/Projects/coral_handoffs/atlas/recovery/max98373-tplg.upstream-221e4a6.bin".to_string());
+    let p = std::path::Path::new(&p);
+    if !p.exists() {
+        assert!(std::env::var("CORAL_AVS_REQUIRE_BLOBS").is_err(), "max98373-tplg.bin is required (CORAL_AVS_REQUIRE_BLOBS) and is not at {}", p.display());
+        eprintln!("max98373-tplg.bin: SKIPPED (set CORAL_AVS_SPK_TPLG)");
+        return None;
+    }
+    Some(std::fs::read(p).unwrap())
+}
+
 /// The Atlas board row (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2).
 pub fn atlas_board() -> Board {
     Board {
@@ -114,7 +127,7 @@ pub fn nhlt_bytes() -> Vec<u8> {
     use avs_topology_core::nhlt::*;
     let tdm = [0u8, 0];
     let da = |seed| NFmt { ch: 2, rate: 48000, container: 32, valid: 24, mask: 3, caps: blob(88, seed) };
-    let max = NFmt { ch: 4, rate: 48000, container: 32, valid: 32, mask: 0xF, caps: blob(88, MAX98373_SEED) };
+    let max = NFmt { ch: 2, rate: 48000, container: 16, valid: 16, mask: 3, caps: blob(88, MAX98373_SEED) };
     let eps = [
         endpoint(ACPI_NHLT_LINKTYPE_SSP, 0, ACPI_NHLT_DEVICEID_I2S, ACPI_NHLT_DEVICETYPE_CODEC, ACPI_NHLT_DIR_RENDER, 1, &tdm, &[da(DA7219_RENDER_SEED)], &[0u8]),
         endpoint(ACPI_NHLT_LINKTYPE_SSP, 0, ACPI_NHLT_DEVICEID_I2S, ACPI_NHLT_DEVICETYPE_CODEC, ACPI_NHLT_DIR_CAPTURE, 1, &tdm, &[da(0x20)], &[0u8]),

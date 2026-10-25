@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 const ALLOWED_EXACT: [&str; 4] = ["coralos-rt", "coralos-hal", "avs-wire", "hda-ext-core"];
-const ALLOWED_PREFIX: [&str; 4] = ["avs-", "da7219-", "i2c-", "hda-"];
+const ALLOWED_PREFIX: [&str; 5] = ["avs-", "da7219-", "i2c-", "hda-", "max98373-"];
 
 fn dependency_names(toml: &str) -> Vec<String> {
     let mut in_deps = false;

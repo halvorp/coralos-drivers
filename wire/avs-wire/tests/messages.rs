@@ -47,11 +47,14 @@ fn open_and_its_reply_round_trip_and_refuse_nonzero_reserved() {
     bad[7] = 1; // the format's reserved byte
     assert_eq!(Open::decode(&bad[..n]).unwrap_err().name(), "reserved-non-zero");
     let mut bad = b;
-    bad[8] = 2; // a route that does not exist
+    bad[8] = 3; // a route that does not exist (0 headphones, 1 speakers, 2 auto)
     assert_eq!(Open::decode(&bad[..n]).unwrap_err().name(), "bad-value");
     let sp = Open { route: Route::Speakers, ..o };
     let n2 = sp.encode(&mut b).unwrap();
-    assert_eq!(Open::decode(&b[..n2]).unwrap().route, Route::Speakers, "the speaker route is expressible so it can be REFUSED by name");
+    assert_eq!(Open::decode(&b[..n2]).unwrap().route, Route::Speakers, "the speaker route is expressible so a board that cannot offer it can REFUSE it by name");
+    let au = Open { route: Route::Auto, ..o };
+    let n3 = au.encode(&mut b).unwrap();
+    assert_eq!(Open::decode(&b[..n3]).unwrap(), au);
     let r = OpenReply { stream: 3, period_frames: 1024, periods: 4, fifo_bytes: 16384 };
     let n = r.encode(&mut b).unwrap();
     assert_eq!(OpenReply::decode(&b[..n]).unwrap(), r);
