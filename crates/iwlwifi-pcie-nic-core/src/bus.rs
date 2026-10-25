@@ -206,6 +206,14 @@ impl<B: RawBus> TransIo for Nic<B> {
         v
     }
 
+    fn prph_read_no_grab(&mut self, addr: u32) -> u32 {
+        Nic::prph_read_no_grab(self, addr)
+    }
+
+    fn prph_write_no_grab(&mut self, addr: u32, val: u32) {
+        Nic::prph_write_no_grab(self, addr, val)
+    }
+
     fn prph_write(&mut self, addr: u32, val: u32) {
         if self.do_grab() {
             self.prph_write_no_grab(addr, val);

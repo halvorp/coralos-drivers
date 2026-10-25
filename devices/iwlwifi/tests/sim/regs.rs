@@ -88,6 +88,13 @@ fn is_fh(off: u32) -> bool {
     (0x1000..0x2000).contains(&off)
 }
 
+/// HPM_DEBUG (0xA03440) and PREG_PRPH_WPROT_9000 (0xA04CE0) are WFPM registers Linux touches with the `_no_grab`
+/// accessors BEFORE INIT_DONE, with the MAC asleep (`iwl_trans_pcie_clear_persistence_bit`, trans.c:1749-1759).
+/// The sim lets exactly those through; every other periphery access needs the MAC awake.
+fn wfpm_without_mac(a: u32) -> bool {
+    matches!(a & 0xfffff, 0x3440 | 0x4CE0)
+}
+
 pub fn read32(w: &mut World, off: u32) -> u32 {
     if is_fh(off) && !(0x1c80..0x1d00).contains(&off) && !w.awake() {
         w.violation(format!("FH read {off:#x} without MAC access"));
@@ -97,19 +104,22 @@ pub fn read32(w: &mut World, off: u32) -> u32 {
         CSR_INT_MASK => w.int_mask,
         CSR_FH_INT_STATUS => w.fh_int,
         CSR_GP_CNTRL => {
-            // MAC_CLOCK_READY follows INIT_DONE or an access request; GOING_TO_SLEEP never shows while awake.
+            // MAC_CLOCK_READY follows INIT_DONE ONLY: "After device reset, this bit remains 0 until host sets
+            // INIT_DONE" (iwl-csr.h:277-278), and an access request alone does not raise it (silicon, Z8350-class
+            // Atlas 2026-10-16: gp_cntrl 0x08040008 = ACCESS_REQ without INIT_DONE never got a clock).
+            // GOING_TO_SLEEP never shows while awake.
             let mut v = w.gp_cntrl & !(GP_MAC_CLOCK_READY | GP_GOING_TO_SLEEP | GP_HW_RF_KILL_SW);
             if !w.hw_rfkill {
                 v |= GP_HW_RF_KILL_SW; // the switch is a pin: a card reset does not move it
             }
-            if !w.wedge_mac_access && v & (GP_INIT_DONE | GP_MAC_ACCESS_REQ) != 0 {
+            if !w.wedge_mac_access && v & GP_INIT_DONE != 0 {
                 v |= GP_MAC_CLOCK_READY;
             }
             v
         }
         CSR_RESET => *w.csr.get(&CSR_RESET).unwrap_or(&0),
         HBUS_TARG_PRPH_RDAT => {
-            if !w.awake() {
+            if !w.awake() && !wfpm_without_mac(w.prph_raddr) {
                 w.violation(format!("PRPH read {:#x} without MAC access", w.prph_raddr));
             }
             let a = w.prph_raddr;
@@ -175,7 +185,7 @@ pub fn write32(w: &mut World, off: u32, val: u32) {
         HBUS_TARG_PRPH_WADDR => w.prph_waddr = val & 0xfffff,
         HBUS_TARG_PRPH_RADDR => w.prph_raddr = val & 0xfffff,
         HBUS_TARG_PRPH_WDAT => {
-            if !w.awake() {
+            if !w.awake() && !wfpm_without_mac(w.prph_waddr) {
                 w.violation(format!("PRPH write {:#x} <- {val:#x} without MAC access", w.prph_waddr));
             }
             let a = w.prph_waddr;
@@ -196,7 +206,9 @@ pub fn write32(w: &mut World, off: u32, val: u32) {
             if q == 0 {
                 fm::doorbell(w, (val & 0xff) as u16);
             } else {
-                w.violation(format!("doorbell for queue {q}: no data queue is enabled"));
+                // A write pointer for a data queue: positions the pointer before SCD_QUEUE_CFG enables the queue
+                // (iwl_trans_pcie_txq_enable with no cfg); the firmware model checks the order (rtfw.rs).
+                super::rtfw::queue_wrptr(w, q as u8, (val & 0xff) as u16);
             }
         }
         RFH_Q0_FRBDCB_WIDX_TRG => {

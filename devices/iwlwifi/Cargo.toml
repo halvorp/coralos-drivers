@@ -29,6 +29,7 @@ iwlwifi-fw-tlv-core = { path = "../../crates/iwlwifi-fw-tlv-core" }
 iwlwifi-fw-image-core = { path = "../../crates/iwlwifi-fw-image-core" }
 iwlwifi-fw-alive-core = { path = "../../crates/iwlwifi-fw-alive-core" }
 iwlwifi-mvm-init-core = { path = "../../crates/iwlwifi-mvm-init-core" }
+iwlwifi-mvm-rt-core = { path = "../../crates/iwlwifi-mvm-rt-core" }
 iwlwifi-nvm-parse-core = { path = "../../crates/iwlwifi-nvm-parse-core" }
 
 [dev-dependencies]

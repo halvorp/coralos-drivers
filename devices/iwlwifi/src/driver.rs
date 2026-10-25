@@ -11,6 +11,7 @@
 use crate::fwfile::{FwError, FwImage};
 use crate::host::{say, Host};
 use crate::transport::{Fault, Rx, Transport, TransportError};
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use iwlwifi_fw_alive_core::alive::{parse_alive_v3, AliveError, AliveV3, ErrorTablePtrs, LEGACY_GROUP, UCODE_ALIVE_NTFY};
@@ -24,9 +25,10 @@ use iwlwifi_mvm_init_core::encode::{encode_nvm_read, encode_phy_cfg_v1, encode_t
 use iwlwifi_mvm_init_core::ids::*;
 use iwlwifi_mvm_init_core::machine::{Action, Config, Event, Failure, Machine, NvmType, SendStatus, State};
 use iwlwifi_nvm_parse_core::{channels, mac_from_csr, parse_ext, NvmChannel, NvmData, NvmError, CSR_MAC_ADDR0_OTP, CSR_MAC_ADDR0_STRAP, CSR_MAC_ADDR1_OTP, CSR_MAC_ADDR1_STRAP};
-use iwlwifi_pcie_nic_core::bus::NicIo;
+use iwlwifi_pcie_nic_core::bus::{NicFault, NicIo};
 use iwlwifi_pcie_nic_core::load::LoadReport;
 use iwlwifi_pcie_ring_core::tx::Chunk;
+use iwlwifi_mvm_rt_core::phydb::PhyDb;
 use iwlwifi_pcie_trans_core::io::TransIo;
 
 /// `trans->mac_cfg->base->eeprom_size` = `OTP_LOW_IMAGE_SIZE_32K`: 32 * 512 * sizeof(u16). // cfg/9000.c:28; iwl-config.h:316
@@ -47,6 +49,12 @@ pub enum DriverError {
     Nvm(NvmError),
     /// The firmware sent a status other than 0xCAFE.
     AliveStatus(u16),
+    /// The NIC-access handshake timed out earlier and the card is latched dead (`STATUS_TRANS_DEAD`, trans.c:2339):
+    /// `stage` is the first bring-up stage after which the latch was seen. CoralOS addition: Linux's callers see the
+    /// -EIO of the access that failed; this driver reads 0x5a5a5a5a as a value, so the latch is checked by name.
+    NicFault { stage: &'static str, gp_cntrl: u32 },
+    /// A stage of the RT-image bring-up (`iwl_mvm_up`) failed; `stage` names it (see `rt_up`).
+    Rt { stage: &'static str, why: crate::rt_up::RtWhy },
 }
 
 impl DriverError {
@@ -57,6 +65,8 @@ impl DriverError {
             DriverError::Init(_) => "IWL-INIT",
             DriverError::Alive(_) | DriverError::AliveStatus(_) => "IWL-ALIVE",
             DriverError::Nvm(_) => "IWL-NVM",
+            DriverError::NicFault { .. } => "IWL-NIC-FAULT",
+            DriverError::Rt { .. } => "IWL-RT",
         }
     }
 }
@@ -95,6 +105,35 @@ pub struct Driver<H: Host> {
     pub mac: Option<[u8; 6]>,
     pub channels: Vec<NvmChannel>,
     nvm_sections: Vec<Option<Vec<u8>>>,
+    /// The calibration results the INIT image reported, replayed to the RT image. // iwl-phy-db.c
+    pub(crate) phydb: Box<PhyDb>,
+    /// `iwl_mvm_get_valid_tx_ant` / `_rx_ant`: the firmware's masks ANDed with the NVM's. // mvm/mvm.h:1757-1765
+    pub(crate) valid_tx_ant: u8,
+    pub(crate) valid_rx_ant: u8,
+    /// The RT image state (see `rt_up`).
+    pub rt: crate::rt_up::RtState,
+}
+
+/// The bring-up stage an [`Action`] belongs to, for `[IWL-NIC-FAULT stage=…]`.
+fn stage_of(a: &Action) -> &'static str {
+    match a {
+        Action::StartFw => "start_fw",
+        Action::WaitAlive { .. } => "alive",
+        Action::ReadNvmChunk { .. } => "nvm-read",
+        Action::CheckRfkill => "rfkill-check",
+        Action::SendTxAntCfg { .. } => "tx-ant-cfg",
+        Action::SendPhyCfg(_) => "phy-cfg",
+        Action::WaitCalib { .. } | Action::Pending => "calib",
+        Action::Done | Action::Failed(_) => "end",
+    }
+}
+
+/// The image name in markers.
+pub(crate) fn image_name(i: Image) -> &'static str {
+    match i {
+        Image::Init => "init",
+        Image::Regular => "rt",
+    }
 }
 
 fn status_of(r: Result<Rx, TransportError>) -> SendStatus {
@@ -112,10 +151,10 @@ impl<H: Host> Driver<H> {
         let fw = FwImage::load(firmware, digest)?;
         let mut nvm_sections = Vec::new();
         nvm_sections.resize_with(NVM_MAX_NUM_SECTIONS as usize, || None);
-        Ok(Driver { t: Transport::new(host), fw, alive: None, error_tables: None, nvm: None, mac: None, channels: Vec::new(), nvm_sections })
+        Ok(Driver { t: Transport::new(host), fw, alive: None, error_tables: None, nvm: None, mac: None, channels: Vec::new(), nvm_sections, phydb: Box::new(PhyDb::new()), valid_tx_ant: 0, valid_rx_ant: 0, rt: crate::rt_up::RtState::default() })
     }
 
-    fn log(&mut self, args: core::fmt::Arguments<'_>) {
+    pub(crate) fn log(&mut self, args: core::fmt::Arguments<'_>) {
         say(self.t.host(), args);
     }
 
@@ -149,6 +188,18 @@ impl<H: Host> Driver<H> {
             self.dump_fw_error(Image::Init);
         }
         r
+    }
+
+    /// If the NIC-access handshake has failed, say so by name and fail `stage`: a latched fault must never hide
+    /// behind a green marker. `[IWL-NIC-FAULT stage=<stage> gp_cntrl=0x........]`
+    pub fn nic_fault_check(&mut self, stage: &'static str) -> Result<(), DriverError> {
+        match self.t.nic.fault() {
+            None => Ok(()),
+            Some(NicFault::AccessTimeout { gp_cntrl }) => {
+                self.log(format_args!("[IWL-NIC-FAULT stage={stage} gp_cntrl={gp_cntrl:#010x}]"));
+                Err(DriverError::NicFault { stage, gp_cntrl })
+            }
+        }
     }
 
     /// `iwl_fwrt_dump_lmac_error_log` and `_umac_`: read the error tables the ALIVE pointed at and log them.
@@ -185,6 +236,7 @@ impl<H: Host> Driver<H> {
 
     fn bring_up_inner(&mut self) -> Result<InitReport, DriverError> {
         let kill = self.t.start_hw()?;
+        self.nic_fault_check("start_hw")?;
         let (hw_rev, name) = (self.t.hw_rev, if self.t.hw_rev & 0xF == 1 { 'B' } else { 'C' });
         self.log(format_args!("[IWL-HW-READY hw_rev={hw_rev:#010x} step={name} rfkill={}]", if kill { "ON" } else { "off" }));
         let cfg = self.init_config();
@@ -227,7 +279,7 @@ impl<H: Host> Driver<H> {
                         }
                     }
                 }
-                Action::WaitAlive { timeout_ms } => self.wait_alive(timeout_ms),
+                Action::WaitAlive { timeout_ms } => self.wait_alive(Image::Init, timeout_ms),
                 Action::ReadNvmChunk { section, offset, length } => {
                     let mut p = [0u8; NVM_ACCESS_CMD_LEN];
                     encode_nvm_read(section, offset, length, &mut p).expect("8 bytes fit");
@@ -266,6 +318,12 @@ impl<H: Host> Driver<H> {
                     let deadline = *calib_deadline.get_or_insert(now + budget as u64);
                     match self.wait_calib(deadline.saturating_sub(now) as u32) {
                         Ok(rx) => {
+                            if rx.cmd == CALIB_RES_NOTIF_PHY_DB {
+                                // iwl_wait_phy_db_entry -> iwl_phy_db_set_section: keep it for the RT image. // mvm/fw.c:240-259
+                                if let Err(e) = self.phydb.set_section(&rx.payload) {
+                                    self.log(format_args!("[IWL-PHYDB REFUSED {e:?}]"));
+                                }
+                            }
                             reply = rx.payload;
                             Event::Notification { cmd: rx.cmd, payload: &reply[..] }
                         }
@@ -279,8 +337,10 @@ impl<H: Host> Driver<H> {
                     return Err(DriverError::Init(f));
                 }
             };
+            self.nic_fault_check(stage_of(&action))?;
             step = m.step(ev);
         }
+        self.nic_fault_check("init-complete")?;
         let nvm = self.nvm.ok_or(DriverError::Init(Failure::UnexpectedEvent { state: m.state() }))?;
         let mac = self.mac.unwrap_or([0; 6]);
         let alive = self.alive.ok_or(DriverError::AliveStatus(0))?;
@@ -291,22 +351,25 @@ impl<H: Host> Driver<H> {
     }
 
     /// Wait for the ALIVE notification, decode it, and start the TX scheduler. // mvm/fw.c:286-330
-    fn wait_alive(&mut self, timeout_ms: u32) -> Event<'static> {
+    pub(crate) fn wait_alive(&mut self, image: Image, timeout_ms: u32) -> Event<'static> {
+        let name = image_name(image);
+        // The INIT image's failure markers keep their original shape; the RT image's carry an `rt` after FAIL.
+        let tag = if image == Image::Init { "" } else { " rt" };
         let rx = match self.t.wait_notif(timeout_ms, |r| r.group == LEGACY_GROUP && r.cmd == UCODE_ALIVE_NTFY && r.is_notification()) {
             Ok(rx) => rx,
             Err(TransportError::Timeout { .. }) => {
                 let csr_int = self.t.nic.csr_read(iwlwifi_pcie_trans_core::regs::CSR_INT);
-                self.log(format_args!("[IWL-ALIVE FAIL timeout={timeout_ms}ms csr_int={csr_int:#010x}]"));
+                self.log(format_args!("[IWL-ALIVE FAIL{tag} timeout={timeout_ms}ms csr_int={csr_int:#010x}]"));
                 // iwl_mvm_load_ucode_wait_alive's timeout dump (mvm/fw.c:305-312, fw/dump.c:233-262)
                 let mut values = [0u32; 8];
                 for (v, (_, reg)) in values.iter_mut().zip(ALIVE_TIMEOUT_PRPH_REGS) {
                     *v = self.t.nic.prph_read(reg);
                 }
-                self.log(format_args!("{}", AliveTimeoutMarker { image: Image::Init, values }));
+                self.log(format_args!("{}", AliveTimeoutMarker { image, values }));
                 return Event::WaitTimedOut;
             }
             Err(e) => {
-                self.log(format_args!("[IWL-ALIVE FAIL {} {:?}]", e.name(), e));
+                self.log(format_args!("[IWL-ALIVE FAIL{tag} {} {:?}]", e.name(), e));
                 return Event::WaitAborted;
             }
         };
@@ -315,18 +378,18 @@ impl<H: Host> Driver<H> {
         let a = match parse_alive_v3(notif_ver, &pkt) {
             Ok(a) => a,
             Err(e) => {
-                self.log(format_args!("[IWL-ALIVE FAIL layout {e:?}]"));
+                self.log(format_args!("[IWL-ALIVE FAIL{tag} layout {e:?}]"));
                 return Event::AliveInvalid;
             }
         };
         self.error_tables = Some(a.error_tables());
         self.alive = Some(a);
         if !a.is_ok() {
-            self.log(format_args!("[IWL-ALIVE FAIL status={:#06x}]", a.status));
+            self.log(format_args!("[IWL-ALIVE FAIL{tag} status={:#06x}]", a.status));
             return Event::AliveInvalid; // mvm/fw.c:220-229
         }
         self.log(format_args!(
-            "[IWL-ALIVE init status={:#06x} fw={}.{:x} lmac_err={:#x} umac_err={:#x}]",
+            "[IWL-ALIVE {name} status={:#06x} fw={}.{:x} lmac_err={:#x} umac_err={:#x}]",
             a.status,
             a.lmac.ucode_major,
             a.lmac.ucode_minor,
@@ -342,7 +405,7 @@ impl<H: Host> Driver<H> {
                 Event::AliveOk
             }
             Err(e) => {
-                self.log(format_args!("[IWL-ALIVE FAIL fw_alive {} {:?}]", e.name(), e));
+                self.log(format_args!("[IWL-ALIVE FAIL{tag} fw_alive {} {:?}]", e.name(), e));
                 Event::AliveInvalid
             }
         }
@@ -369,6 +432,8 @@ impl<H: Host> Driver<H> {
         let tx = if data.radio.valid_tx_ant != 0 { fw_tx & data.radio.valid_tx_ant } else { fw_tx };
         let rx = if data.radio.valid_rx_ant != 0 { fw_rx & data.radio.valid_rx_ant } else { fw_rx };
         m.set_valid_antennas(tx, rx);
+        self.valid_tx_ant = tx;
+        self.valid_rx_ant = rx;
         self.channels = channels(&reg, data.band_52ghz(), data.lar_enabled).collect();
         self.log(format_args!(
             "[IWL-NVM ver={:#x} sku={:#x} tx_ant={tx:#x} rx_ant={rx:#x} lar={} mac={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} channels={}]",

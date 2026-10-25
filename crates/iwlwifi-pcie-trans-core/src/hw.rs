@@ -87,15 +87,15 @@ impl From<ApmError> for HwError {
 /// `iwl_trans_pcie_clear_persistence_bit`, the IWL_DEVICE_FAMILY_9000 arm. Returns whether it cleared
 /// the bit. // trans.c:1734-1763
 pub fn clear_persistence_bit<I: TransIo>(io: &mut I) -> Result<bool, HwError> {
-    let hpm = io.prph_read(HPM_DEBUG); // trans.c:1749
+    let hpm = io.prph_read_no_grab(HPM_DEBUG); // trans.c:1749 iwl_read_umac_prph_no_grab: the MAC is not up (INIT_DONE clear), a grab would time out
     if is_hw_error_value(hpm) || hpm & PERSISTENCE_BIT == 0 {
         return Ok(false); // trans.c:1750
     }
-    let wprot = io.prph_read(PREG_PRPH_WPROT_9000); // trans.c:1739-1740, :1751
+    let wprot = io.prph_read_no_grab(PREG_PRPH_WPROT_9000); // trans.c:1739-1740, :1751
     if wprot & PREG_WFPM_ACCESS != 0 {
         return Err(HwError::PersistenceLocked { hpm, wprot }); // trans.c:1753-1757
     }
-    io.prph_write(HPM_DEBUG, hpm & !PERSISTENCE_BIT); // trans.c:1758-1759
+    io.prph_write_no_grab(HPM_DEBUG, hpm & !PERSISTENCE_BIT); // trans.c:1758-1759
     Ok(true)
 }
 

@@ -116,6 +116,10 @@ impl<H: Host> Transport<H> {
     /// the waiter; anything else is a notification. // rx.c:1364-1409
     fn deliver(&mut self, p: &RxPkt<'_>) -> Result<(), TransportError> {
         let rx = Rx { group: p.group_id, cmd: p.cmd, sequence: p.sequence, payload: p.data.to_vec() };
+        if self.inbox.len() >= INBOX_CAP {
+            self.inbox.pop_front();
+            self.stats.inbox_dropped += 1;
+        }
         if reclaim(p, &NO_RECLAIM_CMDS) {
             self.hcmd_complete(p.sequence)?;
             if self.awaiting == Some(p.sequence) {

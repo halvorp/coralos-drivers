@@ -100,6 +100,12 @@ impl TransIo for Sim {
         self.ops.push(Op::P(addr, val));
         self.prph.insert(addr, val);
     }
+    fn prph_read_no_grab(&mut self, addr: u32) -> u32 {
+        self.prph_read(addr)
+    }
+    fn prph_write_no_grab(&mut self, addr: u32, val: u32) {
+        self.prph_write(addr, val)
+    }
     fn sleep_us(&mut self, us: u32) {
         self.ops.push(Op::Sleep(us));
     }

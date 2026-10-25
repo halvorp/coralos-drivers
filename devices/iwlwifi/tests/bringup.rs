@@ -405,3 +405,78 @@ fn the_real_9260_46_file_comes_up_on_the_simulated_card() {
     assert_eq!(w.fw.boots, [FwState::Init]);
     assert_eq!(rep.alive.lmac.ucode_major, 46);
 }
+
+/// The 2026-10-16 Atlas silicon failure (teal-maple-glade-ring): `[IWL-FW-LOADED FAIL IWL-NIC-ACCESS
+/// AccessTimeout { gp_cntrl: 134479880 }]` = 0x08040008 = HW_RF_KILL_SW | bit 18 | MAC_ACCESS_REQ, with INIT_DONE and
+/// MAC_CLOCK_READY CLEAR. The card gives no clock to an access request made before INIT_DONE (iwl-csr.h:277-278), so a
+/// `grab` before `apm_init` fails and latches STATUS_TRANS_DEAD. Linux reads HPM_DEBUG in `clear_persistence_bit` with
+/// `iwl_read_umac_prph_no_grab` (trans.c:1749) precisely because the MAC is not up yet; this driver grabbed.
+#[test]
+fn no_nic_access_is_requested_before_init_done_and_the_silicon_gp_cntrl_never_appears() {
+    use iwlwifi_pcie_nic_core::bus::{NicFault, NicIo};
+    let b = build(&Opts::default());
+    let sim = world(&b);
+    let mut d = driver(&sim, &b);
+    let r = d.bring_up();
+    let fault = d.t.nic.fault();
+    assert_ne!(fault, Some(NicFault::AccessTimeout { gp_cntrl: 0x0804_0008 }), "the silicon failure: a grab before INIT_DONE");
+    assert!(r.is_ok(), "bring_up: {r:?}");
+    assert_eq!(fault, None);
+    no_violations(&sim);
+}
+
+/// The wrapper narrows BAR0 to `BAR0_WRITE_RANGES`; a refused write would silently leave the card in a half-programmed state.
+/// Every BAR0 write the whole bring-up makes must fall inside the allow-list (`devices/iwlwifi/src/rt.rs`, which the
+/// driver notes called unverified: this is the verification, against the sim's record of every write).
+#[test]
+fn every_bar0_write_of_a_full_bring_up_is_inside_the_write_allow_list() {
+    use iwlwifi_device::rt::BAR0_WRITE_RANGES;
+    let (sim, _d, _) = up();
+    let outside: Vec<_> = sim
+        .w()
+        .writes
+        .iter()
+        .filter(|(_, kind, off, _)| *kind != "prph" && !BAR0_WRITE_RANGES.iter().any(|(o, l)| *off >= *o && *off < *o + *l))
+        .cloned()
+        .collect();
+    assert_eq!(outside, vec![], "BAR0 writes the allow-list would refuse");
+}
+
+/// A card that dies after a green HW-READY must be named at the stage where the latch is first seen, with the
+/// gp_cntrl the handshake read, and bring-up must fail there - not later with an anonymous errno.
+#[test]
+fn a_latched_nic_fault_is_named_by_stage_with_its_gp_cntrl_and_fails_that_stage() {
+    use iwlwifi_pcie_nic_core::bus::NicIo;
+    use iwlwifi_pcie_trans_core::io::TransIo;
+    let b = build(&Opts::default());
+    let sim = world(&b);
+    let mut d = driver(&sim, &b);
+    let kill = d.t.start_hw().expect("start_hw");
+    assert!(!kill);
+    assert_eq!(d.nic_fault_check("start_hw"), Ok(()), "a healthy card says nothing");
+    sim.w().wedge_mac_access = true;
+    let _ = d.t.nic.prph_read(0x3000); // the access that times out and latches
+    assert!(d.t.nic.fault().is_some());
+    let r = d.nic_fault_check("start_fw");
+    assert!(matches!(r, Err(DriverError::NicFault { stage: "start_fw", .. })), "{r:?}");
+    let gp = match r {
+        Err(DriverError::NicFault { gp_cntrl, .. }) => gp_cntrl,
+        _ => unreachable!(),
+    };
+    let line = sim.w().log.iter().find(|l| l.contains("[IWL-NIC-FAULT")).cloned().expect("marker logged");
+    assert_eq!(line, format!("[IWL-NIC-FAULT stage=start_fw gp_cntrl={gp:#010x}]"));
+}
+
+/// The same through `bring_up`: the card wedges right after the firmware is loaded (a scheduled device event), and the
+/// run ends with the named stage marker.
+#[test]
+fn bring_up_on_a_card_that_wedges_mid_flight_ends_with_a_nic_fault_marker() {
+    let b = build(&Opts::default());
+    let sim = world(&b);
+    sim.w().schedule(8_000, sim::Ev::Custom(Box::new(|w: &mut sim::World| w.wedge_mac_access = true)));
+    let mut d = driver(&sim, &b);
+    let r = d.bring_up();
+    assert!(r.is_err(), "{r:?}");
+    let log = sim.w().log.clone();
+    assert!(log.iter().any(|l| l.starts_with("[IWL-NIC-FAULT stage=")), "{log:#?}");
+}
