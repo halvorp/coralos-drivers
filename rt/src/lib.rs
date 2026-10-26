@@ -169,7 +169,16 @@ pub fn mmap(len: u64, prot: u64) -> u64 {
 }
 /// Wait for any endpoint in the 128-bit set, or `irq`, or the bound (0 = none): a ready ep or a WAIT_* word.
 pub fn wait_any_irq(eps_lo: u64, eps_hi: u64, timeout_ms: u64, irq: u32) -> u64 {
-    unsafe { sc(nr::WAIT_ANY_IRQ, eps_lo, eps_hi, timeout_ms, irq as u64) }
+    unsafe { sc(nr::WAIT_ANY_IRQ, eps_lo, eps_hi, timeout_ms, irq_arg(irq)) }
+}
+/// The kernel's "I named no interrupt line" word for `WAIT_ANY_IRQ`. Any other value is a line the caller must hold a capability for;
+/// naming one it does not hold returns `WAIT_IRQ_DENIED` at once, without blocking.
+pub const NO_IRQ: u32 = u32::MAX;
+/// The `irq` argument for `WAIT_ANY_IRQ`. This crate's convention is that line 0 means "none" (`irq_line()` answers 0 for an empty slot,
+/// drivers write `irq.map_or(0, |i| i.line)`), and line 0 is the timer, never a device capability; the kernel's word for "none" is
+/// `NO_IRQ`, and 0 passed through would be a line the task does not hold.
+pub const fn irq_arg(irq: u32) -> u64 {
+    if irq == 0 { NO_IRQ as u64 } else { irq as u64 }
 }
 /// Map the device window granted in `slot`: its VA, or 0.
 pub fn mmio_map(slot: u32) -> u64 {
@@ -267,6 +276,14 @@ mod portio_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_wait_that_names_no_line_sends_the_kernels_no_irq_word() {
+        // RED before the fix: irq_arg(0) was 0, a line the task does not hold -> WAIT_IRQ_DENIED at once, no block
+        assert_eq!(irq_arg(0), u32::MAX as u64);
+        assert_eq!(irq_arg(NO_IRQ), u32::MAX as u64);
+        assert_eq!(irq_arg(23), 23);
+    }
 
     #[test]
     fn the_out_record_is_two_u64s() {
