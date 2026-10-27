@@ -338,12 +338,31 @@ impl UapiService {
             #[cfg(feature = "p4-present")]
             WaitKind::Scanout { .. } => "scanout",
         };
+        // the stage the completion is lost at: A = a request is gated behind a fence nothing has signalled (software), B = the ring is
+        // drained (HEAD == TAIL) but the CPU still reads an old seqno (visibility), C = the command streamer has not consumed the ring,
+        // D = nothing is in flight (the fence belongs to no request of ours), E = the batch finished and the CPU sees it (retire bookkeeping)
+        let stage = if self.inflight.is_empty() {
+            "D"
+        } else if !self.gates.is_empty() && head == tail && self.rig.engine.execlists().is_idle() {
+            "A"
+        } else if !crate::uapi::calls_sync::seqno_behind(hwq, exp) {
+            "E"
+        } else if head & 0x1f_fffc == tail & 0x1f_fffc {
+            "B"
+        } else {
+            "C"
+        };
         emit(
             hw.log,
             format_args!(
-                "[I915-STALL n={} wait={} inflight={} gates={} hold={} reqs={} exec_idle={} exp={} hw={} head={:#x} tail={:#x} ctl={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
-                n, kind, self.inflight.len(), self.gates.len(), self.rig.hold as u8, self.rig.engine.requests().len(), self.rig.engine.execlists().is_idle() as u8, exp, hwq, head, tail, ctl, xlo, xhi, csb, eir, isr0
+                "[I915-STALL stage={} n={} wait={} inflight={} gates={} hold={} reqs={} exec_idle={} exp={} hw={} head={:#x} tail={:#x} ctl={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
+                stage, n, kind, self.inflight.len(), self.gates.len(), self.rig.hold as u8, self.rig.engine.requests().len(), self.rig.engine.execlists().is_idle() as u8, exp, hwq, head, tail, ctl, xlo, xhi, csb, eir, isr0
             ),
         );
     }
+}
+
+/// Is the GPU's seqno `hw` still short of the one expected (`exp`), by the wrapping comparison the engine uses?
+pub(crate) fn seqno_behind(hw: u32, exp: u32) -> bool {
+    (hw.wrapping_sub(exp) as i32) < 0
 }

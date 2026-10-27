@@ -32,65 +32,47 @@ pub struct BindReport {
     pub retire_waits: u32,
 }
 
-/// What [`Executor::force_gpu_uncached`] found and left: the 64-bit PAT before and after, as the two registers read them, and the first MOCS
-/// entries and the LNCF MOCS the firmware left (entries 0..3 of `GEN9_GFX_MOCS`, `GEN9_LNCFCMOCS(0)`): a MOCS entry whose LLC cacheability is
-/// WB overrides the PTE and would put a GPU-written surface in the LLC where a write-combining CPU mapping does not look.
+/// What [`Executor::capture_cache_state`] read: the private PAT as the two registers hold it, the first MOCS entries and the LNCF MOCS
+/// (entries 0..3 of `GEN9_GFX_MOCS`, `GEN9_LNCFCMOCS(0)`). Nothing is written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PpatReport {
-    pub before: (u32, u32),
-    pub wrote: (u32, u32),
-    pub after: (u32, u32),
+    pub pat: (u32, u32),
     pub mocs: [u32; 4],
     pub lncf: u32,
 }
 
-impl PpatReport {
-    /// Did both registers read back what was written?
-    pub fn holds(&self) -> bool {
-        self.wrote == self.after
-    }
-}
-
-/// `GEN9_GFX_MOCS(0)` (gt/intel_gt_regs.h): the 62-entry table base; read-only here.
+/// `GEN9_GFX_MOCS(0)` (gt/intel_gt_regs.h): the 62-entry table base.
 const GEN9_GFX_MOCS_0: u32 = 0xc800;
-/// `GEN9_LNCFCMOCS(0)` (gt/intel_gt_regs.h): the L3 (LNCF) MOCS table base; read-only here.
+/// `GEN9_LNCFCMOCS(0)` (gt/intel_gt_regs.h): the L3 (LNCF) MOCS table base.
 const GEN9_LNCFCMOCS_0: u32 = 0xb020;
 
 impl<B: Mmio> Executor<B> {
-    /// Make the GPU's view of memory UNCACHED, which is what this device's memory model says it is (`exec::dma::BO_COHERENCE`: the GPU does not
-    /// snoop, every page is write-combining to the CPU): all eight private-PAT entries are written UC (0). Whatever the firmware left there
-    /// (Linux's `bdw_setup_private_ppat` table, gt/intel_gtt.c:611, makes a PTE written as write-back LLC-cacheable really cache in the LLC)
-    /// would let a GPU-written surface or a status-page seqno sit in the LLC while the CPU reads DRAM through a WC mapping, and the display
-    /// engine, which does not snoop the LLC, scan stale cachelines. Read before and after, with the MOCS entries that could still override the
-    /// PTE; `[I915-PAT ...]` carries all of it.
-    pub fn force_gpu_uncached<L: Log>(&mut self, log: &mut L) -> Result<PpatReport, ExecError> {
+    /// READ the cache configuration the firmware left: the private PAT every PTE's cache bits select an entry of, and the MOCS entries that
+    /// can override a PTE (iris on Gen9 asks MOCS 1 = LeCC from the PTE for external BOs and MOCS 2 = LeCC write-back for the rest). This driver
+    /// programs neither (`bdw_setup_private_ppat` / `skl_mocs_table` have no planner and no allow-list row), while it maps every page write-
+    /// combining for the CPU: if the table holds write-back LLC entries a GPU-written line can sit in the LLC where neither a WC CPU read nor
+    /// the non-snooping display looks. The marker is the evidence the next boot needs before any write is designed.
+    pub fn capture_cache_state<L: Log>(&mut self, log: &mut L) -> Result<PpatReport, ExecError> {
         use i915_common_core::Reg;
         use i915_gt_regs_core::{GEN8_PRIVATE_PAT_HI, GEN8_PRIVATE_PAT_LO};
-        let want = (0u32, 0u32);
         let mocs_regs = [Reg::new(GEN9_GFX_MOCS_0), Reg::new(GEN9_GFX_MOCS_0 + 4), Reg::new(GEN9_GFX_MOCS_0 + 8), Reg::new(GEN9_GFX_MOCS_0 + 12)];
         let lncf = Reg::new(GEN9_LNCFCMOCS_0);
         let d = self.domains_for([GEN8_PRIVATE_PAT_LO, GEN8_PRIVATE_PAT_HI, mocs_regs[0], lncf]);
-        let rep = self.step(log, StepId::PPAT_SETUP, "PPAT-SETUP", |ex, _| {
+        let rep = self.step(log, StepId::PPAT_SETUP, "CACHE-STATE", |ex, _| {
             ex.awake(d, |ex| {
-                let before = (ex.rd(GEN8_PRIVATE_PAT_LO)?, ex.rd(GEN8_PRIVATE_PAT_HI)?);
-                if before != want {
-                    ex.wr(GEN8_PRIVATE_PAT_LO, want.0)?;
-                    ex.wr(GEN8_PRIVATE_PAT_HI, want.1)?;
-                }
-                let after = (ex.rd(GEN8_PRIVATE_PAT_LO)?, ex.rd(GEN8_PRIVATE_PAT_HI)?);
+                let pat = (ex.rd(GEN8_PRIVATE_PAT_LO)?, ex.rd(GEN8_PRIVATE_PAT_HI)?);
                 let mut mocs = [0u32; 4];
                 for (m, r) in mocs.iter_mut().zip(mocs_regs) {
                     *m = ex.rd(r).unwrap_or(0xdead_dead);
                 }
-                Ok(PpatReport { before, wrote: want, after, mocs, lncf: ex.rd(lncf).unwrap_or(0xdead_dead) })
+                Ok(PpatReport { pat, mocs, lncf: ex.rd(lncf).unwrap_or(0xdead_dead) })
             })
         })?;
         emit(
             log,
             format_args!(
-                "[I915-PAT before={:#010x}:{:#010x} forced_uc={} after={:#010x}:{:#010x} readback={} mocs0..3={:#x},{:#x},{:#x},{:#x} lncf0={:#x}]",
-                rep.before.1, rep.before.0, (rep.before != rep.wrote) as u8, rep.after.1, rep.after.0, if rep.holds() { "ok" } else { "MISMATCH" },
-                rep.mocs[0], rep.mocs[1], rep.mocs[2], rep.mocs[3], rep.lncf
+                "[I915-PAT pat={:#010x}:{:#010x} mocs0..3={:#x},{:#x},{:#x},{:#x} lncf0={:#x} written=none]",
+                rep.pat.1, rep.pat.0, rep.mocs[0], rep.mocs[1], rep.mocs[2], rep.mocs[3], rep.lncf
             ),
         );
         Ok(rep)
