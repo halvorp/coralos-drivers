@@ -223,6 +223,10 @@ impl UapiService {
                         emit(hw.log, format_args!("[I915-PRESENT arm refused seq={:?} name={}] - nothing on the glass changed", seq, e.name()));
                         return;
                     }
+                    // the arm of the FIRST flip is the line that says the register write went through; later ones are the cadence's business
+                    if rec.pair.status().latched_seq == 0 {
+                        emit(hw.log, format_args!("[I915-PRESENT armed first flip image={} latch_reg={:#x}] - the latch is read next", img.key, rec.pair.latch_reg().unwrap_or(0)));
+                    }
                 }
             }
         }
