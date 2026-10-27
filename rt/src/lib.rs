@@ -67,6 +67,7 @@ pub mod nr {
     pub const MMAP: u64 = 25;
     pub const PORT_IO: u64 = 52;
     pub const WAIT_ANY_IRQ: u64 = 80;
+    pub const WAIT_ANY_SET: u64 = 117;
     pub const SESSION_RELEASE: u64 = 100;
     pub const MMIO_LEN: u64 = 90;
     pub const DMA_ALLOC_TYPED: u64 = 103;
@@ -179,6 +180,11 @@ pub const NO_IRQ: u32 = u32::MAX;
 /// `NO_IRQ`, and 0 passed through would be a line the task does not hold.
 pub const fn irq_arg(irq: u32) -> u64 {
     if irq == 0 { NO_IRQ as u64 } else { irq as u64 }
+}
+/// Wait for any endpoint in a set of any width (`words`, ep `e` at bit `e % 64` of word `e / 64`), or `irq` (`NO_IRQ` = none), or the
+/// bound (0 = none): a ready ep or a WAIT_* word. The same answer words as [`wait_any_irq`], for session endpoints past 127.
+pub fn wait_any_set(words: &[u64], timeout_ms: u64, irq: u32) -> u64 {
+    unsafe { sc(nr::WAIT_ANY_SET, words.as_ptr() as u64, words.len() as u64, timeout_ms, irq_arg(irq)) }
 }
 /// Map the device window granted in `slot`: its VA, or 0.
 pub fn mmio_map(slot: u32) -> u64 {

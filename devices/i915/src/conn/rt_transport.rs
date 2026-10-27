@@ -7,7 +7,7 @@
 //! deadline. Nothing here polls. A dead client's request endpoint reads READY forever until [`Transport::release`] gives the pair back.
 use super::transport::{Accepted, ConnId, Peer, Recv, SendOutcome, Transport, Wake};
 use alloc::vec::Vec;
-use coralos_rt::session::{decode_announce, ep_set, ANNOUNCE_LEN};
+use coralos_rt::session::{decode_announce, ep_words, ANNOUNCE_LEN, EP_WORDS};
 use coralos_rt::word::{PEER_DEAD, SEND_OK, SEND_RING_FULL, WAIT_IRQ_DENIED, WAIT_IRQ_FIRED, WAIT_TIMEOUT};
 
 struct Row {
@@ -62,10 +62,10 @@ impl Transport for RtTransport {
         let listen = accept.then_some(self.listen);
         let display = if accept { self.display } else { None };
         // every endpoint was checked to fit the wait set when its announce was accepted, so this cannot name a wrapped endpoint
-        let (lo, hi) = ep_set(listen.into_iter().chain(display).chain(self.rows.iter().filter(|r| !r.held).map(|r| r.req))).unwrap_or((0, 0));
+        let words = ep_words(listen.into_iter().chain(display).chain(self.rows.iter().filter(|r| !r.held).map(|r| r.req))).unwrap_or([0; EP_WORDS]);
         let now = coralos_rt::ticks();
         let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
-        match coralos_rt::wait_any_irq(lo, hi, timeout, self.irq.unwrap_or(0)) {
+        match coralos_rt::wait_any_set(&words, timeout, self.irq.unwrap_or(coralos_rt::NO_IRQ)) {
             WAIT_TIMEOUT => Wake::Deadline,
             WAIT_IRQ_FIRED => Wake::Interrupt,
             WAIT_IRQ_DENIED => {
@@ -102,7 +102,7 @@ impl Transport for RtTransport {
         let Some(a) = decode_announce(&buf[..n as usize]) else {
             return Accepted::Refused("ANNOUNCE-MALFORMED");
         };
-        if ep_set([a.req]).is_err() {
+        if ep_words([a.req]).is_err() {
             // a request endpoint the wait cannot name could never be served: give the pair back
             coralos_rt::session_release(a.req, a.evt);
             return Accepted::Refused("SESSION-EP-OUT-OF-WAIT-SET");

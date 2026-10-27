@@ -61,3 +61,21 @@ pub fn ep_set(eps: impl IntoIterator<Item = u16>) -> Result<(u64, u64), u16> {
     }
     Ok((lo, hi))
 }
+
+/// Words of the wide wait set: the kernel's `EP_WORDS` (435 endpoints -> 7 words) with headroom; words past the kernel's width are not read.
+pub const EP_WORDS: usize = 8;
+
+/// The wait set of `eps` as `EP_WORDS` words for `WAIT_ANY_SET`, ep `e` at bit `e % 64` of word `e / 64`. Session endpoints are minted
+/// from a pool that grows past 127 once a desktop's services have connected (the GPU's display session was refused
+/// at req>=128 by the 128-bit set), so a server waits with THIS, not [`ep_set`]. `Err(ep)` names the first endpoint past the width.
+pub fn ep_words(eps: impl IntoIterator<Item = u16>) -> Result<[u64; EP_WORDS], u16> {
+    let mut w = [0u64; EP_WORDS];
+    for ep in eps {
+        let i = (ep / 64) as usize;
+        if i >= EP_WORDS {
+            return Err(ep);
+        }
+        w[i] |= 1u64 << (ep % 64);
+    }
+    Ok(w)
+}

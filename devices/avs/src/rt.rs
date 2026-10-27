@@ -21,7 +21,7 @@ use avs_wire::board::Board;
 use coralos_hal::{Coherence, Dma, DmaRefusal, DmaRegion, Irq};
 use coralos_rt::mmio::{Kernel, MmioError, ReadWindow, WriteRange, WriteWindow};
 use coralos_rt::word::{PEER_DEAD, SEND_OK, SEND_RING_FULL, WAIT_IRQ_DENIED, WAIT_IRQ_FIRED, WAIT_TIMEOUT};
-use coralos_rt::session::{decode_announce, ep_set, is_tombstone};
+use coralos_rt::session::{decode_announce, ep_words, is_tombstone, EP_WORDS};
 use coralos_rt::{RtDma, RtIrq};
 
 /// The span of each window the device reads: the HD-audio header and the capability chain are found by discovery; the DSP window needs its
@@ -274,14 +274,14 @@ impl Machine for RtMachine {
         if want.jack {
             add(AVS_JACK);
         }
-        // endpoints past the 128-endpoint wait set cannot be named (a shift past 63 would wait on a different one): refused by leaving them out
-        let (lo, hi) = ep_set(eps[..n].iter().copied()).unwrap_or((0, 0));
+        // the wide set names every pool endpoint (a session req is minted past 127 on a full desktop); only an id past the pool is left out
+        let words = ep_words(eps[..n].iter().copied()).unwrap_or([0; EP_WORDS]);
         let now = coralos_rt::ticks();
         let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
-        let irq = if want.avs_irq && !self.irq_denied { self.irq.as_ref().map_or(0, |i| i.line) } else { 0 };
+        let irq = if want.avs_irq && !self.irq_denied { self.irq.as_ref().map_or(coralos_rt::NO_IRQ, |i| i.line) } else { coralos_rt::NO_IRQ };
         // an empty wait set with no bound can never be woken and the kernel answers it at once: a loop that asked would spin, so it parks a second
-        let timeout = if (lo, hi, irq, timeout) == (0, 0, 0, 0) { 1000 } else { timeout };
-        match coralos_rt::wait_any_irq(lo, hi, timeout, irq) {
+        let timeout = if words == [0; EP_WORDS] && irq == coralos_rt::NO_IRQ && timeout == 0 { 1000 } else { timeout };
+        match coralos_rt::wait_any_set(&words, timeout, irq) {
             WAIT_TIMEOUT => Wake::Deadline,
             WAIT_IRQ_FIRED => Wake::AvsIrq,
             WAIT_IRQ_DENIED => {

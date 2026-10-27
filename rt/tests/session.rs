@@ -46,3 +46,12 @@ fn the_wait_set_puts_each_endpoint_in_its_own_bit_and_refuses_what_does_not_fit(
     assert_eq!(ep_set([200]), Err(200));
     assert_eq!(WAIT_SET_EPS, 128);
 }
+
+#[test]
+fn the_wide_wait_set_names_session_endpoints_past_127() {
+    use coralos_rt::session::{ep_words, EP_WORDS};
+    assert_eq!(ep_words([]), Ok([0; EP_WORDS]));
+    let w = ep_words([3, 128, 434]).unwrap();
+    assert_eq!((w[0], w[2], w[6]), (1 << 3, 1, 1 << (434 - 384)));
+    assert_eq!(ep_words([512]), Err(512));
+}
