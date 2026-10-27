@@ -228,6 +228,9 @@ impl UapiService {
                     i += 1;
                 }
                 Some((status, errno, body)) => {
+                    if errno == i915_wire::errno::ETIME {
+                        self.stall_snapshot(hw, &w);
+                    }
                     let mut payload = [0u8; 32];
                     let mut wr = i915_wire::codec::Writer::new(&mut payload);
                     let n = msg::encode_reply_head(&mut wr, status, -errno).and_then(|()| wr.bytes(&body.0[..body.1])).map(|()| wr.pos());
@@ -303,5 +306,44 @@ impl UapiService {
                 Err(e) => fail(e.errno()),
             },
         }
+    }
+}
+
+impl UapiService {
+    /// A parked wait ran to its timeout: say WHERE the render engine is, once per power of two. The line separates the stages a
+    /// completion can be lost at: nothing was ever submitted (`reqs=0 inflight=0`), a request sits behind a fence that never signals
+    /// (`gates`/`hold`), the ELSP was never acknowledged (`xlo` idle with `tail != head`), the batch never finished (`head` short of `tail`;
+    /// the GPU's seqno `hw` short of `exp`), or it finished and the CPU did not see it (`hw` at or past `exp` while the fence is pending).
+    /// `csb` is RING_CONTEXT_STATUS_PTR (write pointer in bits 8..11, read in 0..3); `isr0` the GT interrupt status the user interrupt would set.
+    fn stall_snapshot<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, w: &Waiter) {
+        self.stall_dumps = self.stall_dumps.saturating_add(1);
+        let n = self.stall_dumps;
+        if !n.is_power_of_two() {
+            return;
+        }
+        use i915_gt_regs_core as r;
+        let base = r::RENDER_RING_BASE;
+        let mut rd = |reg| hw.ex.rd(reg).unwrap_or(0xdead_dead);
+        let (head, tail, ctl) = (rd(r::ring_head(base)), rd(r::ring_tail(base)), rd(r::ring_ctl(base)));
+        let (xlo, xhi, csb) = (rd(r::ring_execlist_status_lo(base)), rd(r::ring_execlist_status_hi(base)), rd(r::ring_context_status_ptr(base)));
+        let (eir, isr0) = (rd(r::ring_eir(base)), rd(r::gen8_gt_isr(0)));
+        let (exp, hwq) = match self.inflight.first() {
+            Some(f) => (f.seqno, self.rig.engine.hw_seqno(f.ectx).unwrap_or(0)),
+            None => (0, 0),
+        };
+        let kind = match &w.kind {
+            WaitKind::Gem { .. } => "gem",
+            WaitKind::Syncobj { .. } => "syncobj",
+            WaitKind::SyncFile { .. } => "sync-file",
+            #[cfg(feature = "p4-present")]
+            WaitKind::Scanout { .. } => "scanout",
+        };
+        emit(
+            hw.log,
+            format_args!(
+                "[I915-STALL n={} wait={} inflight={} gates={} hold={} reqs={} exec_idle={} exp={} hw={} head={:#x} tail={:#x} ctl={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
+                n, kind, self.inflight.len(), self.gates.len(), self.rig.hold as u8, self.rig.engine.requests().len(), self.rig.engine.execlists().is_idle() as u8, exp, hwq, head, tail, ctl, xlo, xhi, csb, eir, isr0
+            ),
+        );
     }
 }

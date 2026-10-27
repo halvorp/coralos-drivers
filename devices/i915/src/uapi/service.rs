@@ -176,6 +176,8 @@ pub struct UapiService {
     pub(crate) hwctx: Vec<HwCtx>,
     pub(crate) vms: Vec<VmRec>,
     pub(crate) inflight: Vec<Inflight>,
+    /// Stall snapshots printed so far (the cadence is powers of two: the first, second, fourth ... never a line per timeout).
+    pub(crate) stall_dumps: u32,
     pub(crate) gates: Vec<Gate>,
     pub(crate) waiters: Vec<Waiter>,
     pub(crate) ready: Vec<Vec<u8>>,
@@ -210,6 +212,11 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
         emit(hw.log, format_args!("[I915-GGTT kept={} start={:#x} size={:#x} - not written, never bound over]", k.what, k.start, k.size));
     }
     hw.ex.run_bind_step(hw.log, hw.gm, &create, true, &mut |_| true)?;
+    // the PAT first: every PTE below (status page, rings, contexts, every object) selects an entry of it, and the GPU must not cache what the
+    // CPU maps write-combining
+    if dev.gen() >= 9 {
+        hw.ex.force_gpu_uncached(hw.log)?;
+    }
     let hwsp = hw.gm.alloc.alloc_hwsp()?;
     let hwsp_ggtt = bind_ggtt_grant(hw, &mut ggtt, &hwsp)?.0;
     let ecfg = EngineConfig { status_page_ggtt: hwsp_ggtt, quirks: cfg.quirks, wa_ctx: None, stall_bound: cfg.stall_bound_ms };
@@ -265,6 +272,7 @@ impl UapiService {
             hwctx: Vec::new(),
             vms: Vec::new(),
             inflight: Vec::new(),
+            stall_dumps: 0,
             gates: Vec::new(),
             waiters: Vec::new(),
             ready: Vec::new(),

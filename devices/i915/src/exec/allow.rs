@@ -60,9 +60,12 @@ pub const P2_MEMORY_REGS: [Reg; 1] = [r::GFX_FLSH_CNTL_GEN6];
 ///  * `execlists::elsp_writes` - `RING_ELSP(RCS0)` (gt/intel_execlists_submission.c:723-732, :905-939);
 ///  * `execlists::plan_enable_execlists` - `RING_HWSTAM`, `RING_MODE_GEN7`, `RING_MI_MODE`, `RING_HWS_PGA` of RCS0 (:2928-2950);
 ///  * `execlists::plan_reset_csb_pointers` - `RING_CONTEXT_STATUS_PTR(RCS0)` (:2804-2844);
+///  * `Executor::force_gpu_uncached` - `GEN8_PRIVATE_PAT_LO/HI` (cf. `bdw_setup_private_ppat`, gt/intel_gtt.c:611): the PAT every PTE selects an entry of, all entries UC;
 ///  * `reset::ResetPlanner` - `RING_RESET_CTL` of every engine of the GT (a full reset prepares all of them, gt/intel_reset.c:560-606)
 ///    and `GEN6_GDRST` (:266-316).
-pub const P3_EXEC_REGS: [Reg; 11] = [
+pub const P3_EXEC_REGS: [Reg; 13] = [
+    r::GEN8_PRIVATE_PAT_LO,
+    r::GEN8_PRIVATE_PAT_HI,
     r::ring_elsp(r::RENDER_RING_BASE),
     r::ring_hwstam(r::RENDER_RING_BASE),
     r::ring_mode_gen7(r::RENDER_RING_BASE),

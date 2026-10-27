@@ -56,6 +56,8 @@ fn p3_adds_exactly_the_execlist_and_reset_registers() {
     let mut want = FORCEWAKE_SET.to_vec();
     want.push(0x101008);
     want.extend([
+        0x40e0,   // GEN8_PRIVATE_PAT_LO, intel_gt_regs.h:336 (bdw_setup_private_ppat)
+        0x40e4,   // GEN8_PRIVATE_PAT_HI
         0x2230,   // RING_ELSP(RENDER_RING_BASE 0x2000), intel_engine_regs.h:134 (+0x230)
         0x2098,   // RING_HWSTAM
         0x229c,   // RING_MODE
@@ -131,6 +133,8 @@ mod planner_write_sets {
                 writes.push(w.reg);
             }
         }
+        // P3: the private PAT (Executor::force_gpu_uncached writes exactly these two)
+        writes.extend([i915_gt_regs_core::GEN8_PRIVATE_PAT_LO, i915_gt_regs_core::GEN8_PRIVATE_PAT_HI]);
         // P3: the reset planner, both scopes
         writes.extend(reset_writes(ResetScope::Engines, &[rcs]));
         writes.extend(reset_writes(ResetScope::AllEngines, engines.as_slice()));
@@ -161,7 +165,7 @@ fn p4_flip_writes() -> Vec<i915_common_core::Reg> {
 fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     let mut want = FORCEWAKE_SET.to_vec();
     want.push(0x101008);
-    want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
+    want.extend([0x40e0, 0x40e4, 0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
     want.push(0x7019c); // PLANE_SURF(PIPE_A, PLANE_1), skl_universal_plane_regs.h:153
     want.sort();
     assert_eq!(offsets(&ALLOW), want);

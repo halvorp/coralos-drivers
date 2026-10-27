@@ -25,6 +25,7 @@ impl StepId {
     pub const GGTT_BIND: StepId = StepId(0x2001);
     pub const PPGTT_BIND: StepId = StepId(0x2002);
     pub const MEMORY_QUALIFY: StepId = StepId(0x2003);
+    pub const PPAT_SETUP: StepId = StepId(0x2004);
     pub const ENGINE_ENABLE: StepId = StepId(0x3001);
     pub const CSB_RESET: StepId = StepId(0x3002);
     pub const ELSP_SUBMIT: StepId = StepId(0x3003);
