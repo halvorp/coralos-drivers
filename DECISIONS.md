@@ -259,3 +259,17 @@ the keys it is handed (`ieee80211_key_link`, iwlwifi `iwl_mvm_set_sta_key` / `AD
 crates that link them (`iwlwifi-device`) stay GPL, and the coralos closed tree still does not link either. Departures from the OpenBSD code are listed in
 `wpa-supplicant-core`'s crate docs and each is pinned by a test. Linux stays the authority for everything iwlwifi: `iwlwifi-mvm-sta-key-core` and
 `iwlwifi-mvm-join-core` are `GPL-2.0-only` ports of Linux `mvm/` and `fw/api/`, with OpenBSD `if_iwm.c` as the sequencing oracle for the same firmware.
+
+**D21 - The adopted eDP pipe's LOGICAL scanout size is a FASTSET, not a modeset; default panel / 1.5, never below the firmware's size (2026-10-29).**
+Linux `intel_pipe_config_compare()` compares `pipe_src`, `pch_pfit.enabled`, `pch_pfit.dst`, `scaler_state.scaler_id` and `pixel_rate` only `if (!fastset)`
+(intel_display.c:5356-5363), and `intel_pipe_fastset()` (:6638-6683) rewrites PIPESRC and calls `skl_pfit_enable()` on the live pipe; only
+`pch_pfit.force_thru` (the eDP input mux, A_ON vs A_ONOFF, :5350-5354) forces a modeset. So on a pipe whose firmware already left the pipe fitter on (the
+Pixelbook Go: 1920x1080 fitted onto 3840x2160) a different pipe source is the fastset: PIPESRC, `skl_pfit_enable`'s PS_CTRL / PS_VPHASE / PS_HPHASE / PS_WIN_POS
+/ PS_WIN_SZ, the plane's STRIDE / POS / SIZE and watermarks, PLANE_SURF last, inside one vblank-evasion window (`intel_vblank_evade`). An UPSCALE keeps the pipe
+pixel rate (`intel_adjusted_rate`), hence CDCLK and the line-time watermark; a downscale, or a fitter that is off on an eDP transcoder, is refused by name.
+`i915-display-modeset-core::resize` plans it; the watermarks are a BOUND from the firmware's levels (no PCU latency read yet), tested never below the Rust
+port of `skl_compute_wm_levels`. `i915.device` resolves the host's `LogicalSize` policy once at assembly (`service_with_display`; `service_with` keeps the firmware's size, so a host whose
+compositor still sizes itself from the firmware framebuffer is never offered another),
+offers that size on `DISPLAY-QUERY` / `DISPLAY-SET-MODE` / `SCANOUT-ACQUIRE`, makes the pair at it, writes the fastset with the first flip off the firmware's
+framebuffer and the firmware's own values back with the restore. The write set (`resize::RESIZE_WRITE_ALLOWLIST`, pipe A / plane 1, as the adoption's flip) is
+part of `p4-present`. Markers: `[I915-SCANOUT-SIZE planned|... ok|REFUSED why=...]`.

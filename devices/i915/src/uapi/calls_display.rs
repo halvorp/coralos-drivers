@@ -8,7 +8,7 @@ use crate::display::answer::NOT_AUTHORIZED;
 use crate::exec::dma::CpuMem;
 use crate::log::{emit, Log};
 use coralos_hal::{Dma, Mmio};
-use i915_display_modeset_core::initial::OfferedMode;
+use i915_display_modeset_core::initial::{ModeNotAdopted, OfferedMode};
 use i915_wire::msg::display::DisplayModeReq;
 use i915_wire::msg::{self, Body};
 use i915_wire::{errno, Header, Opcode, Status};
@@ -21,9 +21,10 @@ impl UapiService {
         match h.opcode {
             Opcode::DisplaySetMode => {
                 let r = DisplayModeReq::from_payload(p)?;
-                let a = self.display.adopted().ok_or(Fail::new(errno::ENODEV, "DISPLAY-NOT-ADOPTED"))?;
+                let offered = self.offered_mode().ok_or(Fail::new(errno::ENODEV, "DISPLAY-NOT-ADOPTED"))?;
                 let asked = OfferedMode { width: r.width, height: r.height, refresh_millihz: r.refresh_millihz };
-                if let Err(e) = a.check_mode(asked) {
+                if asked != offered {
+                    let e = ModeNotAdopted { asked, adopted: offered };
                     emit(hw.log, format_args!("[I915-DISPLAY mode refused name={} asked={}x{}@{} adopted={}x{}@{}]", e.name(), asked.width, asked.height, asked.refresh_millihz, e.adopted.width, e.adopted.height, e.adopted.refresh_millihz));
                     return Err(Fail::new(errno::EINVAL, e.name()));
                 }

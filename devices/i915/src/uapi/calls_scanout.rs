@@ -14,6 +14,9 @@
 //!    idle).
 //!  * SCANOUT-WAIT: answered at once when the present is latched (or its latch timed out: `-EIO`), else parked like GEM-WAIT.
 //!  * EXECBUFFER2 that WRITES an image the authority has not begun is `-EBUSY SCANOUT-REUSE-VIOLATION` ([`UapiService::check_scanout_writes`]).
+//!  * THE LOGICAL SIZE (`display::size`): with a planned fastset the images are made at the logical size, and the flip off the firmware's
+//!    framebuffer (and the restore back onto it) is the whole geometry burst, written once PIPEDSL is outside the vblank-evasion window
+//!    ([`evade`], `intel_vblank_evade`) so the pipe source, the scaler and the plane latch on one vblank.
 use super::fail::Fail;
 use super::service::{Done, Hw, UapiService, WaitKind};
 use crate::display::scanout::{ImageState, LatchStep, Released, ScanoutError, ScanoutPair, SeqState};
@@ -22,6 +25,8 @@ use crate::log::{emit, Log};
 use alloc::vec::Vec;
 use coralos_hal::{Dma, Mmio};
 use i915_display_modeset_core::adopt::surf_alignment;
+use i915_display_modeset_core::resize::VblankEvade;
+use i915_kbl_display_core::types::Pipe;
 use i915_gem_core::{ObjId, SessionId};
 use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, VmaId};
 use i915_wire::msg::display::{ScanoutAcquireRep, ScanoutBeginReq, ScanoutPresentRep, ScanoutPresentReq, ScanoutStatusRep, ScanoutWaitReq};
@@ -112,7 +117,8 @@ impl UapiService {
             return Ok(acquire_rep(&rec.pair, &a, rec.size));
         }
         let fw = self.firmware.ok_or(Fail::new(errno::ENODEV, "DISPLAY-NO-FIRMWARE-SCANOUT"))?;
-        let size = a.fb.size.div_ceil(4096) * 4096;
+        let resize = self.resize.clone();
+        let size = resize.as_ref().map_or(a.fb.size, |r| r.fb_size).div_ceil(4096) * 4096;
         let align = surf_alignment(a.fb.tiling) as u64;
         let mut made: Vec<(u32, ObjId, u32, VmaId)> = Vec::new();
         made.try_reserve_exact(2).map_err(|_| Fail::oom("scanout-pair"))?;
@@ -129,10 +135,11 @@ impl UapiService {
             }
         }
         let img = |m: &(u32, ObjId, u32, VmaId)| (m.0, m.1 .0, m.2);
-        let pair = ScanoutPair::new(inc, fw, &a, [img(&made[0]), img(&made[1])]);
+        let pair = ScanoutPair::with_resize(inc, fw, &a, [img(&made[0]), img(&made[1])], resize);
+        let (w, h, stride) = geometry_of(&pair, &a);
         emit(hw.log, format_args!(
             "[I915-SCANOUT pair acquired inc={} handles={},{} ggtt={:#x},{:#x} size={:#x} {}x{} stride={} align={:#x} caching=none]",
-            inc, made[0].0, made[1].0, made[0].2, made[1].2, size, a.fb.width, a.fb.height, a.fb.stride, align));
+            inc, made[0].0, made[1].0, made[0].2, made[1].2, size, w, h, stride, align));
         let rep = acquire_rep(&pair, &a, size);
         self.scanout = Some(PairRec { pair, objs: [made[0].1, made[1].1], size });
         Ok(rep)
@@ -206,6 +213,9 @@ impl UapiService {
         let Some(rec) = self.scanout.as_mut() else { return };
         match rec.pair.ready_to_restore() {
             Some(Ok(plan)) => {
+                if let Some(e) = rec.pair.geometry_evade() {
+                    evade(hw, &e, rec.pair.resize().map_or(Pipe::A, |r| r.pipe));
+                }
                 if let Err(e) = hw.ex.run_link_effects(&plan.write) {
                     rec.pair.restore_failed();
                     emit(hw.log, format_args!("[I915-SCANOUT restore refused name={}] - the last image stays on the glass", e.name()));
@@ -218,7 +228,16 @@ impl UapiService {
         if let Some(img) = rec.pair.awaiting_gpu_image() {
             if !self.gem.object_busy(ObjId(img.key)) {
                 if let Some(plan) = rec.pair.ready_to_arm() {
+                    let geometry = rec.pair.flip_is_geometry();
+                    if let Some(e) = rec.pair.geometry_evade() {
+                        evade(hw, &e, rec.pair.resize().map_or(Pipe::A, |r| r.pipe));
+                    }
                     if let Err(e) = hw.ex.run_link_effects(&plan.write) {
+                        if geometry {
+                            // part of the burst may have landed: put every register of it back (the firmware's framebuffer is still live)
+                            let back = hw.ex.run_link_effects(&plan.rollback).map_or_else(|b| b.name(), |()| "ok");
+                            emit(hw.log, format_args!("[I915-SCANOUT-SIZE REFUSED why={} step=arm rollback={}] - the firmware's geometry is kept", e.name(), back));
+                        }
                         let seq = rec.pair.arm_failed();
                         emit(hw.log, format_args!("[I915-PRESENT arm refused seq={:?} name={}] - nothing on the glass changed", seq, e.name()));
                         return;
@@ -241,8 +260,14 @@ impl UapiService {
                 return;
             }
         };
+        let geometry = rec.pair.flip_is_geometry();
         match rec.pair.observe(v) {
             LatchStep::Latched { seq, released } => {
+                if geometry {
+                    if let Some(r) = rec.pair.resize() {
+                        crate::display::size::report_ok(hw.log, r);
+                    }
+                }
                 let what = match released {
                     Released::Firmware => "firmware",
                     Released::Image { .. } => "image",
@@ -297,9 +322,37 @@ impl UapiService {
     }
 }
 
+/// The pair's image geometry: the logical size when it was made for one, else the adopted framebuffer's.
+fn geometry_of(p: &ScanoutPair, a: &i915_display_modeset_core::initial::AdoptedDisplay) -> (u32, u32, u32) {
+    p.resize().map_or((a.fb.width, a.fb.height, a.fb.stride), |r| (r.logical_w, r.logical_h, r.stride))
+}
+
 fn acquire_rep(p: &ScanoutPair, a: &i915_display_modeset_core::initial::AdoptedDisplay, size: u64) -> ScanoutAcquireRep {
     let im = p.images();
-    ScanoutAcquireRep { handle0: im[0].handle, handle1: im[1].handle, width: a.fb.width, height: a.fb.height, stride: a.fb.stride, fourcc: a.fb.fourcc, modifier: a.fb.modifier, size }
+    let (width, height, stride) = geometry_of(p, a);
+    ScanoutAcquireRep { handle0: im[0].handle, handle1: im[1].handle, width, height, stride, fourcc: a.fb.fourcc, modifier: a.fb.modifier, size }
+}
+
+/// Bound of the PIPEDSL reads one evasion makes: the window is `resize::EVADE_US` long, so a read loop leaves it long before this;
+/// a pipe whose counter never moves (or a refused read) gives up, and - as `intel_vblank_evade` does on its timeout - writes anyway.
+const EVADE_MAX_READS: u32 = 100_000;
+
+/// `intel_vblank_evade()`: read PIPEDSL until the scanline is outside the evasion window, so the burst that follows latches on ONE
+/// vblank. Named when it gives up.
+fn evade<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D, M, L>, e: &VblankEvade, pipe: Pipe) {
+    let reg = i915_common_core::Reg::new(i915_kbl_display_core::regs_write::pipedsl(pipe));
+    let mut last = 0;
+    for _ in 0..EVADE_MAX_READS {
+        match hw.ex.rd(reg) {
+            Ok(v) if e.clear(v) => return,
+            Ok(v) => last = v,
+            Err(err) => {
+                emit(hw.log, format_args!("[I915-SCANOUT-SIZE evade read refused name={}] - written without evasion", err.name()));
+                return;
+            }
+        }
+    }
+    emit(hw.log, format_args!("[I915-SCANOUT-SIZE evade gave up reads={} scanline={} window={}..{}] - written anyway (intel_vblank_evade's timeout)", EVADE_MAX_READS, e.scanline(last), e.min, e.max));
 }
 
 /// Pin `pages` in the GGTT for the display: `size` bytes at `align`, inside the mappable aperture when it fits (PIN_MAPPABLE first,

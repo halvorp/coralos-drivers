@@ -76,10 +76,23 @@ pub const P3_EXEC_REGS: [Reg; 11] = [
     r::GEN6_GDRST,
 ];
 
-/// P4 (D18): the ONE register the scanout pair's flip writes - `PLANE_SURF` of the adopted plane, exactly the adoption planner's write
-/// set (`i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST`, `plan_surface_replacement`). No other display register is writable:
-/// the pipe, transcoder, link, clocks, scaler and watermarks stay as the firmware left them.
-pub const P4_PRESENT_REGS: [Reg; 1] = i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST;
+/// P4 (D18): what the scanout pair's flips write. Every flip between images is ONE register - `PLANE_SURF` of the adopted plane, the
+/// adoption planner's write set (`i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST`, `plan_surface_replacement`). The flip off
+/// the firmware's framebuffer onto a LOGICAL-size image (and the restore) is the fastset's write set
+/// (`i915_display_modeset_core::resize::RESIZE_WRITE_ALLOWLIST`): the pipe source, the pipe's scaler blocks, the plane's stride / pos /
+/// size and its watermark words. The transcoder, its timings, the link, the clocks and the DDB stay as the firmware left them.
+pub const P4_PRESENT_REGS: [Reg; 24] = {
+    let a = i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST;
+    let r = i915_display_modeset_core::resize::RESIZE_WRITE_ALLOWLIST;
+    let mut out = [Reg::new(0); 24];
+    out[0] = a[0];
+    let mut i = 0;
+    while i < r.len() {
+        out[1 + i] = r[i];
+        i += 1;
+    }
+    out
+};
 
 const fn on(b: bool, n: usize) -> usize {
     if b {

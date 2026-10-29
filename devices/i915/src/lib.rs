@@ -47,6 +47,8 @@ pub use startup::{bringup, startup, BringupError, Ready, StartError};
 #[cfg(target_arch = "x86_64")]
 pub use service::{on_panic, service};
 #[cfg(all(target_arch = "x86_64", feature = "p3-exec"))]
-pub use service::{service_with, UapiHost};
+pub use service::{service_with, service_with_display, UapiHost};
+/// The host's logical scanout size policy (`service_with_display`), re-exported so a wrapper needs no modeset-core dependency.
+pub use i915_display_modeset_core::resize::LogicalSize;
 #[cfg(target_arch = "x86_64")]
 pub use conn::RtTransport;
