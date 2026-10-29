@@ -629,8 +629,9 @@ fn the_i2c_fence_lets_an_armed_amplifier_be_written_only_where_the_plans_write()
             let w = a.check_msg(addr, &[hi_lo[0], hi_lo[1], 0x5A], 0).is_ok();
             let r = a.check_msg(addr, &hi_lo, 1).is_ok();
             assert_eq!(w, WRITTEN.contains(&reg), "write {reg:#06x}");
-            // reads: the write set, the revision, and the nine interrupt/fault banks (max98373.h:8-16) the +100 ms / +1 s probes read
-            assert_eq!(r, WRITTEN.contains(&reg) || reg == 0x21FF || (0x2001..=0x2009).contains(&reg), "read {reg:#06x}");
+            // reads: the write set, the revision, the nine interrupt/fault banks (max98373.h:8-16) the +100 ms / +1 s probes read, and the
+            // tone generator (max98373.h:54) the bring-up PATH line reads
+            assert_eq!(r, WRITTEN.contains(&reg) || reg == 0x21FF || (0x2001..=0x2009).contains(&reg) || reg == 0x2040, "read {reg:#06x}");
         }
         // shapes: a one-register write or a one-register read, nothing else
         assert!(a.check_msg(addr, &[0x20, 0xFF], 0).is_err());

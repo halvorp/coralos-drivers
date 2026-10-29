@@ -728,7 +728,8 @@ impl<M: Machine> Device<M> {
             }
         }
         if self.dsp.as_ref().is_some_and(|d| now >= d.last_period_ms + WATCHDOG_MS) {
-            self.fault("period-timeout", 0);
+            let (step, detail) = self.dsp.as_ref().map_or(("period-timeout", 0), |d| d.stall_name(&mut self.rig));
+            self.fault(step, detail);
         }
     }
 
@@ -762,8 +763,8 @@ impl<M: Machine> Device<M> {
         emit(
             &mut self.rig.m,
             format_args!(
-                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} poll={} lost={}]",
-                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, self.rig.irq_poll, self.rig.lost_irqs
+                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} lpib_periods={} poll={} lost={}]",
+                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, dsp.lpib_periods, self.rig.irq_poll, self.rig.lost_irqs
             ),
         );
         if dsp.out == Output::Speakers {

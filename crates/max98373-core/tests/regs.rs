@@ -16,6 +16,7 @@ fn the_registers_are_the_header_s() {
         ("R2007_INT_FLAG1", regs::R2007_INT_FLAG1, 0x2007),
         ("R2008_INT_FLAG2", regs::R2008_INT_FLAG2, 0x2008),
         ("R2009_INT_FLAG3", regs::R2009_INT_FLAG3, 0x2009),
+        ("R2040_TONE_GEN_CFG", regs::R2040_TONE_GEN_CFG, 0x2040),
         ("R2020_PCM_TX_HIZ_EN_1", regs::R2020_PCM_TX_HIZ_EN_1, 0x2020),
         ("R2021_PCM_TX_HIZ_EN_2", regs::R2021_PCM_TX_HIZ_EN_2, 0x2021),
         ("R2022_PCM_TX_SRC_1", regs::R2022_PCM_TX_SRC_1, 0x2022),
@@ -157,4 +158,12 @@ fn the_status_readback_is_the_nine_interrupt_banks_and_none_is_written() {
     for r in regs::STATUS_READBACK {
         assert!(!written.contains(&r), "{r:#06x} is a status register and must never be written");
     }
+}
+
+#[test]
+fn the_bringup_readback_is_format_clock_volume_gain_and_the_tone_generator() {
+    // max98373.h:34, :36, :51, :52, :54, typed by hand
+    assert_eq!(regs::BRINGUP_READBACK, [0x2024, 0x2026, 0x203D, 0x203E, 0x2040]);
+    let written = max98373_core::plan::written_registers(&max98373_core::plan::ATLAS_AMPS).unwrap();
+    assert!(!written.contains(&regs::R2040_TONE_GEN_CFG), "the tone generator is read, never written");
 }

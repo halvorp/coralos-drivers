@@ -28,6 +28,7 @@ pub const R202C_PCM_TX_EN: u16 = 0x202C; // max98373.h:42
 pub const R203D_AMP_DIG_VOL_CTRL: u16 = 0x203D; // max98373.h:51
 pub const R203E_AMP_PATH_GAIN: u16 = 0x203E; // max98373.h:52
 pub const R203F_AMP_DSP_CFG: u16 = 0x203F; // max98373.h:53
+pub const R2040_TONE_GEN_CFG: u16 = 0x2040; // max98373.h:54
 pub const R2043_AMP_EN: u16 = 0x2043; // max98373.h:57
 pub const R2046_IV_SENSE_ADC_DSP_CFG: u16 = 0x2046; // max98373.h:58
 pub const R2090_BDE_LVL_HOLD: u16 = 0x2090; // max98373.h:66
@@ -85,3 +86,8 @@ pub const GLOBAL_EN_MASK: u8 = 0x1; // max98373.h:204
 /// writes). The I2C fence admits a one-byte read of these and of the revision, nothing else outside the write set.
 pub const STATUS_READBACK: [u16; 9] =
     [R2001_INT_RAW1, R2002_INT_RAW2, R2003_INT_RAW3, R2004_INT_STATE1, R2005_INT_STATE2, R2006_INT_STATE3, R2007_INT_FLAG1, R2008_INT_FLAG2, R2009_INT_FLAG3];
+
+/// What the bring-up line prints once the protection set is in, READ ONLY: the TDM format and clock ratio (`PCM_DATA_FMT_CFG`,
+/// `PCM_CLOCK_RATIO`), the digital volume and the path gain (`AMP_DIG_VOL_CTRL`, `AMP_PATH_GAIN`), and the tone generator (`TONE_GEN_CFG`:
+/// a generator left on replaces the PCM input). Every one but the tone generator is in the write set; the fence admits a read of that one.
+pub const BRINGUP_READBACK: [u16; 5] = [R2024_PCM_DATA_FMT_CFG, R2026_PCM_CLOCK_RATIO, R203D_AMP_DIG_VOL_CTRL, R203E_AMP_PATH_GAIN, R2040_TONE_GEN_CFG];

@@ -160,6 +160,10 @@ impl Hda {
             if period == 0 {
                 continue;
             }
+            let spib_on = self.r32(SPB_AT + AZX_REG_SPB_SPBFCCTL) & (1 << i) != 0;
+            if spib_on && self.done[i as usize] >= self.r32(SPB_AT + AZX_SPB_BASE + AZX_SPB_INTERVAL * i + AZX_SPB_SPIB) as u64 {
+                continue; // stalled at SPIB: no further boundary
+            }
             let boundary = (self.done[i as usize] / period + 1) * period;
             // microseconds for `boundary` bytes at 192 bytes/ms, rounded up
             let at = self.start_us[i as usize] + (boundary * 1000).div_ceil(BYTES_PER_MS);
@@ -180,8 +184,16 @@ impl Hda {
             if !self.running(i) {
                 continue;
             }
-            let target = (now_us - self.start_us[i as usize]) * BYTES_PER_MS / 1000;
+            let mut target = (now_us - self.start_us[i as usize]) * BYTES_PER_MS / 1000;
             let cbl = self.r32(sd(i) + AZX_REG_SD_CBL) as u64;
+            // SPIB (the SPB capability, hda_register.h:200-209): with the stream's SPBFCCTL bit set the engine fetches no further than the
+            // software position in buffer. Nothing here rewrites SPIB, so a stream started with SPIB = the buffer size reads the ring ONCE
+            // and stalls at its end with LPIB = SPIB (the silicon shape: `lpib=0x4000`, then the period watchdog).
+            let spib_on = self.r32(SPB_AT + AZX_REG_SPB_SPBFCCTL) & (1 << i) != 0;
+            let spib = self.r32(SPB_AT + AZX_SPB_BASE + AZX_SPB_INTERVAL * i + AZX_SPB_SPIB) as u64;
+            if spib_on {
+                target = target.min(spib);
+            }
             let period = self.period_bytes(i);
             if cbl == 0 || period == 0 || target <= self.done[i as usize] {
                 continue;
@@ -196,9 +208,14 @@ impl Hda {
                 let n = left.min(to_end);
                 let data = read_mem(ring_base + lpib, n as usize);
                 self.played[i as usize].extend_from_slice(&data);
-                lpib = (lpib + n) % cbl;
+                lpib += n;
                 left -= n;
-                if lpib.is_multiple_of(period) && !self.mute_irqs {
+                let stalled = spib_on && self.done[i as usize] == spib && left == 0 && lpib == spib;
+                if !stalled {
+                    lpib %= cbl;
+                }
+                // a stall at SPIB completes no period (the silicon raised no completion after it: the watchdog, not a stream error, ended it)
+                if !stalled && lpib.is_multiple_of(period) && !self.mute_irqs {
                     let sts = if self.desc_error { 0x10 } else { 0x04 };
                     self.mem[(sd(i) + 3) as usize] |= sts;
                 }

@@ -143,3 +143,57 @@ fn a_line_believed_but_never_delivered_is_caught_by_the_last_look_and_a_transfer
     assert_eq!(snap.len(), 1, "{:?}", logged(&dev, "[AVS-"));
     assert!(snap[0].contains("poll=false"), "{}", snap[0]);
 }
+
+#[test]
+fn a_polled_speaker_stream_keeps_feeding_the_clients_pcm_past_one_ring_and_never_trips_the_period_watchdog() {
+    // Atlas 2026-10-29 ("azure pine dune", drivers c1fa296): the DSP booted in poll mode, the link ran ONE ring (`lpib=0x4000`,
+    // `hw_bytes=15744`), `pcm_fed=0`, then `[AVS-DEV FAULT step=period-timeout]`. The host stream had SPIB armed at the ring's size, so the
+    // engine fetched the buffer once and stalled at its end; no period completed after that, nothing of the client's PCM was ever moved.
+    let Some(mut dev) = speaker_dev(Some(cfg_with_msi(0x0080))) else { return };
+    let mut c = Client::new();
+    let (s, ph) = start_speakers(&mut dev, &mut c);
+    assert_eq!((s, ph.phase), (Status::Ok, StreamPhase::Running), "{:?}", logged(&dev, "[AVS-"));
+    let id = dev.stream.as_ref().unwrap().id;
+    // a client that keeps the FIFO topped up, as Aura does on every EV-PERIOD: 4096 bytes (one period) every 20 ms for 1.5 s
+    let mut n = 0u64;
+    for _ in 0..75 {
+        call(&mut dev, &mut c, Opcode::PcmWrite, &pcm_payload(id, &ramp(1024, 1 + n as usize * 1024)));
+        n += 1;
+        run_ms(&mut dev, 20);
+    }
+    let faults = logged(&dev, "[AVS-DEV FAULT");
+    assert!(faults.is_empty(), "{faults:?}");
+    let st = get_status(&mut dev, &mut c);
+    assert_eq!((st.state, st.output), (State::Running, Output::Speakers), "{:?}", logged(&dev, "[AVS-DEV"));
+    let pos = logged(&dev, "[AVS-DEV POS");
+    let fed = |l: &str| l.split(" pcm_fed=").nth(1).and_then(|r| r.split(' ').next()).and_then(|v| v.parse::<u64>().ok()).unwrap();
+    assert_eq!(pos.len(), 2, "{pos:?}");
+    assert!(fed(&pos[1]) > fed(&pos[0]) && fed(&pos[1]) > 16384, "the client's PCM keeps being fed past one ring: {pos:?}");
+    // the engine read far more than one ring (16 KiB) - 1.5 s at 192 B/ms
+    assert!(dev.rig.m.played(7).len() > 4 * 16384, "the link stalled after {} bytes", dev.rig.m.played(7).len());
+    assert!(dev.dsp.as_ref().unwrap().acct.pcm_fed > 64 * 1024);
+}
+
+#[test]
+fn in_poll_mode_a_completion_bit_nobody_sees_is_served_from_the_link_position_and_a_dma_that_stops_is_named_dma_stalled() {
+    // (a) the engine raises no completion bit at all: the poll serves every period from LPIB, the stream runs, nothing faults
+    let Some(mut dev) = speaker_dev(Some(cfg_with_msi(0x0080))) else { return };
+    let mut c = Client::new();
+    let (s, _) = start_speakers(&mut dev, &mut c);
+    assert_eq!(s, Status::Ok);
+    dev.rig.m.hda.mute_irqs = true;
+    run_ms(&mut dev, 600);
+    assert!(logged(&dev, "[AVS-DEV FAULT").is_empty(), "{:?}", logged(&dev, "[AVS-DEV FAULT"));
+    assert!(dev.dsp.as_ref().unwrap().lpib_periods >= 20, "periods served from the position: {}", dev.dsp.as_ref().unwrap().lpib_periods);
+    // (b) the DMA stops (its RUN bit dropped behind the driver's back): the watchdog names it by the position that did not move
+    let Some(mut dev) = speaker_dev(Some(cfg_with_msi(0x0080))) else { return };
+    let mut c = Client::new();
+    let (s, _) = start_speakers(&mut dev, &mut c);
+    assert_eq!(s, Status::Ok);
+    let ctl = sim::hda::sd(7) as usize;
+    dev.rig.m.hda.mem[ctl] &= !0x02;
+    run_ms(&mut dev, 600);
+    let f = logged(&dev, "[AVS-DEV FAULT");
+    assert_eq!(f.len(), 1, "{f:?}");
+    assert!(f[0].starts_with("[AVS-DEV FAULT step=dma-stalled"), "{}", f[0]);
+}
