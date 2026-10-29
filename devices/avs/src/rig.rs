@@ -28,11 +28,13 @@ pub struct Rig<M: Machine> {
     pub irq_poll: bool,
     /// Waits that timed out with their cause already pending in the hardware: interrupts that never arrived.
     pub lost_irqs: u32,
+    /// The board record's `irq_line_exclusive`: the cAVS line may be waited on. False until a record says so (a device without one polls).
+    pub line_exclusive: bool,
 }
 
 impl<M: Machine> Rig<M> {
     pub fn new(m: M, allow: Allow, i2c: I2cAllow, pads: PadAllow) -> Self {
-        Self { m, allow, i2c, pads, refused: Refusals::default(), first_refusal: None, irq_poll: false, lost_irqs: 0 }
+        Self { m, allow, i2c, pads, refused: Refusals::default(), first_refusal: None, irq_poll: false, lost_irqs: 0, line_exclusive: false }
     }
 
     fn note(&mut self, what: &'static str) {

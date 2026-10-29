@@ -226,6 +226,7 @@ impl<M: Machine> Device<M> {
             Err(_) => return false,
         }
         self.rig.m.board_loaded(&board);
+        self.rig.line_exclusive = board.irq_line_exclusive;
         // the speakers: a board whose amplifiers are the Pixelbook Go's; any other board has no speaker path (SPEAKER-PROTECTION-UNAVAILABLE)
         self.speakers = match Speakers::for_board(board.amps(), board.spkr_rst_pad) {
             Ok(s) => s,
@@ -827,8 +828,8 @@ impl<M: Machine> Device<M> {
         emit(
             &mut self.rig.m,
             format_args!(
-                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} lpib_periods={} poll={} lost={} dropped={}/{}]",
-                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, dsp.lpib_periods, self.rig.irq_poll, self.rig.lost_irqs, self.stats.dropped_events, self.stats.dropped_replies
+                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} lpib_periods={} poll={} lost={} dropped={}/{} reqs={}]",
+                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, dsp.lpib_periods, self.rig.irq_poll, self.rig.lost_irqs, self.stats.dropped_events, self.stats.dropped_replies, self.stats.requests
             ),
         );
         if dsp.out == Output::Speakers {
