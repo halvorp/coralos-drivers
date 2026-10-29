@@ -307,7 +307,7 @@ impl Machine for RtMachine {
     }
     fn rearm_avs_irq(&mut self) {
         if let Some(i) = self.irq.as_mut() {
-            // an edge/MSI vector has nothing to re-arm; a refused arm is not a fault of the device
+            // IRQ_ARM(gsi) unmasks the level INTx line the kernel masked on delivery; a refused arm is not a fault of the device
             let _ = i.ack();
         }
     }

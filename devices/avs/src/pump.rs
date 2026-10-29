@@ -7,9 +7,15 @@
 //! happened in [`Pending`], and the waits read [`Pending`] - so a reply that arrives while the host is busy with a DMA transfer (a library
 //! load sends its request, moves the image, THEN awaits the reply) is not lost.
 //!
-//! Every wait is a blocking [`Rig::wait`] on the interrupt with an absolute deadline: no spinning, and no wait without a bound. A level
-//! line that fires and has no cause is counted; [`SPURIOUS_LIMIT`] of them in a row is a named fault ([`PumpError::IrqStorm`]) rather than
-//! a core burnt re-taking it.
+//! Every wait is a blocking [`Rig::wait`] on the interrupt with an absolute deadline: no spinning, and no wait without a bound.
+//!
+//! THE LINE IS SHARED (the cAVS function's INTx, GSI 16 on the Pixelbook Go, with every PCH function the firmware routes INTA to 16). A
+//! firing is ours only if one of OUR causes is set - the stream's bit in BAR0 `INTSTS` with its `SD_STS`, or BAR4 `ADSPIS` - and only
+//! those bits are written back (write-1-to-clear exactly what was read) BEFORE the line is re-armed ([`Rig::rearm_irq`]: the kernel
+//! masked it on delivery, the re-arm is the unmask). A firing with none of our causes writes nothing and services nothing: it is another
+//! function's. [`SPURIOUS_LIMIT`] of them in a row is another function holding the line asserted; the device then leaves the line
+//! MASKED (no re-arm, no storm on this core) and polls its own causes for the rest of its life, named (`[AVS-DEV IRQ-STORM ..]`) -
+//! Linux's `note_interrupt` "nobody cared" disables a line the same way, and audio keeps running.
 use crate::machine::{Machine, RegFault, Want, Wake};
 use crate::rig::Rig;
 use alloc::vec::Vec;
@@ -22,7 +28,7 @@ use avs_ipc_core::regs::UPLINK_OFFSET;
 use avs_ipc_core::txn::{Correlation, Event, Ipc, Outcome, Recovery};
 use hda_ext_core::regs::{AZX_REG_INTSTS, AZX_REG_SD_STS};
 
-/// Consecutive interrupts with no cause before the line is declared stuck. A bound on a retry, not a table size.
+/// Consecutive interrupts with no cause of ours before the shared line is left masked and the device polls. A bound on a retry, not a table size.
 pub const SPURIOUS_LIMIT: u32 = 64;
 
 /// What the DSP told us it crashed with.
@@ -38,8 +44,6 @@ pub enum PumpError {
     Reg(RegFault),
     /// The DSP reported an exception.
     DspException(Exception),
-    /// The interrupt fired [`SPURIOUS_LIMIT`] times in a row with nothing to service.
-    IrqStorm,
     /// The interrupt planner or the transaction machine was answered out of order (a bug in this crate).
     Protocol,
     Ipc(IpcError),
@@ -53,7 +57,6 @@ impl PumpError {
         match self {
             PumpError::Reg(e) => e.name(),
             PumpError::DspException(_) => "dsp-exception",
-            PumpError::IrqStorm => "irq-storm",
             PumpError::Protocol => "pump-protocol",
             PumpError::Ipc(e) => e.name(),
             PumpError::OutOfMemory => "out-of-memory",
@@ -118,7 +121,7 @@ impl Pump {
     }
 
     /// Look at the causes without the line having fired (poll mode, and the last look of a timed-out wait): the same service, but a look
-    /// that finds nothing is not a spurious interrupt and is not counted towards [`PumpError::IrqStorm`].
+    /// that finds nothing is not a spurious interrupt and is not counted towards [`SPURIOUS_LIMIT`].
     pub fn look<M: Machine>(&mut self, rig: &mut Rig<M>) -> Result<bool, PumpError> {
         let found = self.service(rig, false)?;
         if found {
@@ -154,8 +157,14 @@ impl Pump {
             self.serviced += 1;
         } else if fired {
             self.spurious += 1;
-            if self.spurious >= SPURIOUS_LIMIT {
-                return Err(PumpError::IrqStorm);
+            if self.spurious >= SPURIOUS_LIMIT && !rig.irq_poll {
+                // not ours, again and again: another function holds the shared line asserted. Leave it masked and poll.
+                rig.irq_poll = true;
+                crate::log::emit(
+                    &mut rig.m,
+                    format_args!("[AVS-DEV IRQ-STORM spurious={} the shared line fired with no cause of ours (another function holds it asserted) -> masked, mode=poll]", self.spurious),
+                );
+                self.spurious = 0;
             }
         }
         if let Some(e) = self.pend.exception {
@@ -278,7 +287,7 @@ impl Pump {
                 self.look(rig)?;
             } else if let Wake::AvsIrq = rig.wait(Some(deadline_ms), Want::IRQ_ONLY) {
                 self.service_irq(rig)?;
-                rig.m.rearm_avs_irq();
+                rig.rearm_irq();
             }
         }
     }

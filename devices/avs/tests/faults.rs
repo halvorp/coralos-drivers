@@ -161,23 +161,8 @@ fn a_descriptor_error_on_the_host_stream_is_a_fault_not_a_glitch() {
     assert_safe_and_down(&dev);
 }
 
-#[test]
-fn an_interrupt_with_no_cause_is_counted_and_then_called_a_storm() {
-    let Some(mut dev) = started(true) else { return };
-    let mut c = Client::new();
-    let id = open_stream(&mut dev, &mut c);
-    call(&mut dev, &mut c, Opcode::PcmWrite, &pcm_payload(id, &ramp(4096, 0)));
-    start_stream(&mut dev, &mut c, id);
-    dev.rig.m.force_irq = true;
-    let steps0 = dev.rig.m.waits.len();
-    run_ms(&mut dev, 50);
-    let st = get_status(&mut dev, &mut c);
-    faulted(&st, "irq-storm");
-    // bounded: 64 empty firings, not a core burnt
-    assert!(dev.rig.m.waits.len() - steps0 < 200);
-    dev.rig.m.force_irq = false;
-    assert_safe_and_down(&dev);
-}
+// A line that fires with no cause of ours is not a fault any more: on the shared INTx line it is another function holding the line asserted,
+// and the device leaves it masked and polls (tests/irq_poll.rs, `a_shared_line_held_by_another_function_...`).
 
 #[test]
 fn a_codec_that_stops_answering_mid_start_fails_the_start_and_the_status_names_the_step() {

@@ -434,7 +434,7 @@ impl<M: Machine> Device<M> {
                 if self.dsp.as_ref().is_some_and(|d| d.out == Output::Speakers) {
                     self.st.speaker_hold = SpeakerHold::Released;
                 }
-                self.rig.m.rearm_avs_irq();
+                self.rig.rearm_irq();
                 emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION up in {} ms output={} irq={} lost={}]", ms, self.dsp.as_ref().map_or("none", |d| d.out.name()), if self.rig.irq_poll { "poll" } else { "line" }, self.rig.lost_irqs));
                 let now = self.rig.now();
                 self.probes = [Some(now + PROBE_AT_MS[0]), Some(now + PROBE_AT_MS[1])];
@@ -621,7 +621,7 @@ impl<M: Machine> Device<M> {
         }
         let now = self.rig.now();
         let deadline = self.next_deadline(now);
-        let want = Want { avs_irq: self.dsp.is_some(), jack: jack_ok, requests: self.session, accept: !self.session };
+        let want = Want { avs_irq: self.dsp.is_some() && !self.rig.irq_poll, jack: jack_ok, requests: self.session, accept: !self.session };
         let wake = self.rig.wait(deadline, want);
         // ... and the same after the wait: whatever woke the task, a jack event that arrived with it goes first, so the request or the
         // interrupt that follows sees the state AFTER the removal
@@ -682,7 +682,7 @@ impl<M: Machine> Device<M> {
     fn service_stream(&mut self, polled: bool) {
         let (Some(dsp), Some(bufs), Some(stream)) = (self.dsp.as_mut(), self.bufs.as_ref(), self.stream.as_mut()) else {
             if !polled {
-                self.rig.m.rearm_avs_irq();
+                self.rig.rearm_irq();
             }
             return;
         };
@@ -733,14 +733,14 @@ impl<M: Machine> Device<M> {
         }
     }
 
-    /// Measure the cAVS interrupt's delivery (the function's MSI state, the line) and choose blocking or polling; one ring line. Run at
-    /// every session start: the configuration authority may have programmed the MSI since the last one.
+    /// Measure the cAVS interrupt's delivery (the INTx line granted, the function's MSI and INTx-disable state) and choose blocking or
+    /// polling; one ring line. Run at every session start: the configuration authority may have changed the function since the last one.
     fn settle_irq_mode(&mut self) {
         match crate::irqmode::settle(&mut self.rig) {
             Ok((p, mode)) => {
                 let (m, why) = match mode {
                     crate::irqmode::IrqMode::Line if self.rig.irq_poll => ("poll", "lost-irq-earlier"),
-                    crate::irqmode::IrqMode::Line => ("line", "msi-enabled-or-no-msi-cap"),
+                    crate::irqmode::IrqMode::Line => ("line", "intx"),
                     crate::irqmode::IrqMode::Poll(w) => ("poll", w.name()),
                 };
                 emit(

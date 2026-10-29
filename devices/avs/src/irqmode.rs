@@ -2,19 +2,23 @@
 //! Can the cAVS interrupt reach this task? Read from the function's PCI configuration (read-only: the configuration authority owns the
 //! writes), and the answer that decides whether the pump BLOCKS on the line or LOOKS at the causes on a bounded clock.
 //!
-//! WHY THIS EXISTS (Atlas, 2026-10-29, stick "golden maple glade" and the boot before it): the kernel allocates the cAVS function an MSI
-//! route (`[irq-route] object=5 ... vector=0x42`) but nothing programs the function's MSI capability - the kernel writes no config
-//! (coralos `kernel/src/arch/x86_64/audio_atlas.rs`: "it does not ... program the cAVS function's MSI capability ... a NAMED GAP"),
-//! and the configuration authority serves only net/xhci/blk/gpu/wlan. The controller then signals on INTx, which nobody routes. The first
-//! wait that needs the interrupt - the code loader's completion of the base firmware (`cldma_memcpy_work`'s
-//! `wait_for_completion_timeout`, cldma.c:100, `AVS_CL_IOC_TIMEOUT_MS` 300 ms) - timed out: `[AVS-DEV FAIL step=cldma-ioc stage=base-firmware]`. The DSP never booted, so no
-//! pipeline, no SSP clock and no amplifier enable ever followed, and the speakers stayed silent.
+//! THE INTERRUPT IS THE FUNCTION'S INTx LINE (Atlas, 2026-10-29, HW-CHECKLIST A15). ChromeOS's shipped `snd-soc-avs.ko` never uses MSI on this
+//! part: `avs_pci_probe` asks `PCI_IRQ_LEGACY | (spec->attributes & AVS_PLATATTR_CLDMA ? 0 : PCI_IRQ_MSI)` and `skl_desc` (9D71) has CLDMA, so
+//! it is INTA, which the board routes to GSI 16, level, active-low, SHARED with the other PCH functions on INTA->16 (the shipped DSDT's
+//! `PICP` `{0x001FFFFF, 0, 0, 0x10}`, ramstage `devintconfig` `1f 03 01 10`). The kernel grants exactly that line, as a platform line routed
+//! masked, in IRQ slot 0 (coralos `kernel/src/arch/x86_64/audio_atlas.rs`, the GSI from the BSP row). So an MSI capability that is present
+//! and OFF is the expected state: the function signals on INTx, which this task holds.
 //!
-//! Linux always has the interrupt (`avs_hdac_acquire_irq`, core.c:343-377: `pci_alloc_irq_vectors(pci, 1, 1, PCI_IRQ_MSI | PCI_IRQ_INTX)`).
-//! This port cannot assume it, so it MEASURES it: when the MSI capability is present and not enabled, or no line was granted, the device
-//! polls the same causes the interrupt handler reads (`ADSPIS`, the code loader's `SD_STS`, `INTSTS`) - the same shape as iwlwifi.device's
-//! "No MSI route was granted: poll" and pciconfig's `mode=poll`. A wait that times out in line mode looks once more; a cause found pending
-//! then is an interrupt that never arrived, and the device switches to polling for the rest of its life ([`crate::pump`]).
+//! History: until then the kernel allocated an MSI route nobody programmed, this device polled (`why=msi-disabled`, drivers c1fa296), and the
+//! vector 0x42 reached IRQ_ARM as if it were GSI 66. Before that the first wait that needed the interrupt - the code loader's completion
+//! of the base firmware (`cldma_memcpy_work`, cldma.c:100, `AVS_CL_IOC_TIMEOUT_MS` 300 ms) - timed out: `[AVS-DEV FAIL step=cldma-ioc]`.
+//!
+//! POLLING IS THE NAMED FALLBACK, chosen when the line cannot carry the interrupt: no line granted ([`PollWhy::NoLine`]), the function's
+//! MSI turned on (it would signal as an MSI this task does not hold, [`PollWhy::MsiEnabled`]), or INTx disabled in COMMAND
+//! ([`PollWhy::IntxDisabled`]). The device then looks at the causes the interrupt handler reads (`ADSPIS`, the code loader's `SD_STS`,
+//! `INTSTS`) - the same shape as iwlwifi.device's "No MSI route was granted: poll" and pciconfig's `mode=poll`. A wait that times out in
+//! line mode looks once more; a cause found pending then is an interrupt that never arrived, and the device polls for the rest of its life
+//! ([`crate::pump`]). So does a SHARED line that keeps firing with no cause of ours (`IRQ-STORM`): it is left masked.
 use crate::machine::{Machine, RegFault};
 use crate::rig::Rig;
 use avs_fw_core::effect::Space;
@@ -26,6 +30,9 @@ pub use pci_config_core::msi::{
 };
 
 /// The standard configuration header plus the capability area: every capability pointer lands below 0x100.
+/// COMMAND's INTx Disable bit (one home: pci-config-core).
+pub use pci_config_core::regs::command::INTX_DISABLE as PCI_COMMAND_INTX_DISABLE;
+
 pub const CONFIG_BYTES: usize = 256;
 
 /// How often the pump looks at the causes while it waits in poll mode (a code-loader chunk, an IPC reply).
@@ -35,17 +42,20 @@ pub const STREAM_POLL_MS: u64 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PollWhy {
-    /// The function has an MSI capability and it is not enabled: the interrupt goes out as INTx, which this task does not hold.
-    MsiDisabled,
     /// The launch row granted no interrupt line (or the kernel refused the wait on it).
     NoLine,
+    /// The function's MSI is enabled: it signals as an MSI, which this task does not hold, never on the INTx line it does.
+    MsiEnabled,
+    /// COMMAND's INTx Disable bit is set: the line this task holds can never assert.
+    IntxDisabled,
 }
 
 impl PollWhy {
     pub const fn name(&self) -> &'static str {
         match self {
-            PollWhy::MsiDisabled => "msi-disabled",
             PollWhy::NoLine => "no-line",
+            PollWhy::MsiEnabled => "msi-enabled",
+            PollWhy::IntxDisabled => "intx-disabled",
         }
     }
 }
@@ -88,14 +98,16 @@ impl IrqProbe {
         p
     }
 
-    /// Block on the line only when the line exists and the function can signal on it.
+    /// Block on the INTx line only when it is granted and the function signals on it: MSI off (or absent) and INTx not disabled.
     pub fn mode(&self) -> IrqMode {
         if !self.line_granted {
-            return IrqMode::Poll(PollWhy::NoLine);
-        }
-        match self.msi_cap {
-            Some(_) if self.msi_flags & PCI_MSI_FLAGS_ENABLE == 0 => IrqMode::Poll(PollWhy::MsiDisabled),
-            _ => IrqMode::Line,
+            IrqMode::Poll(PollWhy::NoLine)
+        } else if self.msi_cap.is_some() && self.msi_flags & PCI_MSI_FLAGS_ENABLE != 0 {
+            IrqMode::Poll(PollWhy::MsiEnabled)
+        } else if self.command & PCI_COMMAND_INTX_DISABLE != 0 {
+            IrqMode::Poll(PollWhy::IntxDisabled)
+        } else {
+            IrqMode::Line
         }
     }
 }
@@ -128,7 +140,7 @@ pub fn settle<M: Machine>(rig: &mut Rig<M>) -> Result<(IrqProbe, IrqMode), RegFa
 /// - `ADSPCS`/`ADSPIC`/`ADSPIS` (BAR4 0x04/0x08/0x0C, registers.h:25-27): DSP core state, which DSP causes are enabled, which are pending;
 /// - the code loader's `SD_CTL`+`SD_STS` dword, `LPIB` and `SPIB` (BAR4 0x80/0x84/0xA8, cldma.c:15-24): did the transfer run, and finish?
 /// - the firmware's status and error words (SRAM base, registers.h:116-117): where the ROM / firmware got to;
-/// - PCI `COMMAND`/`STATUS` and the MSI flags: `STATUS` bit 3 (pci_regs.h:55) set with MSI off is the controller asserting INTx nobody holds.
+/// - PCI `COMMAND`/`STATUS` and the MSI flags: `STATUS` bit 3 (pci_regs.h:55, Interrupt Status) set is the controller asserting INTx.
 ///
 /// A cause pending in `ADSPIS` with `sd_sts` showing completion means the hardware did its part and only the delivery failed; an idle
 /// `lpib` means the DMA never moved.

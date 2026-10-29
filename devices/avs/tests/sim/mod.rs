@@ -122,6 +122,8 @@ pub struct Sim {
     pub force_irq: bool,
     /// The cAVS causes are raised in the registers but the interrupt NEVER reaches the task (an MSI nobody programmed: Atlas 2026-10-29).
     pub irq_undelivered: bool,
+    /// The loader granted the cAVS interrupt line (IRQ slot 0). False: the endowment carried none, and the device must poll by name.
+    pub line_granted: bool,
     /// The speaker-reset pad reads high whatever is driven (something else holds the amplifiers out of reset).
     pub pad_stuck_high: bool,
     /// The speaker-reset pad reads low whatever is driven (the amplifiers can never be released from reset).
@@ -199,6 +201,7 @@ impl Sim {
             i2c_cost_us: 300,
             force_irq: false,
             irq_undelivered: false,
+            line_granted: true,
             pad_stuck_high: false,
             pad_stuck_low: false,
         }
@@ -304,7 +307,7 @@ impl Sim {
     }
 
     fn ready(&self, want: Want) -> Option<Wake> {
-        if want.avs_irq && !self.irq_undelivered && self.irq_level() {
+        if want.avs_irq && self.line_granted && !self.irq_undelivered && self.irq_level() {
             return Some(Wake::AvsIrq);
         }
         if want.accept && self.listen_pending > 0 {
@@ -625,6 +628,9 @@ impl Machine for Sim {
 
     fn rearm_avs_irq(&mut self) {
         self.irq_rearms += 1;
+    }
+    fn avs_irq_granted(&self) -> bool {
+        self.line_granted
     }
 
     fn take_jack_event(&mut self) -> bool {

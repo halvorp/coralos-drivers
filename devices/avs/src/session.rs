@@ -232,7 +232,7 @@ impl Dsp {
     /// Service one firing of the cAVS line: the pump, then the ring if a period completed.
     pub fn service<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<bool, PumpError> {
         self.pump.service_irq(rig)?;
-        rig.m.rearm_avs_irq();
+        rig.rearm_irq();
         self.after_service(rig, bufs, fifo)
     }
 
