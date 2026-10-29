@@ -63,7 +63,7 @@ fn pdata_enums_carry_the_linux_codes() {
 #[test]
 fn the_atlas_pdata_is_the_recovery_acpi_values() {
     let p = ATLAS_AAD_PDATA;
-    assert_eq!((p.btn_cfg, p.mic_det_thr, p.jack_ins_deb, p.jack_det_rate, p.jack_rem_deb), (BtnCfg::Ms50, MicDetThr::Ohm200, JackInsDeb::Ms20, JackDetRate::Ms32_64, JackRemDeb::Ms1));
+    assert_eq!((p.btn_cfg, p.mic_det_thr, p.jack_ins_deb, p.jack_det_rate, p.jack_rem_deb), (BtnCfg::Ms50, MicDetThr::Ohm500, JackInsDeb::Ms20, JackDetRate::Ms32_64, JackRemDeb::Ms1));
     assert_eq!((p.a_d_btn_thr, p.d_b_btn_thr, p.b_c_btn_thr, p.c_mic_btn_thr), (0x0a, 0x16, 0x21, 0x3e));
     assert_eq!((p.btn_avg, p.adc_1bit_rpt), (BtnAvg::N4, Adc1BitRpt::N1));
 }
@@ -73,7 +73,7 @@ fn init_writes_the_atlas_configuration_to_the_registers_and_unmasks_last() {
     let mut f = Fake::reset();
     f.run(init_plan(ATLAS_AAD_PDATA).unwrap()).unwrap();
     // Linux reset defaults then the pdata (reset values in da7219.c:2397-2405: CONFIG_1 0xd6, _2 0x34, _7 0x01)
-    assert_eq!(f.reg(0xc6), 0xd6 & !0x30 & !0x0e, "mic_det_thr 200 ohm clears bits 4-5; button detect off clears bits 1-3");
+    assert_eq!(f.reg(0xc6), (0xd6 & !0x30 & !0x0e) | 0x10, "mic_det_thr 500 ohm (code 1) sets bits 4-5 to 01; button detect off clears bits 1-3");
     assert_eq!(f.reg(0xc7), 0x34 & !0xfe | (2 << 1), "debounce 20 ms = 2, rate 32/64 = 0, removal 1 ms = 0");
     assert_eq!((f.reg(0xc8), f.reg(0xc9), f.reg(0xca), f.reg(0xcb)), (0x0a, 0x16, 0x21, 0x3e));
     assert_eq!(f.reg(0xcc), 0x01 & !0x0f | (2 << 0), "btn_avg 4 = 2, adc 1-bit repeat 1 = 0");

@@ -56,7 +56,9 @@ pub struct AadPdata {
     pub adc_1bit_rpt: Adc1BitRpt,
 }
 
-/// Atlas' ACPI `_DSD` values (ATLAS-PERIPHERALS-FROM-RECOVERY.md section 3.2): `btn_cfg = 50`, `mic_det_thr = 200`, `jack_ins_deb = 20`,
+/// Atlas' values as the SHIPPED ChromeOS firmware carries them (bios-atlas.ro-11827-46-0.rw-11827-198-0.bin ramstage `drivers/i2c/da7219` config
+/// @0x38520, coral_handoffs/atlas/HW-CHECKLIST.md row A18): `btn_cfg = 50`, `mic_det_thr = 500` (upstream coreboot's devicetree says 200; the
+/// production firmware's 500 wins), `jack_ins_deb = 20`,
 /// `jack_det_rate = 32_64`, `jack_rem_deb = 1`, thresholds a_d 0xa / d_b 0x16 / b_c 0x21 / c_mic 0x3e, `btn_avg = 4`, `adc_1bit_rpt = 1`.
 /// The three properties the notes do NOT list take `da7219_aad_fw_to_pdata` defaults (aad.c:661-756; pulse level :683-686, time :690, polarity :710-713): micbias pulse off,
 /// pulse time 0 (unset stays 0), insertion polarity low. Those three are recon facts.
@@ -64,7 +66,7 @@ pub const ATLAS_AAD_PDATA: AadPdata = AadPdata {
     micbias_pulse_lvl: MicbiasPulse::Off,
     micbias_pulse_time_ms: 0,
     btn_cfg: BtnCfg::Ms50,
-    mic_det_thr: MicDetThr::Ohm200,
+    mic_det_thr: MicDetThr::Ohm500,
     jack_ins_deb: JackInsDeb::Ms20,
     jack_ins_det_pty: JackInsDetPty::Low,
     jack_det_rate: JackDetRate::Ms32_64,
