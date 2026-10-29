@@ -130,7 +130,9 @@ fn a_dsp_exception_while_playing_puts_the_codec_in_the_verified_safe_state_and_r
 }
 
 #[test]
-fn a_stream_whose_interrupts_stop_is_caught_by_the_watchdog() {
+fn a_stream_whose_interrupts_and_dma_stop_is_caught_by_the_watchdog() {
+    // Interrupts that stop while the link keeps moving are an interrupt lost, and the device polls on (tests/irq_poll.rs,
+    // `in_line_mode_a_stream_whose_period_interrupt_never_fires_...`). Interrupts that stop because the DMA stopped are a fault, by name.
     let Some(mut dev) = started(true) else { return };
     let mut c = Client::new();
     let id = open_stream(&mut dev, &mut c);
@@ -138,10 +140,13 @@ fn a_stream_whose_interrupts_stop_is_caught_by_the_watchdog() {
     start_stream(&mut dev, &mut c, id);
     run_ms(&mut dev, 50);
     dev.rig.m.hda.mute_irqs = true;
+    let ctl = sim::hda::sd(dev.dsp.as_ref().unwrap().host.index) as usize;
+    dev.rig.m.hda.mem[ctl] &= !0x02; // the RUN bit dropped behind the driver's back
     let t0 = dev.rig.m.t_us;
     run_ms(&mut dev, 1000);
     let st = get_status(&mut dev, &mut c);
-    faulted(&st, "period-timeout");
+    faulted(&st, "dma-stalled");
+    assert!(logged_lost(&dev).is_empty(), "a position that did not move is not an interrupt lost");
     let waited = (dev.rig.m.t_us - t0) / 1000;
     assert!(waited < 1000, "the watchdog fired in {waited} ms (the bound is three rings)");
     assert_safe_and_down(&dev);
@@ -254,4 +259,8 @@ fn a_dead_clients_session_endpoints_are_handed_back_and_the_next_client_is_serve
     let mut c2 = Client::new();
     let id2 = open_stream(&mut dev, &mut c2);
     assert_ne!(id, id2);
+}
+
+fn logged_lost(dev: &avs_device::Device<sim::Sim>) -> Vec<String> {
+    dev.rig.m.logs.iter().filter(|l| l.starts_with("[AVS-DEV IRQ-LOST")).cloned().collect()
 }

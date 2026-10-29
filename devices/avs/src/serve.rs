@@ -12,6 +12,7 @@ use crate::device::{Device, Stream};
 use crate::machine::{Machine, Recv};
 use crate::session::{self, FORMAT, PERIODS, PERIOD_FRAMES};
 use crate::stream::FIFO_PERIODS;
+use crate::log::emit;
 use avs_wire::msg::{self, Caps, Format, HelloReply, Open, OpenReply, OpenRing, PcmReply, PcmWrite, PhaseReply, SetVolume, StreamRef, Subscribe, VolumeReply, LATENCY_UNMEASURED, MAX_CAPS_FORMATS};
 use avs_wire::{Header, Opcode, Output, Route, Status, MAX_FRAME_BYTES};
 
@@ -21,6 +22,10 @@ impl<M: Machine> Device<M> {
         if let Ok(n) = msg::reply(op, id, status, body, &mut out) {
             if !self.send_frame(&out[..n]) {
                 self.stats.dropped_replies += 1;
+                // a dropped reply is a client that waits for ever and then names its own timeout: say it here, by op (1, 2, 4, ... drops)
+                if self.stats.dropped_replies.is_power_of_two() {
+                    emit(&mut self.rig.m, format_args!("[AVS-DEV REPLY-DROPPED op={:?} id={} the client's ring stayed full dropped={}]", op, id, self.stats.dropped_replies));
+                }
             }
         }
     }

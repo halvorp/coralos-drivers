@@ -136,7 +136,7 @@ fn on_the_atlas_intx_line_the_interrupt_services_the_code_loader_and_the_stream(
     assert!(dev.rig.m.played(7).iter().any(|b| *b != 0), "the client's samples reached the speakers' link");
     let pos = logged(&dev, "[AVS-DEV POS");
     assert!(pos.len() == 2 && pos.iter().all(|l| l.contains("poll=false lost=0") && l.contains(" looks=0 ")), "{pos:?}");
-    assert!(logged(&dev, "[AVS-DEV IRQ-LOST").is_empty() && logged(&dev, "[AVS-DEV IRQ-STORM").is_empty());
+    assert!(logged(&dev, "[AVS-DEV IRQ-LOST").is_empty() && logged(&dev, "[AVS-DEV IRQ-STORM").is_empty(), "{:?}", logged(&dev, "[AVS-DEV"));
 }
 
 #[test]
@@ -153,8 +153,8 @@ fn a_shared_line_held_by_another_function_is_never_acked_as_ours_and_is_left_mas
     assert!(!dev.rig.irq_poll);
     run_ms(&mut dev, 50);
     // from here no cause of ours is ever raised (the engine's completion bits are muted), and the line is held asserted by someone else
+    // (at once: muted for longer than LINE_PERIOD_GRACE_MS, a moving link with no interrupt is IRQ-LOST, the other fallback)
     dev.rig.m.hda.mute_irqs = true;
-    run_ms(&mut dev, 30);
     let (w0, r0) = (dev.rig.m.writes.len(), dev.rig.m.irq_rearms);
     dev.rig.m.force_irq = true;
     run_ms(&mut dev, 200);
@@ -300,4 +300,39 @@ fn in_poll_mode_a_completion_bit_nobody_sees_is_served_from_the_link_position_an
     let f = logged(&dev, "[AVS-DEV FAULT");
     assert_eq!(f.len(), 1, "{f:?}");
     assert!(f[0].starts_with("[AVS-DEV FAULT step=dma-stalled"), "{}", f[0]);
+}
+
+#[test]
+fn in_line_mode_a_stream_whose_period_interrupt_never_fires_is_caught_by_the_period_deadline_and_keeps_feeding() {
+    // Atlas 2026-10-29 ("amber mountain marsh", drivers 13bb962): mode=line, the DSP boot's code-loader interrupt arrived on GSI 16, the
+    // session came up - and then nothing: no period, no [AVS-DEV POS t=100ms], no fault, until the client gave up 20 s later. Here the
+    // stream's completion interrupt never fires (no BCIS is ever raised) while the link keeps moving.
+    // FAILING FIRST (13bb962): the only bound was the ring watchdog, which FAULTED the session (`period-timeout`) - the audio went down.
+    let Some(mut dev) = speaker_dev(Some(atlas_cfg()), Line::Delivered) else { return };
+    let mut c = Client::new();
+    dev.rig.m.hda.mute_irqs = true; // before the first period: the stream's IOC never reaches the line
+    let (s, ph) = start_speakers(&mut dev, &mut c);
+    assert_eq!((s, ph.phase), (Status::Ok, StreamPhase::Running), "{:?}", logged(&dev, "[AVS-"));
+    assert!(logged(&dev, "[AVS-DEV IRQ mode=line why=intx").len() == 1);
+    let id = dev.stream.as_ref().unwrap().id;
+    let mut n = 0u64;
+    for _ in 0..75 {
+        call(&mut dev, &mut c, Opcode::PcmWrite, &pcm_payload(id, &ramp(1024, 1 + n as usize * 1024)));
+        n += 1;
+        run_ms(&mut dev, 20);
+    }
+    assert!(logged(&dev, "[AVS-DEV FAULT").is_empty(), "{:?}", logged(&dev, "[AVS-DEV"));
+    let lost = logged(&dev, "[AVS-DEV IRQ-LOST");
+    assert_eq!(lost.len(), 1, "named once, then the device polls: {:?}", logged(&dev, "[AVS-DEV"));
+    assert!(lost[0].contains("period") && lost[0].ends_with("-> mode=poll]"), "{}", lost[0]);
+    assert_eq!(logged(&dev, "[AVS-DEV IRQ-SNAPSHOT step=period-irq").len(), 1, "the registers that say why, on the ring once");
+    assert!(dev.rig.irq_poll && dev.rig.lost_irqs == 1);
+    let st = get_status(&mut dev, &mut c);
+    assert_eq!((st.state, st.output), (State::Running, Output::Speakers), "{:?}", logged(&dev, "[AVS-DEV"));
+    // the probes ran on their clock, and the client's PCM kept being fed past one ring
+    let pos = logged(&dev, "[AVS-DEV POS");
+    assert_eq!(pos.len(), 2, "{pos:?}");
+    assert!(pos[0].starts_with("[AVS-DEV POS t=100ms") && pos[1].starts_with("[AVS-DEV POS t=1000ms"), "{pos:?}");
+    assert!(dev.dsp.as_ref().unwrap().acct.pcm_fed > 64 * 1024, "fed {}", dev.dsp.as_ref().unwrap().acct.pcm_fed);
+    assert!(dev.rig.m.played(7).len() > 4 * 16384, "the link stalled after {} bytes", dev.rig.m.played(7).len());
 }
