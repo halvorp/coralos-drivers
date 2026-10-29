@@ -338,7 +338,14 @@ impl<H: Host> Driver<H> {
         let mut b = [0u8; 40];
         let n = time_event_protect(self.rt.mac_id, COLOR, duration, max_delay, &mut b).map_err(|e| JoinError::new("te", JoinWhy::Encode(e)))?;
         let rx = self.jcmd("te", TIME_EVENT_CMD, &b[..n])?;
-        let uid = time_event_resp(&rx.payload).map_err(|e| JoinError::new("te", JoinWhy::TimeEvent(e)))?;
+        let uid = match time_event_resp(&rx.payload) {
+            Ok(u) => u,
+            Err(e) => {
+                // the firmware's refusal, with both frames: what was asked (36 B) and what came back (16 B), so the next boot names the field
+                self.log(format_args!("[IWL-JOIN-TE-REFUSED cmd={:02x?} resp={:02x?}]", &b[..n], &rx.payload[..rx.payload.len().min(32)]));
+                return Err(JoinError::new("te", JoinWhy::TimeEvent(e)));
+            }
+        };
         self.link_mut("te")?.te_uid = Some(uid);
         self.log(format_args!("[IWL-JOIN-TE ok uid={uid} duration={duration}TU]"));
         // Linux waits for the start notification for up to max_delay TU; it is not fatal if the notification is late.
