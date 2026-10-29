@@ -3,8 +3,8 @@
 //! `execlists_submit_ports`, the schedule-in/out accounting, CSB consumption, request retirement and the stall bound.
 //! (gt/intel_execlists_submission.c:472-733, :905-939, :1270-1615; i915_request.c:358-418.)
 //!
-//! NOT ported, by name: priority queues and `need_preempt` / `timeslice_expired` / `defer_active` (every request is equal, the
-//! queue is FIFO in creation order), virtual engines, `GVT-g` single-port contexts, the capture-on-reset path
+//! NOT ported, by name: priority queues and `need_preempt` / `timeslice_expired` / `defer_active` (every request is equal: the
+//! queue is creation order among READY requests - a gated request and its context's followers are skipped, `Engine::eligible`), virtual engines, `GVT-g` single-port contexts, the capture-on-reset path
 //! (`execlists_capture`), and `reset_rewind` (rewinding the ring head to the oldest incomplete request after a reset).
 //! `ring_set_paused(1)` is therefore never issued; the status page's `I915_GEM_HWS_PREEMPT` dword stays 0 and the preemption
 //! semaphore in each fini breadcrumb never blocks.
@@ -122,9 +122,20 @@ impl Engine {
         Ok(desc)
     }
 
-    /// `execlists_dequeue` (:1270-1615), FIFO and without preemption: choose up to two ports and submit them. Returns `None` when
-    /// there is nothing to do: a previous submission is still unacknowledged, two contexts are already in flight, or the queue is
-    /// empty. `now` is the caller's clock, recorded for the unacknowledged-submission bound.
+    /// Is the unsubmitted request at table index `i` READY: not gated, and no earlier unsubmitted request of its context gated?
+    /// A context's ring runs in order, so a gated request blocks its context's followers; other contexts are unaffected.
+    fn eligible(&self, i: usize) -> bool {
+        let rqs = self.reqs.as_slice();
+        let rq = &rqs[i];
+        !rq.gated && !rqs[..i].iter().any(|e| !e.submitted && e.ctx == rq.ctx && e.gated)
+    }
+
+    /// `execlists_dequeue` (:1270-1615), FIFO and without preemption: choose up to two ports and submit them. Only READY requests
+    /// are chosen ([`Engine::eligible`]): a gated request and its same-context followers are skipped and the scan goes on to other
+    /// contexts, so a request that waits on a fence can never hold back the request that will signal it. A port's `RING_TAIL` is
+    /// the tail of the LAST ready request merged into it (`execlists_update_context`), never past a gated one. Returns `None` when
+    /// there is nothing to do: a previous submission is still unacknowledged, two contexts are already in flight, or nothing is
+    /// ready. `now` is the caller's clock, recorded for the unacknowledged-submission bound.
     pub fn dequeue(&mut self, now: u64) -> Result<Option<SubmissionPlan>, SubmitError> {
         if self.execlists.has_pending() {
             return Ok(None); // __execlists_submission_tasklet only dequeues with !pending[0] (:2477-2478)
@@ -149,7 +160,7 @@ impl Engine {
         let mut submit = false;
         let mut consumed_upto = 0usize; // requests at table indices below this are handed to the hardware
         for (i, rq) in self.reqs.as_slice().iter().enumerate() {
-            if rq.submitted {
+            if rq.submitted || !self.eligible(i) {
                 continue;
             }
             let cand = Port { ctx: rq.ctx, seqno: rq.seqno };
@@ -197,8 +208,11 @@ impl Engine {
             }
         }
         self.execlists.set_pending(ports)?;
-        for rq in self.reqs.as_mut_slice().iter_mut().take(consumed_upto) {
-            rq.submitted = true;
+        // the requests chosen are exactly the READY unsubmitted ones before the scan stopped (no gate changes in between)
+        for i in 0..consumed_upto {
+            if !self.reqs.as_slice()[i].submitted && self.eligible(i) {
+                self.reqs.as_mut_slice()[i].submitted = true;
+            }
         }
         let mut image = FixedVec::new("image stores", ImageStore { ctx: 0, dword: 0, value: 0 });
         let mut descs = [0u64; NUM_PORTS];

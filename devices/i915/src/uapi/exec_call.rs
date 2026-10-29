@@ -6,11 +6,11 @@
 //! kick the engine. The request gets ONE fence of its own (made before the call); the out-syncobjs and the out sync_file are views of
 //! it, and retirement ([`UapiService::poll`]) signals it.
 //!
-//! IN-ORDER ENGINE: the render engine runs requests in submission order, so a request that waits on a fence that is still pending
-//! HOLDS the engine ([`crate::exec::engine::EngineRig::hold`]) - it and everything queued behind it stay in their rings until the fence
-//! signals. A fence is always made by an earlier submission, a syncobj signal or a sync_file import, so the producers run first or are
-//! the client's own call; a wait-before-signal across two requests of ONE engine would deadlock the engine and is NOT supported
-//! (the Linux scheduler would reorder them). It is documented, not hidden.
+//! GATED REQUESTS (2026-10-29, replacing the engine-wide hold that deadlocked Atlas at seq 490): a request that waits on a fence still
+//! pending is built into its ring at once but marked NOT READY in the engine (`Engine::set_gated`). The dequeue skips it and every later
+//! request of the same context (a ring runs in order) and goes on publishing READY requests of other contexts, so the request that will
+//! signal the fence is never held back by its consumer; `RING_TAIL` is published only up to a context's last READY request. When every
+//! fence of the gate has signalled, [`UapiService::poll`] marks the request READY and the same poll's service publishes it.
 use super::adapt::{Eng, Hwx, Pages, Sink, SyncView, Tables};
 use super::fail::Fail;
 use super::fx::Acc;
@@ -77,7 +77,6 @@ impl UapiService {
 
         let mut uses = Vec::new();
         let have_uses = self.gem.vma_uses(&mut uses).is_ok();
-        let held = !self.gates.is_empty();
         let gate = Cell::new(gate_cells);
         let taken = RefCell::new(Vec::new());
         let (res, fx, sink_err, eng_err) = {
@@ -88,7 +87,7 @@ impl UapiService {
             let mut pages = Pages { pool: &pool_cell, objs, hw: &hwx };
             let mut tables = Tables { pool: &pool_cell, taken: &taken, hw: &hwx };
             let rig = RefCell::new(&mut *rig);
-            let mut eng = Eng { rig: &rig, hw: &hwx, held, gate: &gate, err: None };
+            let mut eng = Eng { rig: &rig, hw: &hwx, gate: &gate, built: None, err: None };
             let uses = have_uses.then_some(uses.as_slice());
             let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, gate: &gate, sync: &*sync, session: inc, rig: &rig, uses, now_ms: hw.now_ms };
             let r = gem.execbuffer2(sid, &view, &req, &mut pages, &mut tables, &mut eng, &mut sink, hw.now_ms);
@@ -114,20 +113,24 @@ impl UapiService {
         // the request is registered in gem-core now: it is tracked whatever else went wrong
         let fence = acc.req_fence.take().expect("made above");
         self.inflight.push(Inflight { req: done.request, ectx: done.engine_ctx, seqno: done.seqno, fence }); // reserved above
-        if acc.gate.is_empty() {
-            if self.gates.is_empty() {
-                self.rig.hold = false;
-                match self.rig.kick(hw.ex, hw.gm, hw.log, hw.now_ms) {
-                    Ok(started) => acc.submitted |= started,
-                    Err(e) => emit(hw.log, format_args!("[I915-UAPI kick failed name={}]", e.name())),
-                }
+        // the request's gate is exactly the fences still pending now (the planner's view may have been one fence earlier); a request
+        // the planner's dequeue already handed to a port cannot be gated any more (it had no pending fence then)
+        let gated = !acc.gate.is_empty();
+        if let Err(e) = self.rig.engine.set_gated(done.engine_ctx, done.seqno, gated) {
+            if gated {
+                emit(hw.log, format_args!("[I915-UAPI gate failed name={} ectx={} seqno={}]", e.name(), done.engine_ctx, done.seqno));
             }
-        } else {
-            let fences = core::mem::take(&mut acc.gate);
-            self.gates.push(Gate { fences }); // reserved above
-            self.rig.hold = true;
         }
-        let (submitted, out_fence, updates) = (done.submitted || acc.submitted, acc.out_fence, core::mem::take(&mut acc.updates));
+        if gated {
+            let fences = core::mem::take(&mut acc.gate);
+            self.gates.push(Gate { fences, ectx: done.engine_ctx, seqno: done.seqno }); // reserved above
+        }
+        // whatever is READY goes now - other contexts, and this request unless it waits on a fence
+        if let Err(e) = self.rig.kick(hw.ex, hw.gm, hw.log, hw.now_ms) {
+            emit(hw.log, format_args!("[I915-UAPI kick failed name={}]", e.name()));
+        }
+        let mine = self.rig.engine.requests().iter().find(|r| r.ctx == done.engine_ctx && r.seqno == done.seqno).map_or(true, |r| r.submitted);
+        let (submitted, out_fence, updates) = (mine, acc.out_fence, core::mem::take(&mut acc.updates));
         self.drop_acc(acc);
         if let Some(e) = sink_err.or(applied.err()) {
             return Err(e);
@@ -150,10 +153,6 @@ impl UapiService {
         Ok(Done::Len(w.pos()))
     }
 
-    /// Recompute whether the engine is held after gates were dropped (a session died, a fence signalled).
-    pub(crate) fn refresh_gate_state(&mut self) {
-        self.rig.hold = !self.gates.is_empty();
-    }
 
     /// Park a blocking call: its reply comes out of [`UapiService::take_ready`] later.
     pub(crate) fn park(&mut self, hdr: Header, kind: WaitKind, now_ms: u64, deadline_ms: Option<u64>) -> Result<(), Fail> {
@@ -175,7 +174,7 @@ impl UapiService {
     /// release gated requests whose fences signalled, declare and recover a hang, and answer parked calls that can now be answered.
     /// Cheap when idle. Call it from the device's loop whenever the engine interrupts and at least every few milliseconds.
     pub fn poll<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {
-        // gates first: a fence that signalled lets the engine go on
+        // gates first: a request whose fences all signalled becomes READY
         let mut i = 0;
         while i < self.gates.len() {
             if self.gates[i].fences.iter().all(|f| self.sync.fence_status(*f) != FenceStatus::Pending) {
@@ -183,11 +182,12 @@ impl UapiService {
                 for f in g.fences {
                     self.sync.put_fence(f);
                 }
+                // READY now: the service below publishes it (a request a reset already cancelled is gone: nothing to open)
+                let _ = self.rig.engine.set_gated(g.ectx, g.seqno, false);
             } else {
                 i += 1;
             }
         }
-        self.refresh_gate_state();
         if !self.hwctx.is_empty() {
             if let Err(e) = self.rig.service(hw.ex, hw.gm, hw.log, hw.now_ms) {
                 emit(hw.log, format_args!("[I915-UAPI service failed name={}]", e.name()));

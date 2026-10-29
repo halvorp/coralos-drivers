@@ -129,10 +129,11 @@ pub struct Eng<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
     /// Shared with the [`Sink`] (which services the engine while it waits for a victim); each method borrows it for its own span.
     pub rig: &'a RefCell<&'a mut EngineRig>,
     pub hw: &'a RefCell<Hwx<'h, B, D, M, L>>,
-    /// An earlier queued request still waits on a fence.
-    pub held: bool,
-    /// THIS submission has a fence that is not signalled yet (set by the sink as it sees the await effects).
+    /// THIS submission has a fence that is not signalled yet (set by the sink as it sees the await effects): its request is marked
+    /// gated in the engine before the dequeue, so the dequeue skips it (and its context's later requests) and publishes the rest.
     pub gate: &'a Cell<bool>,
+    /// The request this submission built.
+    pub built: Option<RequestRef>,
     /// The real error behind a `SubmitError` the trait could not carry.
     pub err: Option<ExecError>,
 }
@@ -141,6 +142,9 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
     fn build_request(&mut self, _class: u16, _instance: u16, engine_ctx: u32, batch: &BatchSpec) -> Result<RequestRef, SubmitError> {
         let mut hw = self.hw.borrow_mut();
         let r = self.rig.borrow_mut().build_request(hw.gm, engine_ctx, batch);
+        if let Ok(b) = r {
+            self.built = Some(b);
+        }
         r.map_err(|e| match e {
             ExecError::Submit(s) => s,
             other => {
@@ -151,8 +155,8 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
     }
     fn dequeue(&mut self, _class: u16, _instance: u16, now: u64) -> Result<Option<SubmissionPlan>, SubmitError> {
         let mut rig = self.rig.borrow_mut();
-        if self.held || self.gate.get() || rig.hold {
-            return Ok(None); // queued behind a fence: the service kicks it when the fence signals
+        if let (true, Some(b)) = (self.gate.get(), self.built) {
+            rig.engine.set_gated(b.ctx, b.seqno, true)?; // waits on a fence: not READY until the service opens its gate
         }
         rig.engine.dequeue(now)
     }

@@ -134,6 +134,11 @@ pub const fn ring_indirect_ctx_offset(base: u32) -> Reg {
 pub const fn ring_elsp(base: u32) -> Reg {
     Reg::new(base + 0x230)
 }
+/// `RING_ACTHD(base)` (intel_engine_regs.h:65): the address the command streamer is executing (low dword).
+pub const fn ring_acthd(base: u32) -> Reg {
+    Reg::new(base + 0x74)
+}
+
 /// `RING_EXECLIST_STATUS_LO(base)` (intel_engine_regs.h:179).
 pub const fn ring_execlist_status_lo(base: u32) -> Reg {
     Reg::new(base + 0x234)

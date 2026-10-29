@@ -55,6 +55,9 @@ pub enum SubmitError {
     NoSuchRequest { ctx: u32, seqno: u32 },
     /// The context still has requests or is in flight (`intel_context_is_active`).
     ContextBusy { id: u32 },
+    /// A request's dependency gate was changed after the request was handed to a port: a dependency must be known before
+    /// `execlists_dequeue` can pick the request (`i915_request_await_*` precede `i915_request_add`).
+    RequestAlreadySubmitted { ctx: u32, seqno: u32 },
     /// The 63 hardware context tags (`GENMASK(BITS_PER_LONG - 2, 0)`) are all in use.
     TagsExhausted,
     /// The timeline's HWSP seqno slot is not usable (outside the driver area, odd, or bit 5 set).
@@ -101,6 +104,7 @@ impl SubmitError {
             SubmitError::NoSuchContext { .. } => "NO-SUCH-CONTEXT",
             SubmitError::NoSuchRequest { .. } => "NO-SUCH-REQUEST",
             SubmitError::ContextBusy { .. } => "CONTEXT-BUSY",
+            SubmitError::RequestAlreadySubmitted { .. } => "REQUEST-ALREADY-SUBMITTED",
             SubmitError::TagsExhausted => "CONTEXT-TAGS-EXHAUSTED",
             SubmitError::SeqnoSlotInvalid { .. } => "SEQNO-SLOT-INVALID",
             SubmitError::SeqnoWrap { .. } => "SEQNO-WRAP",

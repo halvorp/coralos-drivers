@@ -86,6 +86,10 @@ pub struct Request {
     pub wa_tail: u32,
     /// `__i915_request_submit` has been applied: the request has been handed to a port.
     pub submitted: bool,
+    /// The request still waits on a fence (`i915_sw_fence` of its in-fences not yet signalled): it is not READY, and
+    /// `execlists_dequeue` neither picks it nor any later request of the same context (a context's ring executes in order) - but
+    /// it goes on picking ready requests of OTHER contexts. Set and cleared by the caller ([`crate::engine::Engine::set_gated`]).
+    pub gated: bool,
 }
 
 /// An ordered table with removal that GROWS with memory: how many requests clients have outstanding is theirs to choose, so

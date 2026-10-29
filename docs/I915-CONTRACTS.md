@@ -149,6 +149,13 @@ Gtt::walk(va) -> Result<Walk, MemError>                    // PML4/PDP/PD/PT ind
   stall bound (`AWAIT-RETIRE-TIMEOUT`, EBUSY). GEM_CLOSE never waits: a busy object is deferred (`Gem::close_deferred`,
   `[I915-RETIRE-DEFER]`) and freed by the retirement that ends its last use (`[I915-RETIRE-DRAIN after_ms=]`). GEM_WAIT /
   SYNCOBJ_WAIT / SYNC_FILE_WAIT advance the device before they evaluate. `tools/check-i915-waits.sh` keeps all three true.
+* GATED REQUESTS (2026-10-29, Atlas deadlock at seq 490: `gates=1 hold=1 exp=hw+1`). There is no engine-wide hold. A request whose
+  in-fences are still pending is built into its ring at EXECBUFFER2 and marked NOT READY (`Engine::set_gated`); `Engine::dequeue`
+  skips it and every later request of its context and keeps publishing READY requests of other contexts, and a context's
+  `CTX_RING_TAIL` is the tail of its last READY request (never past a gated one; `FORCE_RESTORE` only when the tail does not advance).
+  `UapiService::poll` marks the request READY when its gate's fences have all signalled; the same poll's service publishes it. The
+  `[I915-STALL]` line reads the ring registers under render forcewake (`acthd` included), prints `stage=? (mmio-unreadable)` when any
+  read fails, and names `published=` (was the expected request ever given to a port), `gated=`, `gate_rq=` and its fence's `producer=`.
 * Guarantees the model keeps: guard pages and the scratch tail are written as scratch on every bind; an unbound or reused range is
   `STALE-MAPPING`; a guard page is `GUARD-PAGE-ACCESS`; an address at or above bit 48 is `VA-BEYOND-48BIT` (a range crossing it is
   refused at the first offending address, `1 << 48`); ids are never reused; pinned nodes and the GGTT error-capture reservation are

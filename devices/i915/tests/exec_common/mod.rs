@@ -58,6 +58,8 @@ pub struct ChipState {
     pub reset_ctls: Vec<u32>,
     pub ready_never: bool,
     pub gdrst_stuck: bool,
+    /// The forcewake ACK never follows the request (a GT that will not wake): every awake read fails.
+    pub fw_never_acks: bool,
     /// The deadline expires after this many reads since `arm_deadline` (u32::MAX = never: a host with no clock).
     pub deadline_after_reads: u32,
     pub armed_reads: u32,
@@ -86,6 +88,7 @@ impl Chip {
             reset_ctls: vec![0x2000 + 0xd0, 0x22000 + 0xd0, 0x12000 + 0xd0, 0x1a000 + 0xd0],
             ready_never: false,
             gdrst_stuck: false,
+            fw_never_acks: false,
             deadline_after_reads: u32::MAX,
             armed_reads: 0,
             reads: vec![],
@@ -155,10 +158,11 @@ impl Mmio for Chip {
             }
             return;
         }
+        let stuck = s.fw_never_acks;
         if let Some(d) = s.doms.iter_mut().find(|d| d.set == reg) {
             let m = v >> 16;
             d.state = (d.state & !m) | (v & m & 0xffff);
-            d.ack_val = d.state & 0x8001;
+            d.ack_val = if stuck { 0 } else { d.state & 0x8001 };
             s.fw_writes.push((reg, v));
             return;
         }

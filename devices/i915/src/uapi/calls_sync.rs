@@ -317,7 +317,7 @@ impl UapiService {
 impl UapiService {
     /// A parked wait ran to its timeout: say WHERE the render engine is, once per power of two. The line separates the stages a
     /// completion can be lost at: nothing was ever submitted (`reqs=0 inflight=0`), a request sits behind a fence that never signals
-    /// (`gates`/`hold`), the ELSP was never acknowledged (`xlo` idle with `tail != head`), the batch never finished (`head` short of `tail`;
+    /// (`gates`/`gated`, `gate_rq` and the `producer` of its fence), was never handed to a port (`published=0`), the ELSP was never acknowledged (`xlo` idle with `tail != head`), the batch never finished (`head` short of `tail`;
     /// the GPU's seqno `hw` short of `exp`), or it finished and the CPU did not see it (`hw` at or past `exp` while the fence is pending).
     /// `csb` is RING_CONTEXT_STATUS_PTR (write pointer in bits 8..11, read in 0..3); `isr0` the GT interrupt status the user interrupt would set.
     fn wait_kind_name(k: &WaitKind) -> &'static str {
@@ -338,19 +338,59 @@ impl UapiService {
         }
         use i915_gt_regs_core as r;
         let base = r::RENDER_RING_BASE;
-        let mut rd = |reg| hw.ex.rd(reg).unwrap_or(0xdead_dead);
-        let (head, tail, ctl) = (rd(r::ring_head(base)), rd(r::ring_tail(base)), rd(r::ring_ctl(base)));
-        let (xlo, xhi, csb) = (rd(r::ring_execlist_status_lo(base)), rd(r::ring_execlist_status_hi(base)), rd(r::ring_context_status_ptr(base)));
-        let (eir, isr0) = (rd(r::ring_eir(base)), rd(r::gen8_gt_isr(0)));
-        let (exp, hwq) = match self.inflight.first() {
-            Some(f) => (f.seqno, self.rig.engine.hw_seqno(f.ectx).unwrap_or(0)),
-            None => (0, 0),
+        // The ring registers are in the render forcewake domain: read them AWAKE (an unawake read is refused and was printed as
+        // 0xdeaddead, Atlas 2026-10-29). `[head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0]`; a read that fails is `None`.
+        let regs = [
+            r::ring_head(base),
+            r::ring_tail(base),
+            r::ring_ctl(base),
+            r::ring_acthd(base),
+            r::ring_execlist_status_lo(base),
+            r::ring_execlist_status_hi(base),
+            r::ring_context_status_ptr(base),
+            r::ring_eir(base),
+            r::gen8_gt_isr(0),
+        ];
+        let d = hw.ex.domains_for(regs);
+        let mut v = [None::<u32>; 9];
+        let _ = hw.ex.awake(d, |ex| {
+            for (o, reg) in v.iter_mut().zip(regs) {
+                *o = ex.rd(reg).ok();
+            }
+            Ok(())
+        });
+        let readable = v.iter().all(|x| x.is_some());
+        let [head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0] = v.map(|x| x.unwrap_or(0));
+        let (exp_ctx, exp, hwq) = match self.inflight.first() {
+            Some(f) => (f.ectx, f.seqno, self.rig.engine.hw_seqno(f.ectx).unwrap_or(0)),
+            None => (0, 0, 0),
         };
+        // was the expected request ever handed to an ELSP port? (`-` = not in the engine's table: retired, or nothing in flight)
+        let published = match self.rig.engine.requests().iter().find(|q| q.ctx == exp_ctx && q.seqno == exp) {
+            Some(q) if q.submitted => "1",
+            Some(_) => "0",
+            None => "-",
+        };
+        // the first gate's request and the request of ours whose fence it waits on (`ext` = a fence no request of ours makes)
+        let (gate_rq, producer) = match self.gates.first() {
+            Some(g) => {
+                let p = self.inflight.iter().find(|f| g.fences.contains(&f.fence)).map(|f| (f.ectx, f.seqno));
+                (Some((g.ectx, g.seqno)), p)
+            }
+            None => (None, None),
+        };
+        let gated = self.rig.engine.requests().iter().filter(|q| q.gated).count();
         // the stage the completion is lost at: A = a request is gated behind a fence nothing has signalled (software), B = the ring is
         // drained (HEAD == TAIL) but the CPU still reads an old seqno (visibility), C = the command streamer has not consumed the ring,
-        // D = nothing is in flight (the fence belongs to no request of ours), E = the batch finished and the CPU sees it (retire bookkeeping)
-        let stage = if self.inflight.is_empty() {
+        // D = nothing is in flight (the fence belongs to no request of ours), E = the batch finished and the CPU sees it (retire
+        // bookkeeping), P = the expected request was never handed to a port (software scheduling). `?` = a register could not be read:
+        // no letter is guessed from what a failed read returns.
+        let stage = if !readable {
+            "? (mmio-unreadable)"
+        } else if self.inflight.is_empty() {
             "D"
+        } else if published == "0" {
+            "P"
         } else if !self.gates.is_empty() && head == tail && self.rig.engine.execlists().is_idle() {
             "A"
         } else if !crate::uapi::calls_sync::seqno_behind(hwq, exp) {
@@ -360,13 +400,28 @@ impl UapiService {
         } else {
             "C"
         };
+        let producer = Req(producer, if gate_rq.is_some() { "ext" } else { "-" });
         emit(
             hw.log,
             format_args!(
-                "[I915-STALL stage={} n={} wait={} inflight={} gates={} deferred={} hold={} reqs={} exec_idle={} exp={} hw={} head={:#x} tail={:#x} ctl={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
-                stage, n, kind, self.inflight.len(), self.gates.len(), self.gem.closes_deferred(), self.rig.hold as u8, self.rig.engine.requests().len(), self.rig.engine.execlists().is_idle() as u8, exp, hwq, head, tail, ctl, xlo, xhi, csb, eir, isr0
+                "[I915-STALL stage={} n={} wait={} inflight={} gates={} gated={} deferred={} reqs={} exec_idle={} exp={} published={} hw={} gate_rq={} producer={} head={:#x} tail={:#x} ctl={:#x} acthd={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
+                stage, n, kind, self.inflight.len(), self.gates.len(), gated, self.gem.closes_deferred(), self.rig.engine.requests().len(),
+                self.rig.engine.execlists().is_idle() as u8, exp, published, hwq, Req(gate_rq, "-"), producer,
+                head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0
             ),
         );
+    }
+}
+
+/// A request as `ectx:seqno` in a log line, or `none` when there is none.
+struct Req(Option<(u32, u32)>, &'static str);
+
+impl core::fmt::Display for Req {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some((c, s)) => write!(f, "{}:{}", c, s),
+            None => f.write_str(self.1),
+        }
     }
 }
 

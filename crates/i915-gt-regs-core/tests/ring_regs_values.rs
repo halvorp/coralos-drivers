@@ -42,6 +42,7 @@ fn ring_and_execlist_registers_equal_the_values_gcc_computes_from_the_linux_head
     assert_eq!(ring_indirect_ctx_offset(0x2000).offset(), 0x21c8, "ring_indirect_ctx_offset(0x2000)");
     assert_eq!(ring_elsp(0x2000).offset(), 0x2230, "ring_elsp(0x2000)");
     assert_eq!(ring_execlist_status_lo(0x2000).offset(), 0x2234, "ring_execlist_status_lo(0x2000)");
+    assert_eq!(ring_acthd(0x2000).offset(), 0x2074, "ring_acthd(0x2000)"); // intel_engine_regs.h:65 RING_ACTHD(base) = base + 0x74
     assert_eq!(ring_execlist_status_hi(0x2000).offset(), 0x2238, "ring_execlist_status_hi(0x2000)");
     assert_eq!(ring_context_control(0x2000).offset(), 0x2244, "ring_context_control(0x2000)");
     assert_eq!(CTX_CTRL_ENGINE_CTX_RESTORE_INHIBIT, 0x00000001, "CTX_CTRL_ENGINE_CTX_RESTORE_INHIBIT");

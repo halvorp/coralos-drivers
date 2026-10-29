@@ -139,6 +139,9 @@ pub(crate) struct Inflight {
 #[derive(Debug)]
 pub(crate) struct Gate {
     pub fences: Vec<FenceId>,
+    /// The gated request (engine context, seqno): marked not-READY in the engine until every fence above has signalled.
+    pub ectx: u32,
+    pub seqno: u32,
 }
 
 #[derive(Debug)]
@@ -607,7 +610,6 @@ impl UapiService {
             self.authority = None;
             emit(hw.log, format_args!("[I915-DISPLAY authority ended inc={}]", inc));
         }
-        self.refresh_gate_state();
         self.trim_pool(hw);
         emit(hw.log, format_args!("[I915-UAPI session dead inc={}]", inc));
     }

@@ -229,6 +229,18 @@ impl Engine {
         Ok(())
     }
 
+    /// Mark request `(ctx, seqno)` as waiting on a fence (`gated`) or ready. Linux holds a request back from the scheduler until its
+    /// `submit` sw-fence fires (`__i915_request_queue` after `i915_sw_fence_commit`, i915_request.c); here the request is already in
+    /// its ring, and the gate is what [`Engine::dequeue`] obeys. Refused by name for a request already handed to a port.
+    pub fn set_gated(&mut self, ctx: u32, seqno: u32, gated: bool) -> Result<(), SubmitError> {
+        let rq = self.reqs.as_mut_slice().iter_mut().find(|r| r.ctx == ctx && r.seqno == seqno).ok_or(SubmitError::NoSuchRequest { ctx, seqno })?;
+        if rq.submitted {
+            return Err(SubmitError::RequestAlreadySubmitted { ctx, seqno });
+        }
+        rq.gated = gated;
+        Ok(())
+    }
+
     /// `i915_ggtt_offset(ce->state)`.
     pub fn context_lrca(&self, id: u32) -> Result<u32, SubmitError> {
         Ok(self.ctx(id)?.lrca)
@@ -296,7 +308,7 @@ impl Engine {
         // `GEM_BUG_ON(intel_ring_direction(ring, rq->wa_tail, rq->head) <= 0)` (:607) cannot trip here: a request is a fixed
         // few hundred bytes and the smallest ring is 4 KiB, so wa_tail is always less than half a ring ahead of head.
         ring.check_tail(tail)?;
-        let rq = Request { ctx, seqno, head, infix, postfix, tail, wa_tail, submitted: false };
+        let rq = Request { ctx, seqno, head, infix, postfix, tail, wa_tail, submitted: false, gated: false };
         self.reqs.push(rq)?;
         let c = self.ctx_mut(ctx)?;
         c.ring = ring;
