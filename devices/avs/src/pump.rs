@@ -139,6 +139,10 @@ impl Pump {
             let is = rig.read32(Space::Hda, AZX_REG_INTSTS)?;
             if is != u32::MAX && is & (1 << index) != 0 {
                 let sts = rig.read(self.hda_sts(index))? as u8;
+                if sts == 0xff {
+                    // all-ones: the stream's registers are not answering (powered down, or gone); named, and nothing is written back
+                    return Err(PumpError::StreamUnreadable);
+                }
                 if sts as u32 & SD_INT_MASK != 0 {
                     handled = true;
                     // write 1 to clear exactly the bits we saw

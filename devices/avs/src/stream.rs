@@ -107,14 +107,23 @@ impl RingAcct {
         self.fed - self.hw_total
     }
 
-    /// Fold a new `LPIB` reading into the hardware total. A position beyond the ring is not a position (a dead register reads all-ones):
-    /// `false`, nothing changes. A position that did not move is zero bytes.
-    /// Bytes the hardware has read since the last [`RingAcct::advance_hw`], from a fresh `LPIB` (wrap-corrected); `None` for a position
-    /// outside the ring. Reads nothing into the account.
-    pub fn hw_delta(&self, lpib: u32) -> Option<u32> {
-        if lpib >= self.ring_bytes {
-            return None;
+    /// A position register reading as Linux reads it (avs `avs_component_pointer`, sound/soc/intel/avs/pcm.c:1337-1338: `if (pos >=
+    /// bufsize) pos = 0;`): the register reads the buffer's size at the wrap, which is position 0. `None` for all-ones: the register of a
+    /// function that is not answering (powered down, or gone).
+    pub const fn position(&self, lpib: u32) -> Option<u32> {
+        if lpib == u32::MAX {
+            None
+        } else if lpib >= self.ring_bytes {
+            Some(0)
+        } else {
+            Some(lpib)
         }
+    }
+
+    /// Bytes the hardware has read since the last [`RingAcct::advance_hw`], from a fresh `LPIB` (wrap-corrected, [`RingAcct::position`]);
+    /// `None` for a register that is not answering. Reads nothing into the account.
+    pub fn hw_delta(&self, lpib: u32) -> Option<u32> {
+        let lpib = self.position(lpib)?;
         Some(if lpib >= self.last_lpib { lpib - self.last_lpib } else { self.ring_bytes - self.last_lpib + lpib })
     }
 
@@ -123,10 +132,10 @@ impl RingAcct {
         self.last_lpib
     }
 
+    /// Fold a new `LPIB` reading into the hardware total ([`RingAcct::position`]). A register that is not answering is not a position:
+    /// `false`, nothing changes. A position that did not move is zero bytes.
     pub fn advance_hw(&mut self, lpib: u32) -> bool {
-        if lpib >= self.ring_bytes {
-            return false;
-        }
+        let Some(lpib) = self.position(lpib) else { return false };
         let delta = if lpib >= self.last_lpib { lpib - self.last_lpib } else { self.ring_bytes - self.last_lpib + lpib };
         self.last_lpib = lpib;
         self.hw_total += delta as u64;

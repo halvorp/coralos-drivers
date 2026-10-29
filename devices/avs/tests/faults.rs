@@ -264,3 +264,22 @@ fn a_dead_clients_session_endpoints_are_handed_back_and_the_next_client_is_serve
 fn logged_lost(dev: &avs_device::Device<sim::Sim>) -> Vec<String> {
     dev.rig.m.logs.iter().filter(|l| l.starts_with("[AVS-DEV IRQ-LOST")).cloned().collect()
 }
+
+#[test]
+fn a_stream_status_that_reads_all_ones_is_named_unreadable_and_never_acknowledged() {
+    // an SD_STS of 0xff is a stream whose registers are not answering (powered down, or gone): not a status with every error bit set. The
+    // fault is named for what it is, and nothing is written back to the register.
+    let Some(mut dev) = started(true) else { return };
+    let mut c = Client::new();
+    let id = open_stream(&mut dev, &mut c);
+    call(&mut dev, &mut c, Opcode::PcmWrite, &pcm_payload(id, &ramp(4096, 0)));
+    start_stream(&mut dev, &mut c, id);
+    run_ms(&mut dev, 30);
+    let sts = sim::hda::sd(dev.dsp.as_ref().unwrap().host.index) + 3;
+    let w0 = dev.rig.m.writes.len();
+    dev.rig.m.hda.mem[sts as usize] = 0xff;
+    run_ms(&mut dev, 50);
+    let st = get_status(&mut dev, &mut c);
+    faulted(&st, "stream-registers-unreadable");
+    assert!(!dev.rig.m.writes[w0..].iter().any(|w| w.space == avs_fw_core::effect::Space::Hda && w.off == sts && w.value == 0xff), "never acked as a status");
+}
