@@ -225,11 +225,22 @@ fn a_board_record_round_trips_and_refuses_what_would_make_the_speakers_reachable
         jack_pad: Pad { community: 2, pad: 10 },
         spkr_rst_pad: Pad { community: 2, pad: 11 },
         pad_window_len: 0x10000,
+        irq_line_exclusive: true,
     };
     atlas.check().unwrap();
     let mut b = [0u8; 128];
     let n = atlas.encode(&mut b).unwrap();
     assert_eq!(Board::decode(&b[..n]).unwrap(), atlas);
+    // the interrupt-line byte: a broker that predates it writes 0, which reads as "shared with a function nobody services" (the device polls);
+    // 1 is "may be waited on"; anything else is refused
+    let shared = Board { irq_line_exclusive: false, ..atlas };
+    let mut z = [0u8; 128];
+    assert_eq!(shared.encode(&mut z).unwrap(), n);
+    let at = (0..n).find(|&i| b[i] != z[i]).expect("one byte differs");
+    assert_eq!((b[at], z[at]), (1, 0));
+    assert!(!Board::decode(&z[..n]).unwrap().irq_line_exclusive, "an old broker's zero is the safe reading");
+    z[at] = 2;
+    assert!(Board::decode(&z[..n]).is_err(), "an unknown line value is refused");
     assert_eq!(atlas.amps(), &[0x31, 0x32]);
     assert_eq!(atlas.speaker_ssps(), &[0]);
     // the codec at an amplifier's address, the headset on a speaker SSP, a bad address, no reset pad, colliding pads: each refused by name

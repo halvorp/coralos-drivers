@@ -53,6 +53,7 @@ pub fn atlas_board() -> Board {
         jack_pad: Pad { community: 2, pad: 10 },
         spkr_rst_pad: Pad { community: 2, pad: 11 },
         pad_window_len: 0x10000,
+        irq_line_exclusive: true,
     }
 }
 

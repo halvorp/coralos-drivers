@@ -49,6 +49,12 @@ pub struct Board {
     /// The offset in each pad window of the pad configuration registers is read from the window itself (`PADBAR`); these two are the
     /// communities' window lengths the loader granted, so a pad outside them is refused at load.
     pub pad_window_len: u32,
+    /// The cAVS function's interrupt line may be WAITED on: no other function the board routes to the same line is left unserviced (each has
+    /// a driver that clears its own INTx, or there is none). FALSE (the encoding's zero, so a record from a broker that does not know the
+    /// field says it) = the line is shared with a function nobody services - the Pixelbook Go's GSI 16 with the GPU's INTA (00:02.0, DSDT
+    /// PICP {0x0002FFFF,0,0,0x10}) while i915.device arms no interrupt - and the device polls (`why=shared-unserviced`), never unmasking a
+    /// level line another function can hold asserted. A board fact (the broker's, from the BSP), never decided in the device.
+    pub irq_line_exclusive: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,7 +141,7 @@ impl Board {
         for s in &self.speaker_ssp {
             w.u8("board.speaker_ssp", *s)?;
         }
-        w.u8("board.reserved", 0)?;
+        w.u8("board.irq_line", self.irq_line_exclusive as u8)?;
         w.u8("board.reserved", 0)?;
         w.u32("board.mclk_hz", self.mclk_hz)?;
         w.u32("board.i2c_bus_hz", self.i2c_bus_hz)?;
@@ -176,10 +182,11 @@ impl Board {
         for s in speaker_ssp.iter_mut() {
             *s = r.u8("board.speaker_ssp")?;
         }
-        let (r1, r2) = (r.u8("board.reserved")?, r.u8("board.reserved")?);
-        if r1 != 0 || r2 != 0 {
-            return Err(WireError::ReservedNonZero { what: "board.reserved", got: (r1 as u64) << 8 | r2 as u64 }.into());
+        let (line, r2) = (r.u8("board.irq_line")?, r.u8("board.reserved")?);
+        if line > 1 || r2 != 0 {
+            return Err(WireError::ReservedNonZero { what: "board.reserved", got: (line as u64) << 8 | r2 as u64 }.into());
         }
+        let irq_line_exclusive = line == 1;
         if n_amps as usize > MAX_LISTED || n_speaker_ssp as usize > MAX_LISTED {
             return Err(WireError::LimitExceeded { what: "board.count", got: n_amps.max(n_speaker_ssp) as u64, max: MAX_LISTED as u64 }.into());
         }
@@ -211,6 +218,7 @@ impl Board {
             jack_pad,
             spkr_rst_pad,
             pad_window_len: lo | hi << 16,
+            irq_line_exclusive,
         };
         s.check()?;
         Ok(s)

@@ -48,6 +48,9 @@ pub enum PollWhy {
     MsiEnabled,
     /// COMMAND's INTx Disable bit is set: the line this task holds can never assert.
     IntxDisabled,
+    /// The board record says the line is shared with a function nobody services (`Board::irq_line_exclusive` false): unmasking a level line
+    /// that function can hold asserted would storm this core, so the line is never armed.
+    SharedUnserviced,
 }
 
 impl PollWhy {
@@ -56,6 +59,7 @@ impl PollWhy {
             PollWhy::NoLine => "no-line",
             PollWhy::MsiEnabled => "msi-enabled",
             PollWhy::IntxDisabled => "intx-disabled",
+            PollWhy::SharedUnserviced => "shared-unserviced",
         }
     }
 }
@@ -79,6 +83,8 @@ pub struct IrqProbe {
     pub msi_data: u16,
     /// The task holds an interrupt line it may wait on.
     pub line_granted: bool,
+    /// The board record says the line is shared with a function nobody services ([`PollWhy::SharedUnserviced`]).
+    pub shared_unserviced: bool,
 }
 
 impl IrqProbe {
@@ -102,6 +108,8 @@ impl IrqProbe {
     pub fn mode(&self) -> IrqMode {
         if !self.line_granted {
             IrqMode::Poll(PollWhy::NoLine)
+        } else if self.shared_unserviced {
+            IrqMode::Poll(PollWhy::SharedUnserviced)
         } else if self.msi_cap.is_some() && self.msi_flags & PCI_MSI_FLAGS_ENABLE != 0 {
             IrqMode::Poll(PollWhy::MsiEnabled)
         } else if self.command & PCI_COMMAND_INTX_DISABLE != 0 {
@@ -121,7 +129,9 @@ pub fn read_probe<M: Machine>(rig: &mut Rig<M>) -> Result<IrqProbe, RegFault> {
         let v = rig.read32(Space::PciConfig, (i * 4) as u32)?;
         cfg[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
     }
-    Ok(IrqProbe::decode(&cfg, rig.m.avs_irq_granted()))
+    let mut p = IrqProbe::decode(&cfg, rig.m.avs_irq_granted());
+    p.shared_unserviced = !rig.line_exclusive;
+    Ok(p)
 }
 
 /// Probe, decide, and set the rig's mode. A mode already forced to polling (a lost interrupt was found) stays polling.

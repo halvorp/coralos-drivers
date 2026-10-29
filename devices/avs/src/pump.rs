@@ -50,6 +50,8 @@ pub enum PumpError {
     OutOfMemory,
     /// The host stream reported a descriptor or FIFO error.
     StreamError { sts: u8 },
+    /// The stream's registers read as all-ones: the function is not answering (powered down, or gone) - never a stream status to act on.
+    StreamUnreadable,
 }
 
 impl PumpError {
@@ -61,6 +63,7 @@ impl PumpError {
             PumpError::Ipc(e) => e.name(),
             PumpError::OutOfMemory => "out-of-memory",
             PumpError::StreamError { .. } => "stream-error",
+            PumpError::StreamUnreadable => "stream-registers-unreadable",
         }
     }
 }

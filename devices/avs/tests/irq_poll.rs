@@ -336,3 +336,50 @@ fn in_line_mode_a_stream_whose_period_interrupt_never_fires_is_caught_by_the_per
     assert!(dev.dsp.as_ref().unwrap().acct.pcm_fed > 64 * 1024, "fed {}", dev.dsp.as_ref().unwrap().acct.pcm_fed);
     assert!(dev.rig.m.played(7).len() > 4 * 16384, "the link stalled after {} bytes", dev.rig.m.played(7).len());
 }
+
+#[test]
+fn in_line_mode_the_clients_pcm_written_after_start_reaches_the_dma_buffer() {
+    let Some(mut dev) = speaker_dev(Some(atlas_cfg()), Line::Delivered) else { return };
+    let mut c = Client::new();
+    let (s, _) = start_speakers(&mut dev, &mut c);
+    assert_eq!(s, Status::Ok);
+    let id = dev.stream.as_ref().unwrap().id;
+    let fed0 = dev.dsp.as_ref().unwrap().acct.pcm_fed;
+    for k in 0..50usize {
+        call(&mut dev, &mut c, Opcode::PcmWrite, &pcm_payload(id, &ramp(1024, 7 + k * 1024)));
+        run_ms(&mut dev, 20);
+    }
+    assert!(!dev.rig.irq_poll, "{:?}", logged(&dev, "[AVS-DEV"));
+    let fed = dev.dsp.as_ref().unwrap().acct.pcm_fed - fed0;
+    assert!(fed >= 40 * 4096, "line mode fed {fed} bytes of the client's PCM: {:?}", logged(&dev, "[AVS-DEV POS"));
+}
+
+#[test]
+fn a_line_the_board_says_is_shared_with_an_unserviced_function_is_never_unmasked_and_the_device_polls_and_plays() {
+    // Atlas 2026-10-29 ("teal grass wave"): line mode on GSI 16, then after the tone stopped `IRQ-STORM spurious=64` and the GUI froze - the GPU's
+    // INTA (00:02.0) is routed to the same GSI and i915.device services no GPU interrupt, so an unmasked level line could be held by it. The
+    // board record says so (`irq_line_exclusive: false`, the zero a broker that predates the field writes): the device polls by name and never
+    // arms the line. FAILING FIRST (12be969): the record had no such fact and the device took the line.
+    let Some(mut sim) = atlas_with_speakers() else { return };
+    let mut board = sim::world::atlas_board();
+    board.irq_line_exclusive = false;
+    sim.files.insert("board.bin".into(), sim::world::board_bytes(&board));
+    sim.cfg = atlas_cfg();
+    let mut dev = avs_device::Device::new(sim);
+    dev.start();
+    let mut c = Client::new();
+    let (s, ph) = start_speakers(&mut dev, &mut c);
+    assert_eq!((s, ph.phase), (Status::Ok, StreamPhase::Running), "{:?}", logged(&dev, "[AVS-"));
+    let irq = logged(&dev, "[AVS-DEV IRQ mode=");
+    assert_eq!(irq.len(), 1, "{irq:?}");
+    assert!(irq[0].starts_with("[AVS-DEV IRQ mode=poll why=shared-unserviced line=true"), "{}", irq[0]);
+    let id = dev.stream.as_ref().unwrap().id;
+    for k in 0..40usize {
+        call(&mut dev, &mut c, Opcode::PcmWrite, &pcm_payload(id, &ramp(1024, 3 + k * 1024)));
+        run_ms(&mut dev, 20);
+    }
+    assert_eq!(dev.rig.m.irq_rearms, 0, "the shared line is never armed");
+    assert!(dev.rig.m.waits.iter().all(|w| !w.want.avs_irq || w.woke != Wake::AvsIrq), "no wait was woken by the line");
+    assert!(dev.dsp.as_ref().unwrap().acct.pcm_fed >= 30 * 4096, "the client's PCM is fed by polling");
+    assert!(logged(&dev, "[AVS-DEV FAULT").is_empty(), "{:?}", logged(&dev, "[AVS-DEV FAULT"));
+}
