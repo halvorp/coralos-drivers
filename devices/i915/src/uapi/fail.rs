@@ -55,7 +55,7 @@ impl From<ExecError> for Fail {
     fn from(e: ExecError) -> Fail {
         let errno = match e {
             ExecError::Dma(_) | ExecError::EndowmentExhausted { .. } | ExecError::GrantTableFull { .. } => errno::ENOMEM,
-            ExecError::AwaitRetireTimeout { .. } => errno::EBUSY,
+            ExecError::AwaitRetireTimeout { .. } | ExecError::NotRetired { .. } => errno::EBUSY,
             _ => errno::EIO,
         };
         let name = match e {

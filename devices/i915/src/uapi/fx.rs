@@ -14,7 +14,8 @@ use crate::log::Log;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use coralos_hal::{Dma, Mmio};
-use i915_gem_core::{Effect, Gem, SessionId, VmId};
+use crate::log::emit;
+use i915_gem_core::{Effect, Gem, ObjId, SessionId, VmId};
 use i915_syncobj_core::FenceId;
 use i915_wire::errno;
 
@@ -40,12 +41,15 @@ impl UapiService {
         session: u64,
         f: impl FnOnce(&mut Gem, &mut Sink<'_, '_, B, D, M, L>) -> R,
     ) -> (R, Option<Fail>) {
-        let busy = !self.inflight.is_empty();
+        let mut uses = Vec::new();
+        let have_uses = self.gem.vma_uses(&mut uses).is_ok();
         let gate = Cell::new(false);
         let (r, fx, err) = {
-            let UapiService { gem, sync, .. } = &mut *self;
+            let UapiService { gem, sync, rig, .. } = &mut *self;
             let hwx = RefCell::new(Hwx { ex: &mut *hw.ex, gm: &mut *hw.gm, log: &mut *hw.log });
-            let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, busy, gate: &gate, sync: &*sync, session };
+            let rig = RefCell::new(&mut *rig);
+            let uses = have_uses.then_some(uses.as_slice());
+            let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, gate: &gate, sync: &*sync, session, rig: &rig, uses, now_ms: hw.now_ms };
             let r = f(gem, &mut sink);
             (r, sink.fx, sink.err)
         };
@@ -53,6 +57,28 @@ impl UapiService {
         let aerr = self.apply_effects(hw, session, fx, &mut acc).err();
         self.drop_acc(acc);
         (r, err.or(aerr))
+    }
+
+    /// A GEM_CLOSE left `obj` for retirement: `[I915-RETIRE-DEFER obj=.. vmas=.. pending=.. rep=..]` at the first and each power of two.
+    pub(crate) fn note_close_deferred<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, obj: ObjId) {
+        if self.deferred.try_reserve(1).is_ok() {
+            self.deferred.push((obj, hw.now_ms)); // telemetry: a refused reservation only loses the drain's after_ms
+        }
+        self.defer_marks = self.defer_marks.saturating_add(1);
+        if self.defer_marks.is_power_of_two() {
+            let (vmas, pending) = (self.gem.vma_count_of(obj), self.gem.closes_deferred());
+            emit(hw.log, format_args!("[I915-RETIRE-DEFER obj={} vmas={} pending={} rep={}]", obj.index(), vmas, pending, self.defer_marks));
+        }
+    }
+
+    /// An object was freed: if a GEM_CLOSE had deferred it, `[I915-RETIRE-DRAIN obj=.. after_ms=.. rep=..]` (powers of two).
+    fn note_freed<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, obj: ObjId) {
+        let Some(i) = self.deferred.iter().position(|(o, _)| *o == obj) else { return };
+        let (_, at) = self.deferred.swap_remove(i);
+        self.drain_marks = self.drain_marks.saturating_add(1);
+        if self.drain_marks.is_power_of_two() {
+            emit(hw.log, format_args!("[I915-RETIRE-DRAIN obj={} after_ms={} rep={}]", obj.index(), hw.now_ms.saturating_sub(at), self.drain_marks));
+        }
     }
 
     pub(crate) fn drop_acc(&mut self, acc: Acc) {
@@ -84,7 +110,8 @@ impl UapiService {
                 Effect::RevokeMmap { obj } => {
                     let _ = self.revoke_object_leases(hw.log, obj);
                 }
-                Effect::ObjectFreed { .. } | Effect::AwaitRequest { .. } => {}
+                Effect::ObjectFreed { obj } => self.note_freed(hw, obj),
+                Effect::AwaitRequest { .. } => {}
                 Effect::Clflush { obj } => {
                     if let Some(p) = self.objs.get(obj) {
                         let (mut at, mut left) = (p.run.dev, p.run.bytes());

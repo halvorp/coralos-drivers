@@ -141,6 +141,14 @@ Gtt::walk(va) -> Result<Walk, MemError>                    // PML4/PDP/PD/PT ind
   leading guard); `new_tables()` counts table pages consumed.
 * Ordering the executor may rely on: a table page is filled before the entry that links it; a victim's `AwaitRetire` precedes its
   scratch fill; every victim is unmapped before the new range is written; every store precedes every flush.
+* WHO WAITS (2026-10-29, Atlas `AWAIT-RETIRE-TIMEOUT` on GEM_CLOSE). The device has no engine interrupt: completion is seen only by
+  servicing the engine. So the executor (`Executor::run_bind`) never waits - it asks each victim's predicate ONCE, before the first
+  store, and refuses the whole plan with `AWAIT-RETIRE-NOT-RETIRED` if one is not retired. The waiter is the uAPI sink
+  (`uapi::adapt::Sink`): its predicate is per VMA (`vma_retired`: every unretired request that used it, from `Gem::vma_uses`, against
+  the seqno the hardware wrote, wrapping) and between asks it parks `COMPLETION_POLL_MS` and services the engine, up to the engine's
+  stall bound (`AWAIT-RETIRE-TIMEOUT`, EBUSY). GEM_CLOSE never waits: a busy object is deferred (`Gem::close_deferred`,
+  `[I915-RETIRE-DEFER]`) and freed by the retirement that ends its last use (`[I915-RETIRE-DRAIN after_ms=]`). GEM_WAIT /
+  SYNCOBJ_WAIT / SYNC_FILE_WAIT advance the device before they evaluate. `tools/check-i915-waits.sh` keeps all three true.
 * Guarantees the model keeps: guard pages and the scratch tail are written as scratch on every bind; an unbound or reused range is
   `STALE-MAPPING`; a guard page is `GUARD-PAGE-ACCESS`; an address at or above bit 48 is `VA-BEYOND-48BIT` (a range crossing it is
   refused at the first offending address, `1 << 48`); ids are never reused; pinned nodes and the GGTT error-capture reservation are

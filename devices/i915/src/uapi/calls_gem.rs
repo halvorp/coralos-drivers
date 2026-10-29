@@ -138,9 +138,15 @@ impl UapiService {
                 ok!(GemCreateRep { handle: c.handle, size: c.size, ..Default::default() })
             }
             Opcode::GemClose => {
+                // the NAME goes now and the call answers now; an object a request still uses is freed by the retirement that ends
+                // that use (gem-core keeps it alive; `poll` -> `Gem::retire` drains it). Nothing here waits for the GPU.
                 let r = GemCloseReq::from_payload(p)?;
+                let obj = self.gem.lookup_object(sid, r.handle).ok();
                 let (res, err) = self.with_sink(hw, inc, |gem, sink| gem.close(sid, r.handle, sink));
                 res?;
+                if let Some(obj) = obj.filter(|o| self.gem.close_deferred(*o)) {
+                    self.note_close_deferred(hw, obj);
+                }
                 err.map_or(Ok(()), Err)?;
                 ok_empty!()
             }
@@ -309,6 +315,7 @@ impl UapiService {
     fn gem_wait<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, h: &Header, inc: u64, p: &[u8], out: &mut [u8]) -> Result<Done, Fail> {
         let r = GemWaitReq::from_payload(p)?;
         let sid = SessionId(inc);
+        self.poll(hw); // advance the device first: a completion the GPU wrote is seen now, not at the next 4 ms timer
         match self.gem.wait_plan(sid, r.handle, r.flags, r.timeout_ns)? {
             Wait::Idle => {
                 let (left, res) = i915_gem_core::wait_finish(r.timeout_ns, 0, false, JIFFY_NS);

@@ -58,8 +58,12 @@ pub enum ExecError {
     GgttStoreRefused { offset: u32 },
     /// A CPU-side store or load whose device address is not inside a DMA grant this device holds.
     OutsideGrant { device_addr: u64, len: u64 },
-    /// A victim VMA never retired.
+    /// A victim VMA did not retire within the engine's stall bound: `polls` services of the engine, one every
+    /// `uapi::COMPLETION_POLL_MS`, never observed every request that used it complete (the waiter is the uAPI sink, `uapi::adapt`).
     AwaitRetireTimeout { vma: u32, polls: u32 },
+    /// A plan reached the executor with a victim its caller had not proven retired. The executor cannot make the GPU progress, so it
+    /// does not wait: it refuses before any store (`AwaitRetire` is a precondition here, waited for by whoever can service the engine).
+    NotRetired { vma: u32 },
     /// The device's DMA endowment cannot cover the request.
     EndowmentExhausted { want: usize, left: usize },
     /// The grant table could not grow (the heap is exhausted).
@@ -87,6 +91,7 @@ impl ExecError {
             ExecError::GgttStoreRefused { .. } => "GGTT-STORE-NOT-ALLOWED",
             ExecError::OutsideGrant { .. } => "OUTSIDE-DMA-GRANT",
             ExecError::AwaitRetireTimeout { .. } => "AWAIT-RETIRE-TIMEOUT",
+            ExecError::NotRetired { .. } => "AWAIT-RETIRE-NOT-RETIRED",
             ExecError::EndowmentExhausted { .. } => "DMA-ENDOWMENT-EXHAUSTED",
             ExecError::GrantTableFull { .. } => "GRANT-TABLE-FULL",
             ExecError::PreviousStepNotDone { .. } => "PREVIOUS-STEP-NOT-DONE",

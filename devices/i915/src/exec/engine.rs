@@ -108,6 +108,9 @@ pub struct EngineRig {
     /// While set, [`EngineRig::kick`] dequeues nothing: requests stay queued in their rings. The uAPI service sets it while a queued
     /// request still waits on a fence (the in-order engine cannot overtake it), and clears it when the fence signals.
     pub hold: bool,
+    /// `EngineConfig::stall_bound` (ms): how long submitted work may go without progress before the engine is declared hung. It also
+    /// bounds a wait for a victim VMA's retirement (`uapi::adapt::Sink`): past it the work is hung, not slow.
+    pub stall_bound_ms: u64,
 }
 
 /// The status page as a [`HwspSink`].
@@ -136,7 +139,8 @@ impl EngineRig {
         if cfg.status_page_ggtt != hwsp_ggtt || hwsp.len < 4096 {
             return Err(ExecError::Layout { what: "status page object vs EngineConfig::status_page_ggtt" });
         }
-        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), tls: Vec::new(), epoch: 0, proof: ExecProof::default(), hold: false })
+        let stall_bound_ms = cfg.stall_bound;
+        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), tls: Vec::new(), epoch: 0, proof: ExecProof::default(), hold: false, stall_bound_ms })
     }
 
     fn hwsp_sink<'a, D: Dma, M: CpuMem>(&self, gm: &'a mut GpuMem<D, M>) -> Hwsp<'a, D, M> {

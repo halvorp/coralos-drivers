@@ -61,7 +61,7 @@ pub mod table;
 pub mod shrink;
 pub mod vm;
 
-pub use active::{wait_finish, Wait, WaitTimeout};
+pub use active::{wait_finish, VmaUse, Wait, WaitTimeout};
 pub use context::{ContextParam, ParamValue, UserEngine};
 pub use create::{CreateExt, Created, TilingReply};
 pub use error::GemError;

@@ -289,3 +289,35 @@ fn a_reset_for_an_unknown_request_is_refused_by_name() {
     let err = r.gem.request_reset(0, 0, 99, true, 0).unwrap_err();
     assert_eq!(err, GemError::RequestUnknown { engine: 0, engine_ctx: 0, seqno: 99 });
 }
+
+#[test]
+fn vma_uses_name_every_incomplete_request_per_bound_vma_and_a_busy_close_is_deferred_until_retire() {
+    let mut r = R::new();
+    let (w, b) = (r.create(4096), r.create(4096));
+    let (wid, bid) = (r.gem.lookup_object(r.s, w).unwrap(), r.gem.lookup_object(r.s, b).unwrap());
+    let mut uses = Vec::new();
+    r.gem.vma_uses(&mut uses).unwrap();
+    assert!(uses.is_empty(), "nothing submitted: no use");
+    let d = submit(&mut r, w, b, 0);
+    let vm = r.gem.context_vm(r.s, 0).unwrap();
+    r.gem.vma_uses(&mut uses).unwrap();
+    assert_eq!(uses.len(), 2, "one use per (request, object bound in a VM): {uses:?}");
+    assert!(uses.iter().all(|u| u.vm == vm && (u.engine as usize, u.engine_ctx, u.seqno) == (d.engine, d.engine_ctx, d.seqno)));
+    assert_eq!((r.gem.vma_count_of(wid), r.gem.vma_count_of(bid)), (1, 1));
+
+    // the close drops the name; the object lives on, deferred, while the request is incomplete
+    r.gem.close(r.s, w, &mut r.sink).unwrap();
+    assert!(r.gem.lookup_object(r.s, w).is_err(), "the name is gone");
+    assert!(r.gem.close_deferred(wid) && !r.gem.close_deferred(bid), "only the closed busy object is deferred");
+    assert_eq!(r.gem.closes_deferred(), 1);
+
+    // complete but not retired: no longer a USE (the predicate's half), still deferred (retirement frees it)
+    r.gem.observe_seqno(d.engine, d.engine_ctx, d.seqno).unwrap();
+    r.gem.vma_uses(&mut uses).unwrap();
+    assert!(uses.is_empty(), "a completed request is not listed");
+    assert_eq!(r.gem.closes_deferred(), 1);
+    assert_eq!(r.gem.retire(&mut r.sink), 1);
+    assert_eq!(r.gem.closes_deferred(), 0, "the retirement freed it");
+    assert!(!r.gem.close_deferred(wid));
+    assert_eq!(r.gem.vma_count_of(wid), 0, "unbound everywhere");
+}

@@ -58,6 +58,8 @@ pub use adapt::ObjTable;
 #[cfg(feature = "p3-exec")]
 pub use fail::Fail;
 #[cfg(feature = "p3-exec")]
+pub use adapt::vma_retired;
+#[cfg(feature = "p3-exec")]
 pub use service::{bring_up_render, Dispatched, Handled, Hw, RenderConfig, UapiService, COMPLETION_POLL_MS};
 #[cfg(feature = "p3-exec")]
 pub(crate) use i915_wire::errno;

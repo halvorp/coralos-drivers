@@ -71,6 +71,7 @@ hal/             coralos-hal: the minimal MMIO + cooperative-wait trait surface
 tools/
   check-citations.sh    every cited constant names a file AND a line
   check-crates-test.sh  every crate still runs its tests
+  check-i915-waits.sh   every i915.device wait can end (live predicate; the waiter services the engine)
 ```
 
 Each crate is `no_std`, takes its hardware access through the `hal` traits or as plain

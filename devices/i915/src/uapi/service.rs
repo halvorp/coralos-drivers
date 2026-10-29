@@ -178,6 +178,12 @@ pub struct UapiService {
     pub(crate) inflight: Vec<Inflight>,
     /// Stall snapshots printed so far (the cadence is powers of two: the first, second, fourth ... never a line per timeout).
     pub(crate) stall_dumps: u32,
+    /// GEM_CLOSEs that left a busy object for retirement to free: `(object, close time ms)`. TELEMETRY ONLY - gem-core owns the
+    /// object's lifetime (`Gem::close_deferred`); this is what the `[I915-RETIRE-DEFER/DRAIN]` markers measure.
+    pub(crate) deferred: Vec<(ObjId, u64)>,
+    /// Deferrals and drains seen (the markers print at powers of two, `rep=` the count).
+    pub(crate) defer_marks: u32,
+    pub(crate) drain_marks: u32,
     pub(crate) gates: Vec<Gate>,
     pub(crate) waiters: Vec<Waiter>,
     pub(crate) ready: Vec<Vec<u8>>,
@@ -273,6 +279,9 @@ impl UapiService {
             vms: Vec::new(),
             inflight: Vec::new(),
             stall_dumps: 0,
+            deferred: Vec::new(),
+            defer_marks: 0,
+            drain_marks: 0,
             gates: Vec::new(),
             waiters: Vec::new(),
             ready: Vec::new(),
@@ -354,6 +363,10 @@ impl UapiService {
     }
     pub fn requests_in_flight(&self) -> usize {
         self.inflight.len()
+    }
+    /// Closed objects still alive because a request uses them (gem-core's deferred closes).
+    pub fn closes_deferred(&self) -> usize {
+        self.gem.closes_deferred()
     }
     pub fn parked_calls(&self) -> usize {
         self.waiters.len()

@@ -6,11 +6,24 @@
 //! Ported from gem/i915_gem_busy.c (v7.0-rc6), gem/i915_gem_wait.c, i915_request.c.
 use crate::error::GemError;
 use crate::gem::Gem;
-use crate::ids::{ObjId, RequestId, SessionId};
+use crate::ids::{ObjId, RequestId, SessionId, VmId};
 use crate::table::{self, Quota};
 use alloc::vec::Vec;
 use crate::seam::EffectSink;
+use i915_memory_core::VmaId;
 use i915_submit_core::request::seqno_passed;
+
+/// One unretired GPU use of a VMA ([`Gem::vma_uses`]): the request `(engine, engine_ctx, seqno)` that must complete before the VMA
+/// `vma` of address space `vm` may be unbound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VmaUse {
+    pub vm: VmId,
+    pub vma: VmaId,
+    /// Index in the device's user-visible engine order.
+    pub engine: u8,
+    pub engine_ctx: u32,
+    pub seqno: u32,
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ActiveReq {
@@ -221,6 +234,51 @@ impl Gem {
             self.sweep(sink);
         }
         n
+    }
+
+    /// Every unretired GPU use of a VMA: one [`VmaUse`] per (incomplete request, address space where an object it touches is
+    /// bound). This is the per-VMA half of `i915_vma_is_active` (`vma->active`, i915_vma.c `__i915_vma_unbind` -> `i915_vma_sync`):
+    /// a VMA is retired once EVERY use listed for it has completed, which the caller decides against the seqno the hardware wrote
+    /// (`i915_request_completed`, wrapping comparison). A request that already completed is not listed. The list is a snapshot:
+    /// a planner call that follows can only make uses complete, never add one to a VMA it evicts (this call's own request pins
+    /// its VMAs, and a pinned VMA is never a victim). Growth is fallible; `Err` = the snapshot could not be taken.
+    pub fn vma_uses(&self, out: &mut Vec<VmaUse>) -> Result<(), GemError> {
+        out.clear();
+        for r in self.active.reqs.iter().flatten() {
+            if self.active.completed(r) {
+                continue;
+            }
+            for (obj, _) in r.objs.iter() {
+                for (vi, vm) in self.vms.iter().enumerate() {
+                    let Some((_, vma)) = vm.as_ref().and_then(|v| v.vma_of(*obj)) else { continue };
+                    out.try_reserve(1).map_err(|_| GemError::NoMem { table: "vma-uses" })?;
+                    out.push(VmaUse { vm: VmId(vi as u32), vma, engine: r.engine, engine_ctx: r.ectx, seqno: r.seqno });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Is `id` a CLOSED object (no handle left) that is still alive only because an unretired request uses it - the deferred close
+    /// `i915_gem_close_object` leaves for retirement to finish (`__i915_gem_free_object` runs from the last `i915_request_retire`)?
+    pub fn close_deferred(&self, id: ObjId) -> bool {
+        self.obj(id).is_some_and(|o| o.handles == 0) && self.active.refs_object(id)
+    }
+
+    /// Closed objects waiting for retirement ([`Gem::close_deferred`]).
+    pub fn closes_deferred(&self) -> usize {
+        let mut n = 0;
+        for i in 0..self.objects.slot_count() as u32 {
+            if let Some((gen, _)) = self.objects.at(i) {
+                n += self.close_deferred(ObjId::new(gen, i)) as usize;
+            }
+        }
+        n
+    }
+
+    /// Address spaces `id` is bound in.
+    pub fn vma_count_of(&self, id: ObjId) -> usize {
+        self.vms.iter().flatten().filter(|v| v.vma_of(id).is_some()).count()
     }
 
     /// Hardware contexts whose HWSP seqno is being tracked.

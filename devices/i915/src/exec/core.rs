@@ -226,6 +226,10 @@ impl<B: Mmio> Executor<B> {
     pub fn relax(&mut self) {
         self.bar.relax();
     }
+    /// Sleep at least `ms` milliseconds (`Mmio::park_ms`: a timed park on the device, the core runs its siblings meanwhile).
+    pub fn park_ms(&mut self, ms: u64) {
+        self.bar.park_ms(ms);
+    }
 
     // ---- GGTT entries --------------------------------------------------------------------------------------------------------
 

@@ -9,7 +9,15 @@
 //!
 //! The sink does the two things that cannot wait (execute a PPGTT bind or unbind) and RECORDS every other effect: the service applies
 //! them, in order, once the planner has returned and the pool, the syncobj table and the engine rig can be borrowed mutably again.
+//!
+//! RETIREMENT. A plan that unmaps a VMA the GPU may still use carries an `AwaitRetire` for it. The sink is the one waiter that can make
+//! that wait end: the device has no engine interrupt and finds completion only by SERVICING the engine (CSB + seqno read + retire), so
+//! [`Sink`] asks the per-VMA predicate [`vma_retired`] - every request that used the VMA (a [`VmaUse`] snapshot from gem-core) against
+//! the seqno the hardware wrote, wrapping - and between asks parks [`COMPLETION_POLL_MS`] and services the engine, bounded by the
+//! engine's stall bound (past it the work is hung; the refusal is `AWAIT-RETIRE-TIMEOUT`). A close never gets here with a busy object:
+//! gem-core defers it until the retirement that frees it (`Gem::close_deferred`), so its unbind is proven on the first ask.
 use super::pool::{PagePool, Run};
+use super::service::COMPLETION_POLL_MS;
 use super::Fail;
 use crate::exec::dma::{CpuMem, GpuMem};
 use crate::exec::engine::EngineRig;
@@ -18,8 +26,9 @@ use crate::log::Log;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use coralos_hal::{Dma, Mmio};
-use i915_gem_core::{Effect, EffectSink, EngineSet, ObjId, PageRequest, PageSource, PagesRefused, SyncTables, VmId};
-use i915_memory_core::{BindPlan, MemError, TablePage, TablePageRequest, TablePageSource, UnbindPlan};
+use i915_gem_core::{Effect, EffectSink, EngineSet, ObjId, PageRequest, PageSource, PagesRefused, SyncTables, VmId, VmaUse};
+use i915_memory_core::{BindPlan, MemError, Op, TablePage, TablePageRequest, TablePageSource, UnbindPlan, VmaId};
+use i915_submit_core::request::seqno_passed;
 use i915_submit_core::{BatchSpec, RequestRef, SubmissionPlan, SubmitError};
 use i915_syncobj_core::{FenceStatus, Sync};
 use i915_uapi_core::SyncobjInfo;
@@ -117,7 +126,8 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> TablePageSource for Tables<'_, '_, B, D
 
 /// Request construction and the ELSP dequeue on the one routed engine.
 pub struct Eng<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
-    pub rig: &'a mut EngineRig,
+    /// Shared with the [`Sink`] (which services the engine while it waits for a victim); each method borrows it for its own span.
+    pub rig: &'a RefCell<&'a mut EngineRig>,
     pub hw: &'a RefCell<Hwx<'h, B, D, M, L>>,
     /// An earlier queued request still waits on a fence.
     pub held: bool,
@@ -130,7 +140,8 @@ pub struct Eng<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
 impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
     fn build_request(&mut self, _class: u16, _instance: u16, engine_ctx: u32, batch: &BatchSpec) -> Result<RequestRef, SubmitError> {
         let mut hw = self.hw.borrow_mut();
-        self.rig.build_request(hw.gm, engine_ctx, batch).map_err(|e| match e {
+        let r = self.rig.borrow_mut().build_request(hw.gm, engine_ctx, batch);
+        r.map_err(|e| match e {
             ExecError::Submit(s) => s,
             other => {
                 self.err = Some(other);
@@ -139,10 +150,11 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
         })
     }
     fn dequeue(&mut self, _class: u16, _instance: u16, now: u64) -> Result<Option<SubmissionPlan>, SubmitError> {
-        if self.held || self.gate.get() || self.rig.hold {
+        let mut rig = self.rig.borrow_mut();
+        if self.held || self.gate.get() || rig.hold {
             return Ok(None); // queued behind a fence: the service kicks it when the fence signals
         }
-        self.rig.engine.dequeue(now)
+        rig.engine.dequeue(now)
     }
 }
 
@@ -151,19 +163,73 @@ pub struct Sink<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
     pub hw: &'a RefCell<Hwx<'h, B, D, M, L>>,
     pub fx: Vec<Effect>,
     pub err: Option<Fail>,
-    /// Requests are in flight: an `AwaitRetire` victim cannot be proven retired, so a bind that needs one waits and is refused.
-    pub busy: bool,
     pub gate: &'a Cell<bool>,
     pub sync: &'a Sync,
     pub session: u64,
+    /// The engine, serviced between asks while a victim retires (shared with [`Eng`] in an EXECBUFFER2).
+    pub rig: &'a RefCell<&'a mut EngineRig>,
+    /// Every unretired use of a VMA when the planner call began (`Gem::vma_uses`). `None` = the snapshot could not be taken (no
+    /// memory): a victim is then retired only once the engine has no request at all - conservative, never unsound.
+    pub uses: Option<&'a [VmaUse]>,
+    /// The device's clock at the start of the call (ms); a wait adds the time it parked.
+    pub now_ms: u64,
+}
+
+/// Has VMA `vma` of address space `vm` retired? Only when EVERY listed use of it has completed: the request's seqno has been passed
+/// by the seqno the hardware wrote on that request's timeline (`hw_seqno(engine, engine_ctx)`), by the WRAPPING comparison
+/// (`i915_seqno_passed`, i915_request.h; `seqno_passed`). A use on an engine this device does not service (index != 0, the render
+/// engine) or on a timeline it cannot read is never proven complete. The ELSP is covered by the same test: a request still in a port
+/// has not written its breadcrumb. The display's scanout is not a VMA use: it holds the OBJECT (a `prime_export` hold) through its
+/// own GGTT binding, so a PPGTT unbind never touches what is on the glass and the pages outlive it.
+pub fn vma_retired(uses: &[VmaUse], vm: VmId, vma: VmaId, hw_seqno: impl Fn(u8, u32) -> Option<u32>) -> bool {
+    uses.iter().filter(|u| u.vm == vm && u.vma == vma).all(|u| u.engine == 0 && hw_seqno(u.engine, u.engine_ctx).is_some_and(|hw| seqno_passed(hw, u.seqno)))
 }
 
 impl<B: Mmio, D: Dma, M: CpuMem, L: Log> Sink<'_, '_, B, D, M, L> {
-    fn run(&mut self, plan: &BindPlan<'_>) {
-        let busy = self.busy;
-        let mut hw = self.hw.borrow_mut();
-        let Hwx { ex, gm, log } = &mut *hw;
-        if let Err(e) = ex.run_bind_step(*log, *gm, plan, false, &mut |_| !busy) {
+    /// The predicate as of now (no progress): [`vma_retired`] over the snapshot and the engine's last observed seqnos.
+    fn retired_now(&self, vm: VmId, vma: VmaId) -> bool {
+        let rig = self.rig.borrow();
+        match self.uses {
+            Some(u) => vma_retired(u, vm, vma, |_, ctx| rig.engine.hw_seqno(ctx).ok()),
+            None => rig.engine.requests().is_empty(),
+        }
+    }
+
+    fn first_pending(&self, vm: VmId, plan: &BindPlan<'_>) -> Option<VmaId> {
+        plan.ops().iter().find_map(|op| match *op {
+            Op::AwaitRetire { vma } if !self.retired_now(vm, vma) => Some(vma),
+            _ => None,
+        })
+    }
+
+    /// Wait until every victim of `plan` has retired, servicing the engine between asks (park [`COMPLETION_POLL_MS`], then CSB + seqno
+    /// read + retire + kick): the predicate can only change because this wait drives the engine. Bounded by the engine's stall bound;
+    /// past it the request is hung (the next poll's hang check recovers it) and the bind is refused by name.
+    fn await_victims(&mut self, vm: VmId, plan: &BindPlan<'_>) -> Result<(), ExecError> {
+        let max = self.rig.borrow().stall_bound_ms.div_ceil(COMPLETION_POLL_MS).max(1) as u32;
+        let mut polls = 0u32;
+        while let Some(vma) = self.first_pending(vm, plan) {
+            if polls >= max {
+                return Err(ExecError::AwaitRetireTimeout { vma: vma.0, polls });
+            }
+            polls += 1;
+            let mut hw = self.hw.borrow_mut();
+            let Hwx { ex, gm, log } = &mut *hw;
+            ex.park_ms(COMPLETION_POLL_MS);
+            let now = self.now_ms.saturating_add(polls as u64 * COMPLETION_POLL_MS);
+            self.rig.borrow_mut().service(ex, gm, *log, now)?;
+        }
+        Ok(())
+    }
+
+    fn run(&mut self, vm: VmId, plan: &BindPlan<'_>) {
+        let r = self.await_victims(vm, plan).and_then(|()| {
+            let hwc = self.hw;
+            let mut hw = hwc.borrow_mut();
+            let Hwx { ex, gm, log } = &mut *hw;
+            ex.run_bind_step(*log, *gm, plan, false, &mut |v| self.retired_now(vm, v)).map(|_| ())
+        });
+        if let Err(e) = r {
             if self.err.is_none() {
                 self.err = Some(Fail::from(e));
             }
@@ -172,11 +238,11 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> Sink<'_, '_, B, D, M, L> {
 }
 
 impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EffectSink for Sink<'_, '_, B, D, M, L> {
-    fn bind(&mut self, _vm: VmId, _obj: ObjId, plan: &BindPlan<'_>) {
-        self.run(plan);
+    fn bind(&mut self, vm: VmId, _obj: ObjId, plan: &BindPlan<'_>) {
+        self.run(vm, plan);
     }
-    fn unbind(&mut self, _vm: VmId, plan: &UnbindPlan) {
-        self.run(plan);
+    fn unbind(&mut self, vm: VmId, plan: &UnbindPlan) {
+        self.run(vm, plan);
     }
     fn effect(&mut self, e: Effect) {
         // a submission that must wait for a fence that is still pending is gated (the dequeue that follows reads this)

@@ -68,6 +68,7 @@ impl UapiService {
                     Some(t) => Some(collect64(t)?),
                     None => None,
                 };
+                self.poll(hw); // advance the device first: a completion the GPU wrote is seen now, not at the next 4 ms timer
                 match self.sync.wait_eval(inc, &handles, points.as_deref(), r.head.flags, timeline, None)? {
                     WaitEval::Done { first } => ok!(SyncobjWaitRep { first_signaled: first, ..Default::default() }),
                     WaitEval::Pending { first } => {
@@ -204,6 +205,7 @@ impl UapiService {
             }
             Opcode::SyncFileWait => {
                 let r = SyncFileWaitReq::from_payload(p)?;
+                self.poll(hw); // advance the device first (see SYNCOBJ_WAIT)
                 match self.sync.file_status(inc, r.token)? {
                     FenceStatus::Signalled(e) => ok!(SyncFileWaitRep { fence_error: e, ..Default::default() }),
                     FenceStatus::Pending => {
@@ -361,8 +363,8 @@ impl UapiService {
         emit(
             hw.log,
             format_args!(
-                "[I915-STALL stage={} n={} wait={} inflight={} gates={} hold={} reqs={} exec_idle={} exp={} hw={} head={:#x} tail={:#x} ctl={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
-                stage, n, kind, self.inflight.len(), self.gates.len(), self.rig.hold as u8, self.rig.engine.requests().len(), self.rig.engine.execlists().is_idle() as u8, exp, hwq, head, tail, ctl, xlo, xhi, csb, eir, isr0
+                "[I915-STALL stage={} n={} wait={} inflight={} gates={} deferred={} hold={} reqs={} exec_idle={} exp={} hw={} head={:#x} tail={:#x} ctl={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
+                stage, n, kind, self.inflight.len(), self.gates.len(), self.gem.closes_deferred(), self.rig.hold as u8, self.rig.engine.requests().len(), self.rig.engine.execlists().is_idle() as u8, exp, hwq, head, tail, ctl, xlo, xhi, csb, eir, isr0
             ),
         );
     }

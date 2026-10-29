@@ -75,7 +75,8 @@ impl UapiService {
             }
         }
 
-        let busy = !self.inflight.is_empty();
+        let mut uses = Vec::new();
+        let have_uses = self.gem.vma_uses(&mut uses).is_ok();
         let held = !self.gates.is_empty();
         let gate = Cell::new(gate_cells);
         let taken = RefCell::new(Vec::new());
@@ -86,8 +87,10 @@ impl UapiService {
             let view = SyncView { sync: &*sync, session: inc };
             let mut pages = Pages { pool: &pool_cell, objs, hw: &hwx };
             let mut tables = Tables { pool: &pool_cell, taken: &taken, hw: &hwx };
-            let mut eng = Eng { rig, hw: &hwx, held, gate: &gate, err: None };
-            let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, busy, gate: &gate, sync: &*sync, session: inc };
+            let rig = RefCell::new(&mut *rig);
+            let mut eng = Eng { rig: &rig, hw: &hwx, held, gate: &gate, err: None };
+            let uses = have_uses.then_some(uses.as_slice());
+            let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, gate: &gate, sync: &*sync, session: inc, rig: &rig, uses, now_ms: hw.now_ms };
             let r = gem.execbuffer2(sid, &view, &req, &mut pages, &mut tables, &mut eng, &mut sink, hw.now_ms);
             (r, sink.fx, sink.err, eng.err)
         };

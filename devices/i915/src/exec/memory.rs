@@ -2,8 +2,9 @@
 //! INCREMENT P2 - memory: run an `i915-memory-core` [`BindPlan`] against the GGTT window and the DMA table pages, and qualify the
 //! result with the `[I915-MEMORY ...]` marker (plan section 3).
 //!
-//! ORDER (the planner's guarantees, `plan.rs`): ops run in plan order; a table page is filled before the entry that links it; a
-//! victim's `AwaitRetire` is waited on (bounded) before the scratch fills that unmap it; then the flushes, in order - CPU-cache
+//! ORDER (the planner's guarantees, `plan.rs`): ops run in plan order; a table page is filled before the entry that links it; every
+//! victim's `AwaitRetire` is CHECKED before the first store of the plan (the executor never waits: only the uAPI sink, which can service
+//! the engine, can wait for a GPU completion - `uapi::adapt::Sink`); then the flushes, in order - CPU-cache
 //! flush per touched table span, then the one TLB step. A GGTT entry is a store into the GGTT window of BAR0
 //! ([`Executor::ggtt_store`], refused unless `p2-memory` is compiled in); a PPGTT entry is a CPU store into a DMA table page found
 //! by DEVICE address through the grant table ([`GpuMem::store64`]). The `GgttInvalidate` flush is the one register write
@@ -16,9 +17,6 @@ use crate::log::{emit, Log};
 use coralos_hal::{Dma, Irq, IrqWait, Mmio};
 use i915_devinfo_core::PlatformDescriptor;
 use i915_memory_core::{BindPlan, Flush, Gtt, Op, Target, VmaId};
-
-/// How many times an `AwaitRetire` asks whether the VMA retired before giving up (`AWAIT-RETIRE-TIMEOUT`), yielding between asks.
-pub const AWAIT_RETIRE_POLLS: u32 = 10_000;
 
 /// What a bind did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -116,7 +114,8 @@ impl<B: Mmio> Executor<B> {
     }
 
     /// Execute `plan` as one step (`GGTT-BIND` or `PPGTT-BIND`, by the plan's space), with the `[I915-STEP ...]` records.
-    /// `retired(vma)` answers whether a victim has retired; it is asked at most [`AWAIT_RETIRE_POLLS`] times per victim.
+    /// `retired(vma)` answers whether a victim has retired; it is asked ONCE per victim, before anything is stored, and a victim it
+    /// denies refuses the whole plan (`AWAIT-RETIRE-NOT-RETIRED`) with nothing written.
     pub fn run_bind_step<L: Log, D: Dma, M: CpuMem>(&mut self, log: &mut L, gm: &mut GpuMem<D, M>, plan: &BindPlan<'_>, ggtt: bool, retired: &mut dyn FnMut(VmaId) -> bool) -> Result<BindReport, ExecError> {
         let (id, name) = if ggtt { (StepId::GGTT_BIND, "GGTT-BIND") } else { (StepId::PPGTT_BIND, "PPGTT-BIND") };
         self.step(log, id, name, |ex, _| ex.run_bind(gm, plan, retired))
@@ -125,18 +124,19 @@ impl<B: Mmio> Executor<B> {
     /// Execute `plan` (no step record; see [`Executor::run_bind_step`]).
     pub fn run_bind<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, plan: &BindPlan<'_>, retired: &mut dyn FnMut(VmaId) -> bool) -> Result<BindReport, ExecError> {
         let mut rep = BindReport::default();
-        let mut writes = plan.writes();
+        // The executor cannot make the GPU progress (it does not service the engine), so a victim that is still in use cannot become
+        // retired while it waits here: every victim is asked once, and the plan is refused - before its first store - if one is not.
         for op in plan.ops() {
             if let Op::AwaitRetire { vma } = *op {
-                let mut polls = 0u32;
-                while !retired(vma) {
-                    polls += 1;
-                    if polls >= AWAIT_RETIRE_POLLS {
-                        return Err(ExecError::AwaitRetireTimeout { vma: vma.0, polls });
-                    }
-                    self.relax();
+                if !retired(vma) {
+                    return Err(ExecError::NotRetired { vma: vma.0 });
                 }
                 rep.retire_waits += 1;
+            }
+        }
+        let mut writes = plan.writes();
+        for op in plan.ops() {
+            if let Op::AwaitRetire { .. } = *op {
                 continue;
             }
             for _ in 0..op.entries() {

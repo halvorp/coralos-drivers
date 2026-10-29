@@ -8,7 +8,7 @@
 mod exec_common;
 use exec_common::*;
 use i915_device::exec::dma::{ObjKind, PAGE};
-use i915_device::exec::memory::{emit_memory_marker, msi_delivered, stale_access_denied, MemoryProof, AWAIT_RETIRE_POLLS};
+use i915_device::exec::memory::{emit_memory_marker, msi_delivered, stale_access_denied, MemoryProof};
 use i915_device::exec::ExecError;
 use i915_memory_core::probe::GgttGeometry;
 use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, PpgttInit, Target, VmaId};
@@ -164,7 +164,7 @@ mod p2 {
     }
 
     #[test]
-    fn await_retire_is_waited_on_in_order_and_bounded() {
+    fn await_retire_is_checked_once_before_any_store() {
         let (chip, _mem, mut ex, mut gm) = built();
         let mut log = Lines::default();
         ex.set_ggtt_window(GgttWindow::for_table(geom().pte_base, geom().entries).unwrap()).unwrap();
@@ -176,17 +176,19 @@ mod p2 {
         let entry = gtt.offset_of(bind.vma()).unwrap().0;
         let off = 0x80_0000 + (entry / 4096 * 8) as u32;
         assert_eq!(chip.ggtt_entry(off), 0x10_0001);
-        // unbind: the victim has NOT retired for 3 asks, then does; the scratch fill follows only then
+        // unbind: the predicate is asked once, before the scratch fill; the executor never re-asks (it cannot make the GPU progress)
         let unbind = gtt.plan_unbind(bind.vma()).unwrap();
         let mut asks = 0u32;
+        let spins = chip.0.borrow().relax_calls;
         let rep = ex.run_bind(&mut gm, &unbind, &mut |v: VmaId| {
             assert_eq!(v, bind.vma());
             asks += 1;
-            assert_eq!(chip.ggtt_entry(off), 0x10_0001, "still bound while waiting: the scratch fill comes AFTER the wait");
-            asks > 3
+            assert_eq!(chip.ggtt_entry(off), 0x10_0001, "still bound when asked: the scratch fill comes AFTER the check");
+            true
         })
         .unwrap();
-        assert_eq!((asks, rep.retire_waits), (4, 1));
+        assert_eq!((asks, rep.retire_waits), (1, 1));
+        assert_eq!(chip.0.borrow().relax_calls, spins, "no yield: nothing waited");
         assert_eq!(chip.ggtt_entry(off), gtt.scratch_entry());
         let _ = &mut log;
     }
@@ -203,13 +205,16 @@ mod p2 {
         let off = 0x80_0000 + (gtt.offset_of(bind.vma()).unwrap().0 / 4096 * 8) as u32;
         let unbind = gtt.plan_unbind(bind.vma()).unwrap();
         let mut asks = 0u32;
+        let spins = chip.0.borrow().relax_calls;
         let e = ex.run_bind(&mut gm, &unbind, &mut |_| {
             asks += 1;
             false
         })
         .unwrap_err();
-        assert_eq!(e, ExecError::AwaitRetireTimeout { vma: bind.vma().0, polls: AWAIT_RETIRE_POLLS });
-        assert_eq!(asks, AWAIT_RETIRE_POLLS);
+        assert_eq!(e, ExecError::NotRetired { vma: bind.vma().0 });
+        assert_eq!(e.name(), "AWAIT-RETIRE-NOT-RETIRED");
+        assert_eq!(asks, 1, "refused on the first ask: a predicate the executor cannot change is not re-asked");
+        assert_eq!(chip.0.borrow().relax_calls, spins, "and nothing spun");
         assert_eq!(chip.ggtt_entry(off), 0x10_0001, "the entry was never unmapped under a live GPU use");
     }
 }
