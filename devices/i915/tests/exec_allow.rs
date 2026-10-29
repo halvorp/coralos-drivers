@@ -3,6 +3,8 @@
 //! `p2-memory` / `p3-exec`: exactly the registers THAT increment's planners write, proved by running the planners and requiring set
 //! EQUALITY (a register no planner writes cannot be granted; a planner write that is not granted fails here, not on silicon).
 //! Expected offsets are Linux's own, written out by hand.
+#[cfg(feature = "p4-present")]
+mod common;
 mod exec_common;
 use i915_device::exec::allow::*;
 use i915_device::regio::BAR0_WRITE_RANGES;
@@ -146,6 +148,9 @@ mod planner_write_sets {
         // P4: the scanout pair's flip - the adoption planner's own write set, run on the Pixelbook Go's firmware layout
         #[cfg(feature = "p4-present")]
         writes.extend(p4_flip_writes());
+        // P4: the logical-size fastset - the resize planner's own write set, for the firmware's fitter on either of pipe A's scalers
+        #[cfg(feature = "p4-present")]
+        writes.extend(super::p4_resize_writes());
         let mut set: Vec<u32> = writes.iter().map(|r| r.offset()).chain(FORCEWAKE_SET).collect();
         set.sort();
         set.dedup();
@@ -165,6 +170,30 @@ fn p4_flip_writes() -> Vec<i915_common_core::Reg> {
     plan_surface_replacement(&fw, &new).unwrap().written()
 }
 
+/// The fastset's writes, found by running `resize::plan_scanout_resize` on the Pixelbook Go's adopted display (startup over the Atlas
+/// BAR) with its fitter on scaler 1 and on scaler 2 - never restated.
+#[cfg(feature = "p4-present")]
+fn p4_resize_writes() -> Vec<i915_common_core::Reg> {
+    use i915_display_modeset_core::resize::{plan_scanout_resize, read_firmware_geometry, FirmwareGeometry};
+    use i915_device::regio::RegRead;
+    let (mut bar, mut cfg, mut lg) = (common::bar_atlas(), common::config_page(0x591c, 0x02), common::Lines::default());
+    let ready = i915_device::startup::startup(&mut bar, &mut cfg, &mut lg).unwrap();
+    // the geometry words the readout itself never reads: the watermark block, the DDB and the scaler phases
+    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x68288, 0x68294]) {
+        bar.set(r, 0);
+    }
+    let a = *ready.adoption.adopted().unwrap();
+    let mut out = Vec::new();
+    for id in [0u8, 1] {
+        let mut a = a;
+        a.fitter.as_mut().unwrap().id = id;
+        let g = read_firmware_geometry(|off| RegRead::read32(&mut bar, off).unwrap(), &ready.device.caps, &ready.state, &a).unwrap();
+        let g = FirmwareGeometry { buf_cfg: 859 << 16, wm: [0x8000_0004; 8], ..g }; // a DDB and enabled levels: every word is written
+        out.extend(plan_scanout_resize(&ready.device.caps, &a, &g, 2560, 1440).unwrap().unwrap().written());
+    }
+    out
+}
+
 #[cfg(feature = "p4-present")]
 #[test]
 fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
@@ -173,6 +202,14 @@ fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     want.extend([0x40e0, 0x40e4]);
     want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
     want.push(0x7019c); // PLANE_SURF(PIPE_A, PLANE_1), skl_universal_plane_regs.h:153
+    // the logical-size fastset (resize::plan_scanout_resize): PIPESRC(A), both pipe-A scaler blocks, PLANE_1 STRIDE/POS/SIZE, WM 0-7, WM_TRANS
+    want.push(0x6001c);
+    for id in [0u32, 0x100] {
+        want.extend([0x68180 + id, 0x68188 + id, 0x68194 + id, 0x68170 + id, 0x68174 + id]);
+    }
+    want.extend([0x70188, 0x7018c, 0x70190]);
+    want.extend((0..8).map(|l| 0x70240 + 4 * l));
+    want.push(0x70268);
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(p4_flip_writes().iter().map(|r| r.offset()).collect::<Vec<_>>(), [0x7019c], "the flip writes that one register and no other");

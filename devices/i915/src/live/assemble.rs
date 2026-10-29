@@ -38,6 +38,12 @@ pub struct UapiFacts {
     /// What the plane scans as the readout found it (PLANE_SURF's address bits stand for the raw word: a flip never rolls back to it) - the
     /// scanout pair's flip planner starts from it. `None` when nothing was adopted.
     pub firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
+    /// The platform's display capabilities (the devinfo row's: display version, scalers per pipe).
+    pub display_caps: i915_kbl_display_core::platform::DisplayCaps,
+    /// The adopted pipe's geometry registers as startup read them (`None`: nothing adopted, or a read was refused).
+    pub geometry: Option<i915_display_modeset_core::resize::FirmwareGeometry>,
+    /// The host's LOGICAL scanout size policy (a config value).
+    pub logical: i915_display_modeset_core::resize::LogicalSize,
 }
 
 /// The executor, the granted memory and the service, brought up.
@@ -58,5 +64,6 @@ pub fn assemble<B: Mmio, D: Dma, M: CpuMem, L: Log>(bar: B, dma: D, mem: M, proo
     let mut svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log, now_ms: 0 }, dev, &geom, cfg)?;
     svc.set_display(facts.adoption);
     svc.set_firmware_scanout(facts.firmware);
+    svc.set_scanout_size(log, &facts.display_caps, facts.geometry.as_ref(), facts.logical);
     Ok(Assembled { ex, gm, svc })
 }

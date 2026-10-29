@@ -68,17 +68,28 @@ pub struct UapiHost<M: crate::exec::dma::CpuMem> {
 /// `EP_I915_REQ` (the LISTEN endpoint), until the task ends.
 #[cfg(feature = "p3-exec")]
 pub fn service_with<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
-    serve(host)
+    serve(host, i915_display_modeset_core::resize::LogicalSize::Adopted)
+}
+
+/// [`service_with`], with the host's LOGICAL scanout size policy (a config value; `LogicalSize::default()` is panel / 1.5, never
+/// below the firmware's framebuffer). `service_with` keeps the firmware's size: a host that has not been taught to render at another
+/// size (its compositor sized from the firmware framebuffer) must never be offered one.
+#[cfg(feature = "p3-exec")]
+pub fn service_with_display<M: crate::exec::dma::CpuMem>(host: UapiHost<M>, logical: i915_display_modeset_core::resize::LogicalSize) -> ! {
+    serve(host, logical)
 }
 
 /// Open the windows and run the read-only bring-up and the forcewake proof of life; exits (named) on any refusal.
 fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, crate::display::Adoption) {
-    let (bar, cfg, proof, adoption, _) = start_full(lg);
+    let (bar, cfg, proof, adoption, _, _) = start_full(lg);
     (bar, cfg, proof, adoption)
 }
 
+/// What the logical-size planner needs beyond the adoption: the platform's display caps and the adopted pipe's geometry registers.
+type SizeFacts = (i915_kbl_display_core::platform::DisplayCaps, Option<i915_display_modeset_core::resize::FirmwareGeometry>);
+
 /// [`start`], and the firmware's scanout as the readout found it - the scanout pair's flip planner starts from it (D18).
-fn start_full(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, crate::display::Adoption, Option<i915_display_modeset_core::adopt::FirmwareScanout>) {
+fn start_full(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, crate::display::Adoption, Option<i915_display_modeset_core::adopt::FirmwareScanout>, SizeFacts) {
     emit(lg, format_args!("[I915-KBL-DEV LAUNCH] bar0=mmio-slot-{} (writes: forcewake set x{} only) config=mmio-slot-{} (read-only)", BAR0_SLOT, BAR0_WRITE_RANGES.len(), CFG_SLOT));
     emit(lg, format_args!("[I915-CONTRACT abi={} wire={}.{} write_allow={}]", i915_common_core::CONTRACT_ABI, i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, BAR0_WRITE_RANGES.len()));
     let mut cfg = match ReadWindow::open(&mut Kernel, CFG_SLOT, CFG_NEED_BYTES) {
@@ -98,12 +109,39 @@ fn start_full(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof
     match bringup(&mut bar, &mut cfg, lg) {
         Ok((ready, proof)) => {
             let firmware = ready.adoption.adopted().and_then(|a| i915_display_modeset_core::adopt::FirmwareScanout::from_readout(&ready.state, a.pipe, a.fb.base).ok());
-            (bar, cfg, proof, ready.adoption, firmware)
+            let caps = ready.device.caps;
+            let geometry = read_geometry(&mut bar, &caps, &ready, lg);
+            (bar, cfg, proof, ready.adoption, firmware, (caps, geometry))
         }
         // the failing stage already printed its named line
         Err(crate::startup::BringupError::Proof(_)) | Err(crate::startup::BringupError::Window(_)) => exit(exit_code::PROOF_FAILED),
         Err(_) => exit(exit_code::STARTUP_FAILED),
     }
+}
+
+/// The adopted pipe's geometry registers (read-only), for the logical-size planner; `None` (named) when nothing was adopted or a read
+/// was refused - a refused read is never taken for a zero.
+fn read_geometry(bar: &mut BarMmio<Ticks>, caps: &i915_kbl_display_core::platform::DisplayCaps, ready: &crate::startup::Ready, lg: &mut TaskLog) -> Option<i915_display_modeset_core::resize::FirmwareGeometry> {
+    use crate::regio::RegRead;
+    let a = ready.adoption.adopted()?;
+    let mut refused = None;
+    let g = i915_display_modeset_core::resize::read_firmware_geometry(
+        |off| match RegRead::read32(bar, off) {
+            Ok(v) => v,
+            Err(e) => {
+                refused.get_or_insert((off, e.name()));
+                0
+            }
+        },
+        caps,
+        &ready.state,
+        a,
+    );
+    if let Some((off, why)) = refused {
+        emit(lg, format_args!("[I915-SCANOUT-SIZE geometry read refused reg={:#x} why={}] - the firmware's size is kept", off, why));
+        return None;
+    }
+    g
 }
 
 /// The parked loop: every request is answered, none is served. The device's endpoint is a LISTEN endpoint; each client `connect()`s and is
@@ -120,11 +158,11 @@ fn parked(mut lg: TaskLog, adoption: crate::display::Adoption) -> ! {
 }
 
 #[cfg(feature = "p3-exec")]
-fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
+fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>, logical: i915_display_modeset_core::resize::LogicalSize) -> ! {
     use crate::live::{assemble::{assemble, UapiFacts}, rt_regions::RtRegionSys, Live, SessionRegions};
     use crate::uapi::rt_lease::RtLeaseSys;
     let mut lg = TaskLog;
-    let (bar, mut cfg, proof, adoption, firmware) = start_full(&mut lg);
+    let (bar, mut cfg, proof, adoption, firmware, (display_caps, geometry)) = start_full(&mut lg);
     let gmch_ctl = match RegRead::read32(&mut cfg, GMCH_CTRL_DWORD) {
         Ok(v) => (v & 0xffff) as u16,
         Err(e) => {
@@ -148,6 +186,9 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>) -> ! {
         stall_bound_ms: host.stall_bound_ms,
         adoption,
         firmware,
+        display_caps,
+        geometry,
+        logical,
     };
     let mut a = match assemble(bar, coralos_rt::RtDma, host.mem, &proof, &facts, &mut lg) {
         Ok(a) => a,

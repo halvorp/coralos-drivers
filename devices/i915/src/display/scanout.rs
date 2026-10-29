@@ -20,7 +20,14 @@
 //! ([`ScanoutPair::ready_to_restore`]). The CPU compositor that replaces a dead GPU compositor draws into that framebuffer (the boot
 //! framebuffer the kernel maps), so without the restore its frames would never reach the glass. The images stay allocated and are
 //! FREE once the restore is latched; a new authority takes them over as before.
+//!
+//! THE LOGICAL SIZE (`i915_display_modeset_core::resize`). A pair made with a [`ScanoutResize`] holds images of the LOGICAL size, not
+//! the firmware's. The flip that first replaces the FIRMWARE's framebuffer then carries the whole fastset - pipe source, scaler, plane
+//! size / stride / watermarks, then `PLANE_SURF` - and the restore carries the firmware's own values of the same registers back. Every
+//! flip between the pair's own images is the one-register `PLANE_SURF` write as before (same layout on both sides).
 use i915_display_modeset_core::adopt::{plan_surface_replacement, AdoptPlan, AdoptSession, FirmwareScanout, LatchState, ReplacementSurface};
+use i915_display_modeset_core::plane_plan::latch_poll;
+use i915_display_modeset_core::resize::{ScanoutResize, VblankEvade};
 use i915_display_modeset_core::initial::AdoptedDisplay;
 use i915_display_modeset_core::ModesetError;
 use i915_kbl_display_core::plane::Rotation;
@@ -117,6 +124,8 @@ struct Flip {
     seq: u64,
     plan: AdoptPlan,
     phase: Phase,
+    /// The plan changes the pipe's geometry (the logical-size fastset or its restore), not only the surface.
+    geometry: bool,
 }
 
 /// What was released by a latch: the firmware's framebuffer (the first latch) or the image that was on the glass before.
@@ -178,28 +187,69 @@ pub struct ScanoutPair {
     latched_seq: u64,
     latch_timeouts: u32,
     flip: Option<Flip>,
+    /// The logical-size fastset, when the pair's images are not the firmware's size.
+    resize: Option<ScanoutResize>,
 }
 
 impl ScanoutPair {
     /// A pair for session `owner` over the adopted display: `live` is the firmware's scanout as the readout found it, `images` the two
     /// images' `(handle, key, ggtt)` - created at the adopted layout by the caller. Both start FREE.
     pub fn new(owner: u64, live: FirmwareScanout, adopted: &AdoptedDisplay, images: [(u32, u64, u32); 2]) -> ScanoutPair {
+        Self::with_resize(owner, live, adopted, images, None)
+    }
+
+    /// [`ScanoutPair::new`] for images of the LOGICAL size `resize` plans (`None`: the adopted size).
+    pub fn with_resize(owner: u64, live: FirmwareScanout, adopted: &AdoptedDisplay, images: [(u32, u64, u32); 2], resize: Option<ScanoutResize>) -> ScanoutPair {
         let fb = &adopted.fb;
+        let (width, height, stride_bytes) = match &resize {
+            Some(r) => (r.logical_w, r.logical_h, r.stride),
+            None => (fb.width, fb.height, fb.stride),
+        };
         let template = ReplacementSurface {
             gtt_addr: 0,
             format: fb.format,
             rgb_order: fb.rgb_order,
             alpha: fb.alpha,
             tiling: fb.tiling,
-            stride_bytes: fb.stride,
-            width: fb.width,
-            height: fb.height,
+            stride_bytes,
+            width,
+            height,
             offset_x: 0,
             offset_y: 0,
             rotation: Rotation::R0,
         };
         let img = |(handle, key, ggtt): (u32, u64, u32)| Image { handle, key, ggtt, state: ImageState::Free };
-        ScanoutPair { owner, images: [img(images[0]), img(images[1])], live, firmware: live, template, firmware_live: true, restore_wanted: false, next_seq: 1, latched_seq: 0, latch_timeouts: 0, flip: None }
+        ScanoutPair { owner, images: [img(images[0]), img(images[1])], live, firmware: live, template, firmware_live: true, restore_wanted: false, next_seq: 1, latched_seq: 0, latch_timeouts: 0, flip: None, resize }
+    }
+
+    /// The logical-size fastset this pair's images were made for, if any.
+    pub fn resize(&self) -> Option<&ScanoutResize> {
+        self.resize.as_ref()
+    }
+
+    /// The vblank-evasion judge for the plan [`ScanoutPair::ready_to_arm`] / [`ScanoutPair::ready_to_restore`] just handed over, when
+    /// that plan changes the pipe's geometry (its writes must all latch on one vblank); `None` for a one-register flip.
+    pub fn geometry_evade(&self) -> Option<VblankEvade> {
+        match &self.flip {
+            Some(f) if f.geometry => self.resize.as_ref().and_then(|r| r.evade),
+            _ => None,
+        }
+    }
+
+    /// Is the flip in flight a geometry change (the fastset or its restore)?
+    pub fn flip_is_geometry(&self) -> bool {
+        self.flip.as_ref().is_some_and(|f| f.geometry)
+    }
+
+    /// The plan that replaces the firmware's framebuffer with image `ggtt` of the logical size: the whole fastset, then `PLANE_SURF`.
+    fn geometry_plan(&self, r: &ScanoutResize, ggtt: u32) -> AdoptPlan {
+        AdoptPlan {
+            write: r.forward_plan(ggtt),
+            latch: latch_poll(self.firmware.pipe, self.firmware.plane.plane_id, ggtt),
+            rollback: r.restore_plan(self.firmware.surf_raw),
+            old_surf: self.firmware.plane.surf,
+            new_surf: ggtt,
+        }
     }
 
     pub const fn owner(&self) -> u64 {
@@ -248,10 +298,23 @@ impl ScanoutPair {
         if self.firmware_live {
             return None; // the in-flight flip that wanted it never latched over the firmware: nothing to put back
         }
+        if let Some(r) = &self.resize {
+            // the geometry goes back with the framebuffer: the firmware's own register values, then its PLANE_SURF
+            let fw_surf = self.firmware.plane.surf;
+            let plan = AdoptPlan {
+                write: r.restore_plan(self.firmware.surf_raw),
+                latch: latch_poll(self.firmware.pipe, self.firmware.plane.plane_id, fw_surf),
+                rollback: r.forward_plan(self.live.plane.surf),
+                old_surf: self.live.plane.surf,
+                new_surf: fw_surf,
+            };
+            self.flip = Some(Flip { idx: FIRMWARE_IDX, seq: 0, plan: plan.clone(), phase: Phase::AwaitLatch(AdoptSession::begin(&plan)), geometry: true });
+            return Some(Ok(plan));
+        }
         let fw = ReplacementSurface { gtt_addr: self.firmware.plane.surf, ..self.template };
         match plan_surface_replacement(&self.live, &fw) {
             Ok(plan) => {
-                self.flip = Some(Flip { idx: FIRMWARE_IDX, seq: 0, plan: plan.clone(), phase: Phase::AwaitLatch(AdoptSession::begin(&plan)) });
+                self.flip = Some(Flip { idx: FIRMWARE_IDX, seq: 0, plan: plan.clone(), phase: Phase::AwaitLatch(AdoptSession::begin(&plan)), geometry: false });
                 Some(Ok(plan))
             }
             Err(e) => Some(Err(ScanoutError::Plan(e))),
@@ -333,12 +396,19 @@ impl ScanoutPair {
         if st != ImageState::Rendering {
             return Err(ScanoutError::NotRendering { handle, state: st });
         }
-        let new = ReplacementSurface { gtt_addr: self.images[i].ggtt, ..self.template };
-        let plan = plan_surface_replacement(&self.live, &new).map_err(ScanoutError::Plan)?;
+        let ggtt = self.images[i].ggtt;
+        // off the firmware's framebuffer onto a logical-size image: the fastset; otherwise the one-register flip
+        let (plan, geometry) = match &self.resize {
+            Some(r) if self.firmware_live => (self.geometry_plan(r, ggtt), true),
+            _ => {
+                let new = ReplacementSurface { gtt_addr: ggtt, ..self.template };
+                (plan_surface_replacement(&self.live, &new).map_err(ScanoutError::Plan)?, false)
+            }
+        };
         let seq = self.next_seq;
         self.next_seq += 1;
         self.images[i].state = ImageState::Committed { seq };
-        self.flip = Some(Flip { idx: i, seq, plan, phase: Phase::AwaitGpu });
+        self.flip = Some(Flip { idx: i, seq, plan, phase: Phase::AwaitGpu, geometry });
         Ok(seq)
     }
 
@@ -426,6 +496,12 @@ impl ScanoutPair {
         img.state = ImageState::ScanningOut { seq: f.seq };
         self.live.plane.surf = img.ggtt;
         self.live.surf_raw = img.ggtt;
+        if f.geometry {
+            // the plane now scans the logical layout: later flips are checked against it
+            self.live.plane.width = self.template.width;
+            self.live.plane.height = self.template.height;
+            self.live.plane.stride_bytes = Some(self.template.stride_bytes);
+        }
         self.latched_seq = f.seq;
         LatchStep::Latched { seq: f.seq, released }
     }

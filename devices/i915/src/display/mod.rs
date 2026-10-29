@@ -10,10 +10,12 @@
 //! | [`Adoption`] | the verdict: adopted (and what), refused (and why), or no readout at all |
 //! | [`answer`] | the session-less display answers both loops give (`DISPLAY-QUERY`; the authority calls refused without an authority) |
 //! | [`scanout`] | the scanout pair's LIFECYCLE (FREE / RENDERING / COMMITTED / SCANNING_OUT): who may draw, present and wait, when a flip is armed, when a surface is released |
+//! | [`size`] | the LOGICAL scanout size: the host's policy resolved against the panel once, the fastset planned (or refused by name), and what `DISPLAY-QUERY` then states |
 //!
 //! Nothing here writes a register: the flip plan `scanout` hands over is executed by the presentation increment's service glue.
 pub mod answer;
 pub mod scanout;
+pub mod size;
 
 use crate::log::{emit, Log};
 use i915_display_modeset_core::initial::{adopt, AdoptRefusal, AdoptedDisplay};
@@ -84,22 +86,29 @@ impl Adoption {
 
     /// The `DISPLAY-QUERY` reply body.
     pub fn query_reply(&self) -> DisplayQueryRep {
+        self.query_reply_sized(None)
+    }
+
+    /// The `DISPLAY-QUERY` reply body when the scanout is offered at a LOGICAL size (`width`, `height`, `stride`) other than the
+    /// firmware framebuffer's: the size the authority's images have and its clients draw ([`size`]).
+    pub fn query_reply_sized(&self, logical: Option<(u32, u32, u32)>) -> DisplayQueryRep {
         let Some(a) = self.adopted() else { return DisplayQueryRep { refusal: self.refusal_code(), ..Default::default() } };
         let m = a.mode();
+        let (width, height, stride) = logical.unwrap_or((a.fb.width, a.fb.height, a.fb.stride));
         DisplayQueryRep {
             adopted: state::ADOPTED,
             refusal: refusal::NONE,
             pipe: a.pipe.index() as u32,
             plane: a.fb.plane_id as u32,
-            width: a.fb.width,
-            height: a.fb.height,
-            stride: a.fb.stride,
+            width,
+            height,
+            stride,
             fourcc: a.fb.fourcc,
             modifier: a.fb.modifier,
             active_width: a.active_w,
             active_height: a.active_h,
             refresh_millihz: m.refresh_millihz,
-            scaled: a.scaled() as u32,
+            scaled: (a.scaled() || logical.is_some()) as u32,
             mode_count: 1,
             ..Default::default()
         }

@@ -159,3 +159,25 @@ pub const GEN9_MEM_LATENCY_LEVEL_0_4_MASK: u32 = 0xff; // i915_reg.h:1105
 pub const GEN9_MEM_LATENCY_LEVEL_1_5_MASK: u32 = 0xff << 8; // i915_reg.h:1104
 pub const GEN9_MEM_LATENCY_LEVEL_2_6_MASK: u32 = 0xff << 16; // i915_reg.h:1103
 pub const GEN9_MEM_LATENCY_LEVEL_3_7_MASK: u32 = 0xff << 24; // i915_reg.h:1102
+
+// ---- SKL pipe scaler WRITE side: the fields and phase registers `skl_pfit_enable` programs (intel_display_regs.h) ----------------
+pub const SKL_PS_SCALER_MODE_MASK: u32 = 3 << 28; // intel_display_regs.h:1071 REG_GENMASK(29, 28) (skl/bxt)
+pub const SKL_PS_SCALER_MODE_DYN: u32 = 0 << 28; // intel_display_regs.h:1072
+pub const SKL_PS_SCALER_MODE_HQ: u32 = 1 << 28; // intel_display_regs.h:1073
+pub const PS_FILTER_MASK: u32 = 3 << 23; // intel_display_regs.h:1082 REG_GENMASK(24, 23)
+pub const PS_FILTER_MEDIUM: u32 = 0 << 23; // intel_display_regs.h:1083
+pub const PS_VPHASE_1A: u32 = 0x68188; // intel_display_regs.h:1178
+pub const PS_HPHASE_1A: u32 = 0x68194; // intel_display_regs.h:1193
+pub const PS_Y_PHASE_SHIFT: u32 = 16; // intel_display_regs.h:1186 PS_Y_PHASE_MASK REG_GENMASK(31, 16)
+pub const PS_UV_RGB_PHASE_MASK: u32 = 0xffff; // intel_display_regs.h:1188 REG_GENMASK(15, 0)
+pub const PS_PHASE_MASK: u32 = 0x7fff << 1; // intel_display_regs.h:1190 (u2.13)
+pub const PS_PHASE_TRIP: u32 = 1 << 0; // intel_display_regs.h:1191
+
+// ---- the pipe's scanline counter (vblank evasion; intel_display_regs.h) ----
+pub const PIPEDSL_A: u32 = 0x70000; // intel_display_regs.h:725 _PIPEADSL
+pub const PIPEDSL_LINE_MASK: u32 = 0x000f_ffff; // intel_display_regs.h:728 REG_GENMASK(19, 0)
+
+/// `PIPEDSL(pipe)` = `_MMIO_PIPE2(pipe, _PIPEADSL)`: the pipe register block (intel_display_regs.h:726).
+pub const fn pipedsl(pipe: Pipe) -> u32 {
+    PIPEDSL_A + (pipe as u32) * crate::regs::PIPE_STEP
+}

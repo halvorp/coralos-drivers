@@ -206,6 +206,9 @@ pub struct UapiService {
     /// The display authority's scanout pair (D18, feature `p4-present`).
     #[cfg(feature = "p4-present")]
     pub(crate) scanout: Option<super::calls_scanout::PairRec>,
+    /// The logical-size fastset the pair is made for (`display::size`); `None` = the firmware's size.
+    #[cfg(feature = "p4-present")]
+    pub(crate) resize: Option<i915_display_modeset_core::resize::ScanoutResize>,
 }
 
 /// Bring up the render engine and the GGTT and return the service: the window, the scratch page, the GGTT, the status page, the
@@ -297,6 +300,8 @@ impl UapiService {
             firmware: None,
             #[cfg(feature = "p4-present")]
             scanout: None,
+            #[cfg(feature = "p4-present")]
+            resize: None,
         }
     }
 
@@ -308,6 +313,37 @@ impl UapiService {
     /// The display startup adopted (or refused): `DISPLAY-QUERY` answers from it, the authority calls act on it.
     pub fn set_display(&mut self, a: crate::display::Adoption) {
         self.display = a;
+    }
+
+    /// Choose the LOGICAL scanout size from the host's `policy` (`display::size::choose`, after [`UapiService::set_display`]): the
+    /// pair is then made at that size and its first flip carries the fastset. Without the presentation increment nothing can flip, so
+    /// the firmware's size is what is offered. Must precede the first `SCANOUT-ACQUIRE` (an acquired pair keeps its size).
+    pub fn set_scanout_size<L: Log>(&mut self, log: &mut L, caps: &i915_kbl_display_core::platform::DisplayCaps, geometry: Option<&i915_display_modeset_core::resize::FirmwareGeometry>, policy: i915_display_modeset_core::resize::LogicalSize) {
+        #[cfg(feature = "p4-present")]
+        if self.scanout.is_none() {
+            self.resize = crate::display::size::choose(log, caps, &self.display, geometry, policy);
+        }
+        #[cfg(not(feature = "p4-present"))]
+        let _ = (log, caps, geometry, policy);
+    }
+
+    /// The `DISPLAY-QUERY` body: the adoption, at the logical size when one is planned.
+    pub(crate) fn display_query_rep(&self) -> i915_wire::msg::display::DisplayQueryRep {
+        #[cfg(feature = "p4-present")]
+        if let Some(r) = &self.resize {
+            return self.display.query_reply_sized(Some((r.logical_w, r.logical_h, r.stride)));
+        }
+        self.display.query_reply()
+    }
+
+    /// The one mode the authority may set: the adoption's refresh at the offered size.
+    pub(crate) fn offered_mode(&self) -> Option<i915_display_modeset_core::initial::OfferedMode> {
+        let m = self.display.adopted()?.mode();
+        #[cfg(feature = "p4-present")]
+        if let Some(r) = &self.resize {
+            return Some(i915_display_modeset_core::initial::OfferedMode { width: r.logical_w, height: r.logical_h, ..m });
+        }
+        Some(m)
     }
 
     /// Bind session `inc` as the DISPLAY AUTHORITY. The caller is the transport, on the strength of a capability only the
@@ -480,7 +516,7 @@ impl UapiService {
             // describes, changes nothing: answered with or without a session (D18)
             DisplayQuery => {
                 msg::Empty::from_payload(p)?;
-                Ok(Done::Len(msg::encode_reply(out, Status::Ok, 0, Some(&self.display.query_reply()))?))
+                Ok(Done::Len(msg::encode_reply(out, Status::Ok, 0, Some(&self.display_query_rep()))?))
             }
             // delete-when: the display-write increment (set-mode / page-flip / scanout allocation, plan section 3 P7+) and the pre-uAPI SUBMIT-BATCH
             // are served by their own opcodes; until then these first-generation operations answer Unsupported (2026-10-12 skeleton, still named).
