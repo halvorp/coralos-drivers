@@ -118,7 +118,16 @@ pub struct Device<M: Machine> {
     spin: crate::spinguard::SpinGuard,
     /// The running session's position probes ([`PROBE_AT_MS`]): absolute deadlines, taken in order, cleared with the session.
     pub(crate) probes: [Option<u64>; 2],
+    /// Line mode: when the period interrupt was last checked for (see [`LINE_PERIOD_GRACE_MS`]); 0 = not since the session came up.
+    line_checked_ms: u64,
 }
+
+/// LINE MODE IS BOUNDED BY THE STREAM, NOT ONLY BY THE RING WATCHDOG. A running stream completes a period every ~21 ms; if two periods'
+/// time passes with no period served while the line is believed, the device looks at the link position: a position that moved a whole
+/// period or more is a completion the interrupt never delivered (an IOC that never reached GSI 16 - Atlas 2026-10-29, "amber mountain
+/// marsh": the session came up in line mode and then went silent). That is named (`IRQ-LOST`, with the register snapshot), and the
+/// device polls for the rest of its life and keeps feeding the stream. A position that did not move is the DMA's, and the watchdog names it.
+pub const LINE_PERIOD_GRACE_MS: u64 = 2 * (session::PERIOD_FRAMES as u64 * 1000 / 48_000) + 1;
 
 /// When, after a session comes up, the device writes what the hardware did: the host stream's link position (did the DMA move: the
 /// DSP is pulling, so its pipeline runs and the SSP drains it), the periods and underruns, the interrupt counters, and on the speaker
@@ -165,6 +174,7 @@ impl<M: Machine> Device<M> {
             stats: Stats::default(),
             spin: crate::spinguard::SpinGuard::default(),
             probes: [None, None],
+            line_checked_ms: 0,
         }
     }
 
@@ -438,6 +448,7 @@ impl<M: Machine> Device<M> {
                 emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION up in {} ms output={} irq={} lost={}]", ms, self.dsp.as_ref().map_or("none", |d| d.out.name()), if self.rig.irq_poll { "poll" } else { "line" }, self.rig.lost_irqs));
                 let now = self.rig.now();
                 self.probes = [Some(now + PROBE_AT_MS[0]), Some(now + PROBE_AT_MS[1])];
+                self.line_checked_ms = now;
                 Ok(())
             }
             Err(e) => {
@@ -608,7 +619,38 @@ impl<M: Machine> Device<M> {
         let wd = self.dsp.as_ref().map(|d| d.last_period_ms + WATCHDOG_MS);
         // poll mode: a running stream is looked at on a clock, since no interrupt will wake the wait
         let poll = if self.dsp.is_some() && self.rig.irq_poll { Some(now + crate::irqmode::STREAM_POLL_MS) } else { None };
-        [self.gnd_deadline, wd, poll, self.probes[0], self.probes[1]].into_iter().flatten().min()
+        // line mode: the period interrupt is checked for on the stream's own clock, so a missing one is found, never waited on for ever
+        let line = self.line_check_due();
+        [self.gnd_deadline, wd, poll, line, self.probes[0], self.probes[1]].into_iter().flatten().min()
+    }
+
+    /// When line mode next checks that the period interrupt is arriving (None outside a line-mode session).
+    fn line_check_due(&self) -> Option<u64> {
+        let d = self.dsp.as_ref().filter(|_| !self.rig.irq_poll)?;
+        Some(d.last_period_ms.max(self.line_checked_ms) + LINE_PERIOD_GRACE_MS)
+    }
+
+    /// Line mode, no period served for [`LINE_PERIOD_GRACE_MS`]: did the link move a period with no interrupt? Then the interrupt is lost -
+    /// named once with the registers that say why, and the device polls (and serves that period now). Reads only, until the poll serves.
+    fn check_line_period(&mut self, now: u64) {
+        self.line_checked_ms = now;
+        // periods an interrupt DID deliver while something else held the loop (an IPC wait services the line and banks them) are owed their
+        // refill, not a verdict
+        if self.dsp.as_ref().is_some_and(|d| d.pump.pend.periods > 0) {
+            self.serve_banked_periods();
+            return;
+        }
+        let Some(dsp) = self.dsp.as_ref() else { return };
+        let Ok(pos) = self.rig.read(session::lpib(dsp.host.index)) else { return };
+        let Some(moved) = dsp.acct.hw_delta(pos).filter(|d| *d >= dsp.acct.period_bytes) else { return };
+        crate::irqmode::snapshot(&mut self.rig, "period-irq");
+        self.rig.lost_irqs = self.rig.lost_irqs.saturating_add(1);
+        self.rig.irq_poll = true;
+        emit(
+            &mut self.rig.m,
+            format_args!("[AVS-DEV IRQ-LOST the link moved {} bytes in {} ms with no period interrupt lost={} -> mode=poll]", moved, LINE_PERIOD_GRACE_MS, self.rig.lost_irqs),
+        );
+        self.service_stream(true);
     }
 
     /// One blocking wait and what it woke for.
@@ -652,7 +694,13 @@ impl<M: Machine> Device<M> {
                 self.stop_session(true);
                 self.publish_after_climb();
             }
-            Wake::Deadline => self.on_deadline(),
+            Wake::Deadline => {}
+        }
+        // every deadline that came due is served, WHATEVER woke the wait: a busy wake source (a line, a request stream) must not starve the
+        // probes, the line-mode period check or the watchdog - they are what notices that the device stopped making progress
+        let now = self.rig.now();
+        if matches!(wake, Wake::Deadline) || self.next_deadline(now).is_some_and(|d| now >= d) {
+            self.on_deadline();
         }
         let now = self.rig.now();
         if let crate::spinguard::Verdict::Park { say, steps } = self.spin.note(now) {
@@ -704,11 +752,27 @@ impl<M: Machine> Device<M> {
         }
     }
 
+    /// Refill for the periods the pump counted while it waited for something else, as one serviced period.
+    fn serve_banked_periods(&mut self) {
+        let (Some(dsp), Some(bufs), Some(stream)) = (self.dsp.as_mut(), self.bufs.as_ref(), self.stream.as_mut()) else { return };
+        dsp.pump.pend.periods = 0;
+        match dsp.on_periods(&mut self.rig, bufs, &mut stream.fifo) {
+            Ok(()) => {
+                self.stats.periods += 1;
+                self.send_period_event();
+            }
+            Err(e) => self.fault(e.name(), 0),
+        }
+    }
+
     fn on_deadline(&mut self) {
         if self.dsp.is_some() && self.rig.irq_poll {
             self.service_stream(true);
         }
         let now = self.rig.now();
+        if self.line_check_due().is_some_and(|d| now >= d) {
+            self.check_line_period(now);
+        }
         for i in 0..self.probes.len() {
             if self.probes[i].is_some_and(|d| now >= d) {
                 self.probes[i] = None;
@@ -763,8 +827,8 @@ impl<M: Machine> Device<M> {
         emit(
             &mut self.rig.m,
             format_args!(
-                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} lpib_periods={} poll={} lost={}]",
-                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, dsp.lpib_periods, self.rig.irq_poll, self.rig.lost_irqs
+                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} lpib_periods={} poll={} lost={} dropped={}/{}]",
+                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, dsp.lpib_periods, self.rig.irq_poll, self.rig.lost_irqs, self.stats.dropped_events, self.stats.dropped_replies
             ),
         );
         if dsp.out == Output::Speakers {
