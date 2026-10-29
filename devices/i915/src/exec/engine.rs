@@ -5,7 +5,8 @@
 //! the MEMORY - the context image, the ring and the status page (HWSP) as DMA grants bound into the GGTT - and moves bytes between
 //! the two. Nothing here decides; it executes the engine's plans in the engine's order:
 //!
-//! 1. `bring_up`: `reset_csb_pointers` (status-page stores + `RING_CONTEXT_STATUS_PTR`) then `enable_execlists`.
+//! 1. `bring_up`: `reset_csb_pointers` (status-page stores + `RING_CONTEXT_STATUS_PTR`), then `execlists_resume`: the engine's MOCS
+//!    (`intel_mocs_init_engine`, [`super::mocs`]) and `enable_execlists`.
 //! 2. `add_context`: the engine builds the register state; the rig copies it into page 1 of the context object.
 //! 3. `submit_batch`: the ring is loaded, `build_request` fills it, only changed dwords are stored back, then `dequeue` yields the
 //!    `SubmissionPlan` - image stores first (the engine's `wmb()`), then the four ELSP writes.
@@ -14,7 +15,7 @@
 //! 5. `check_hang`: the engine's stall bound declares `ENGINE-HUNG` / `ELSP-NOT-ACKED` by name.
 //! 6. `recover`: the reset planner runs (`RESET_CTL` handshake, `GEN6_GDRST` twice), the CSB tracker and registers are put back,
 //!    lost requests are cancelled the way `execlists_reset_cancel` does (marked complete, retired), contexts are scrubbed
-//!    (`lrc_reset`), execlists are re-enabled. Requests that were in flight are LOST (submit-core does not port replay).
+//!    (`lrc_reset`), the MOCS are programmed again (a full reset first re-runs `intel_mocs_init`) and execlists are re-enabled. Requests that were in flight are LOST (submit-core does not port replay).
 //!
 //! EVERY risky sequence is a `[I915-STEP begun ...]` step (plan section 5). The ELSP writes and the reset are the two the device
 //! cannot take back.
@@ -27,7 +28,9 @@ use super::ExecError;
 use crate::log::{emit, Log};
 use coralos_hal::{Dma, Mmio};
 use i915_common_core::Reg;
+use i915_devinfo_core::PlatformDescriptor;
 use i915_gt_core::engine::EngineInfo;
+use i915_gt_core::mocs::{engine_init_writes, gt_init_writes, mocs_settings, MocsSettings};
 use i915_gt_core::reset::{ResetPlanner, ResetScope};
 use i915_gt_core::Effect;
 use i915_submit_core::execlists::{csb_entry_dword, csb_entry_mmio, decode_csb, HwspStore, Step};
@@ -108,6 +111,8 @@ pub struct EngineRig {
     /// `EngineConfig::stall_bound` (ms): how long submitted work may go without progress before the engine is declared hung. It also
     /// bounds a wait for a victim VMA's retirement (`uapi::adapt::Sink`): past it the work is hung, not slow.
     pub stall_bound_ms: u64,
+    /// The platform's MOCS settings (`get_mocs_settings`); `None` = Linux programs no MOCS on this part.
+    mocs: Option<MocsSettings>,
 }
 
 /// The status page as a [`HwspSink`].
@@ -132,12 +137,22 @@ impl<D: Dma, M: CpuMem> HwspSink for Hwsp<'_, D, M> {
 
 impl EngineRig {
     /// `hwsp` is the engine's status page object and `hwsp_ggtt` its GGTT offset; `cfg.status_page_ggtt` must be that offset.
-    pub fn new(info: &EngineInfo, gen: u8, cfg: EngineConfig, hwsp: Grant, hwsp_ggtt: u32) -> Result<Self, ExecError> {
+    /// `desc` selects the generation the engine model is built for and the MOCS table its resume programs.
+    pub fn new(info: &EngineInfo, desc: &PlatformDescriptor, cfg: EngineConfig, hwsp: Grant, hwsp_ggtt: u32) -> Result<Self, ExecError> {
         if cfg.status_page_ggtt != hwsp_ggtt || hwsp.len < 4096 {
             return Err(ExecError::Layout { what: "status page object vs EngineConfig::status_page_ggtt" });
         }
         let stall_bound_ms = cfg.stall_bound;
-        Ok(EngineRig { engine: Engine::new(info, gen, cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), tls: Vec::new(), epoch: 0, proof: ExecProof::default(), stall_bound_ms })
+        let mocs = mocs_settings(desc)?;
+        Ok(EngineRig { engine: Engine::new(info, desc.gen(), cfg)?, hwsp, hwsp_ggtt, objs: Vec::new(), tls: Vec::new(), epoch: 0, proof: ExecProof::default(), stall_bound_ms, mocs })
+    }
+
+    /// `intel_mocs_init_engine` for this engine (the first half of `execlists_resume`), inside the caller's step.
+    fn resume_mocs<B: Mmio, L: Log>(&self, ex: &mut Executor<B>, log: &mut L) -> Result<(), ExecError> {
+        if let Some(s) = &self.mocs {
+            ex.run_mocs(log, s, engine_init_writes(s, self.engine.info())?, self.engine.info().name)?;
+        }
+        Ok(())
     }
 
     fn hwsp_sink<'a, D: Dma, M: CpuMem>(&self, gm: &'a mut GpuMem<D, M>) -> Hwsp<'a, D, M> {
@@ -156,7 +171,7 @@ impl EngineRig {
         self.tls.get(ctx as usize).copied().flatten()
     }
 
-    /// Step `ENGINE-ENABLE`: `reset_csb_pointers`, then `enable_execlists`.
+    /// Step `ENGINE-ENABLE`: `reset_csb_pointers`, then `execlists_resume` - the engine's MOCS, then `enable_execlists` (before the first request).
     pub fn bring_up<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, ex: &mut Executor<B>, gm: &mut GpuMem<D, M>, log: &mut L) -> Result<(), ExecError> {
         let csb = self.engine.plan_reset_csb_pointers();
         let resume = self.engine.plan_resume()?;
@@ -176,11 +191,10 @@ impl EngineRig {
         }
         let d = ex.domains_for(regs[..n].iter().copied());
         let mut sink = self.hwsp_sink(gm);
-        ex.step(log, StepId::ENGINE_ENABLE, "ENGINE-ENABLE", |ex, _| {
-            ex.awake(d, |ex| {
-                ex.run_csb_steps(csb.steps.as_slice(), &mut sink)?;
-                ex.gt_effects_awake(resume.as_slice())
-            })
+        ex.step(log, StepId::ENGINE_ENABLE, "ENGINE-ENABLE", |ex, log| {
+            ex.awake(d, |ex| ex.run_csb_steps(csb.steps.as_slice(), &mut sink))?;
+            self.resume_mocs(ex, log)?;
+            ex.awake(d, |ex| ex.gt_effects_awake(resume.as_slice()))
         })
     }
 
@@ -424,12 +438,17 @@ impl EngineRig {
                 self.store_state(gm, ctx)?;
             }
             gm.flush(self.hwsp.device_addr, 4096)?;
+            // intel_gt_reset re-runs intel_gt_init_hw -> intel_mocs_init (intel_reset.c:1264), then resume(gt) -> execlists_resume (:1270);
+            // an engine reset resumes only its engine (__intel_engine_reset_bh, :1367)
+            if let (Some(s), ResetScope::AllEngines) = (&self.mocs, scope) {
+                ex.run_mocs(log, s, gt_init_writes(s)?, "gt")?;
+            }
+            self.resume_mocs(ex, log)?;
             let resume = self.engine.plan_resume()?;
             let d = ex.domains_for(Executor::<B>::gt_regs(resume.as_slice()));
             ex.awake(d, |ex| ex.gt_effects_awake(resume.as_slice()))?;
             self.epoch += 1;
             self.proof.recovered = false;
-            let _ = log;
             Ok(out)
         })
     }

@@ -94,6 +94,9 @@ pub struct DeviceInfo {
     pub has_rps: bool,
     pub has_runtime_pm: bool,
     pub has_gt_uc: bool,
+    /// `.has_global_mocs` (`HAS_GLOBAL_MOCS_REGISTERS`, i915_drv.h:639): set first by GEN12_FEATURES (i915_pci.c:635). Before that the
+    /// MOCS control registers are per engine (`mocs_offset`, gt/intel_mocs.c:568-582).
+    pub has_global_mocs: bool,
 }
 
 /// The descriptor for one PCI device id: the row it selects plus its identity. `Copy`, no allocation.
