@@ -71,11 +71,48 @@ impl<B: Mmio> Executor<B> {
         emit(
             log,
             format_args!(
-                "[I915-PAT pat={:#010x}:{:#010x} mocs0..3={:#x},{:#x},{:#x},{:#x} lncf0={:#x} written=none]",
+                "[I915-PAT pat={:#010x}:{:#010x} mocs0..3={:#x},{:#x},{:#x},{:#x} lncf0={:#x}]",
                 rep.pat.1, rep.pat.0, rep.mocs[0], rep.mocs[1], rep.mocs[2], rep.mocs[3], rep.lncf
             ),
         );
         Ok(rep)
+    }
+
+    /// `bdw_setup_private_ppat` (gt/intel_gtt.c:611-631, called from `intel_gt_init_hw`): write the private PAT - the eight memory types every PTE's
+    /// PWT/PCD/PAT bits select from - as [`i915_memory_core::private_ppat`], then read it back. The firmware leaves every entry 0x03 (write-back), so
+    /// without this a PTE that asks for UNCACHED (the scanout pair, `CacheLevel::None`: index 3) is write-back in the LLC and the display, which does not
+    /// snoop, scans out stale lines (Atlas 2026-10-27: horizontal cacheline-sized garbage on every GPU-drawn window). The two writes are on the allow-list
+    /// under `p2-memory`; nothing here runs without a bound GGTT because no PTE exists to select an entry yet.
+    pub fn program_private_ppat<L: Log>(&mut self, log: &mut L) -> Result<PpatReport, ExecError> {
+        use i915_gt_regs_core::{GEN8_PRIVATE_PAT_HI, GEN8_PRIVATE_PAT_LO};
+        let want = i915_memory_core::pte::private_ppat();
+        let (lo, hi) = (want as u32, (want >> 32) as u32);
+        let d = self.domains_for([GEN8_PRIVATE_PAT_LO, GEN8_PRIVATE_PAT_HI]);
+        let before = self.read_ppat(d)?;
+        let after = self.step(log, StepId::PPAT_SETUP, "PAT-PROGRAM", |ex, _| {
+            ex.awake(d, |ex| {
+                ex.wr(GEN8_PRIVATE_PAT_LO, lo)?;
+                ex.wr(GEN8_PRIVATE_PAT_HI, hi)?;
+                ex.posting_read(GEN8_PRIVATE_PAT_HI)?;
+                Ok((ex.rd(GEN8_PRIVATE_PAT_LO)?, ex.rd(GEN8_PRIVATE_PAT_HI)?))
+            })
+        })?;
+        let ok = after == (lo, hi);
+        emit(
+            log,
+            format_args!(
+                "[I915-PAT-PROGRAM before={:#010x}:{:#010x} wrote={:#010x}:{:#010x} readback={:#010x}:{:#010x} {}]",
+                before.1, before.0, hi, lo, after.1, after.0, if ok { "OK" } else { "MISMATCH" }
+            ),
+        );
+        let mut rep = self.capture_cache_state(log)?;
+        rep.pat = after;
+        Ok(rep)
+    }
+
+    fn read_ppat(&mut self, d: u32) -> Result<(u32, u32), ExecError> {
+        use i915_gt_regs_core::{GEN8_PRIVATE_PAT_HI, GEN8_PRIVATE_PAT_LO};
+        self.awake(d, |ex| Ok((ex.rd(GEN8_PRIVATE_PAT_LO)?, ex.rd(GEN8_PRIVATE_PAT_HI)?)))
     }
 
     /// Execute `plan` as one step (`GGTT-BIND` or `PPGTT-BIND`, by the plan's space), with the `[I915-STEP ...]` records.

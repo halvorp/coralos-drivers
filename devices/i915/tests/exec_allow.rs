@@ -41,11 +41,12 @@ fn the_default_build_writes_only_forcewake_and_has_no_ggtt_window() {
 fn p2_adds_exactly_the_ggtt_invalidate_register_and_the_ggtt_window() {
     let mut want = FORCEWAKE_SET.to_vec();
     want.push(0x101008); // GFX_FLSH_CNTL_GEN6, intel_gt_regs.h:1474
+    want.extend([0x40e0, 0x40e4]); // GEN8_PRIVATE_PAT_LO / _HI, intel_gt_regs.h:336-337 (bdw_setup_private_ppat)
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(compiled_ggtt_window(), Some(GgttWindow { base: 0x80_0000, bytes: 0x80_0000 }));
-    assert_eq!(BAR0_WRITE_RANGES.len(), 5);
-    let last = BAR0_WRITE_RANGES[4];
+    assert_eq!(BAR0_WRITE_RANGES.len(), 7);
+    let last = BAR0_WRITE_RANGES[6];
     assert_eq!((last.off, last.len), (0x80_0000, 0x80_0000), "the GGTT window is the upper half of the 16 MiB BAR0 (intel_ggtt.c:1187-1192)");
     assert_eq!(i915_device::regio::BAR0_NEED_BYTES, 16 << 20);
 }
@@ -55,6 +56,7 @@ fn p2_adds_exactly_the_ggtt_invalidate_register_and_the_ggtt_window() {
 fn p3_adds_exactly_the_execlist_and_reset_registers() {
     let mut want = FORCEWAKE_SET.to_vec();
     want.push(0x101008);
+    want.extend([0x40e0, 0x40e4]); // the private PAT
     want.extend([
         0x2230,   // RING_ELSP(RENDER_RING_BASE 0x2000), intel_engine_regs.h:134 (+0x230)
         0x2098,   // RING_HWSTAM
@@ -119,6 +121,13 @@ mod planner_write_sets {
                 writes.push(w.reg);
             }
         }
+        // P2: the private PAT - the executor's own writes, found by running it on the simulated chip
+        {
+            let (chip, _mem, mut ex, _gm) = super::exec_common::built();
+            let mut log = super::exec_common::Lines::default();
+            ex.program_private_ppat(&mut log).unwrap();
+            writes.extend(chip.all_writes().iter().map(|(r, _)| Reg::new(*r)));
+        }
         // P3: submit-core
         writes.extend(elsp_writes(rcs.mmio_base, [1, 2]).iter().map(|w| w.reg));
         for e in plan_enable_execlists(rcs.mmio_base, 0x1000).unwrap().as_slice() {
@@ -161,6 +170,7 @@ fn p4_flip_writes() -> Vec<i915_common_core::Reg> {
 fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     let mut want = FORCEWAKE_SET.to_vec();
     want.push(0x101008);
+    want.extend([0x40e0, 0x40e4]);
     want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
     want.push(0x7019c); // PLANE_SURF(PIPE_A, PLANE_1), skl_universal_plane_regs.h:153
     want.sort();

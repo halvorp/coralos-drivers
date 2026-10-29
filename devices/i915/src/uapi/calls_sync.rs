@@ -72,6 +72,9 @@ impl UapiService {
                     WaitEval::Done { first } => ok!(SyncobjWaitRep { first_signaled: first, ..Default::default() }),
                     WaitEval::Pending { first } => {
                         if r.head.timeout_ns == 0 {
+                            // a poll that finds the fence pending is the normal Mesa idiom; the engine's state is dumped at the first poll and each power of two
+                            // after (a poll that NEVER turns into a signal is a lost completion, and only this dump says at which stage)
+                            self.stall_snapshot(hw, "syncobj-poll");
                             return Err(Fail::from(SyncError::Timeout)); // abs 0 = poll: -ETIME (drm_syncobj.c:1181-1183)
                         }
                         let dl = deadline(hw.now_ms, r.head.timeout_ns);
@@ -229,7 +232,7 @@ impl UapiService {
                 }
                 Some((status, errno, body)) => {
                     if errno == i915_wire::errno::ETIME {
-                        self.stall_snapshot(hw, &w);
+                        self.stall_snapshot(hw, Self::wait_kind_name(&w.kind));
                     }
                     let mut payload = [0u8; 32];
                     let mut wr = i915_wire::codec::Writer::new(&mut payload);
@@ -315,7 +318,17 @@ impl UapiService {
     /// (`gates`/`hold`), the ELSP was never acknowledged (`xlo` idle with `tail != head`), the batch never finished (`head` short of `tail`;
     /// the GPU's seqno `hw` short of `exp`), or it finished and the CPU did not see it (`hw` at or past `exp` while the fence is pending).
     /// `csb` is RING_CONTEXT_STATUS_PTR (write pointer in bits 8..11, read in 0..3); `isr0` the GT interrupt status the user interrupt would set.
-    fn stall_snapshot<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, w: &Waiter) {
+    fn wait_kind_name(k: &WaitKind) -> &'static str {
+        match k {
+            WaitKind::Gem { .. } => "gem",
+            WaitKind::Syncobj { .. } => "syncobj",
+            WaitKind::SyncFile { .. } => "sync-file",
+            #[cfg(feature = "p4-present")]
+            WaitKind::Scanout { .. } => "scanout",
+        }
+    }
+
+    fn stall_snapshot<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, kind: &'static str) {
         self.stall_dumps = self.stall_dumps.saturating_add(1);
         let n = self.stall_dumps;
         if !n.is_power_of_two() {
@@ -330,13 +343,6 @@ impl UapiService {
         let (exp, hwq) = match self.inflight.first() {
             Some(f) => (f.seqno, self.rig.engine.hw_seqno(f.ectx).unwrap_or(0)),
             None => (0, 0),
-        };
-        let kind = match &w.kind {
-            WaitKind::Gem { .. } => "gem",
-            WaitKind::Syncobj { .. } => "syncobj",
-            WaitKind::SyncFile { .. } => "sync-file",
-            #[cfg(feature = "p4-present")]
-            WaitKind::Scanout { .. } => "scanout",
         };
         // the stage the completion is lost at: A = a request is gated behind a fence nothing has signalled (software), B = the ring is
         // drained (HEAD == TAIL) but the CPU still reads an old seqno (visibility), C = the command streamer has not consumed the ring,

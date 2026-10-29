@@ -212,9 +212,10 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
         emit(hw.log, format_args!("[I915-GGTT kept={} start={:#x} size={:#x} - not written, never bound over]", k.what, k.start, k.size));
     }
     hw.ex.run_bind_step(hw.log, hw.gm, &create, true, &mut |_| true)?;
-    // the cache configuration the firmware left, read before any object is bound (evidence only; nothing is written)
+    // the private PAT every PTE selects from is programmed as Linux's bdw_setup_private_ppat does, before any object is bound (the firmware leaves
+    // every entry write-back; an UNCACHED scanout PTE would then be cached and the non-snooping display would scan out stale lines)
     if dev.gen() >= 9 {
-        let _ = hw.ex.capture_cache_state(hw.log);
+        let _ = hw.ex.program_private_ppat(hw.log);
     }
     let hwsp = hw.gm.alloc.alloc_hwsp()?;
     let hwsp_ggtt = bind_ggtt_grant(hw, &mut ggtt, &hwsp)?.0;

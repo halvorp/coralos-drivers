@@ -51,9 +51,9 @@ impl GgttWindow {
 }
 
 /// P2: the planners' register write set. `BindPlan::flushes` ends a GGTT bind with `Flush::GgttInvalidate(GFX_FLSH_CNTL_GEN6 <-
-/// GFX_FLSH_CNTL_EN)` (`gen8_ggtt_invalidate`, gt/intel_ggtt.c:217-230). That is the ONLY register P2 writes; the entries themselves
-/// are stores into the GGTT window, not registers.
-pub const P2_MEMORY_REGS: [Reg; 1] = [r::GFX_FLSH_CNTL_GEN6];
+/// GFX_FLSH_CNTL_EN)` (`gen8_ggtt_invalidate`, gt/intel_ggtt.c:217-230). Plus the private PAT (`bdw_setup_private_ppat`, gt/intel_gtt.c:611-631: `GEN8_PRIVATE_PAT_LO/HI`, written once at bring-up by
+/// `Executor::program_private_ppat`); the entries themselves are stores into the GGTT window, not registers.
+pub const P2_MEMORY_REGS: [Reg; 3] = [r::GFX_FLSH_CNTL_GEN6, r::GEN8_PRIVATE_PAT_LO, r::GEN8_PRIVATE_PAT_HI];
 
 /// P3: the render engine's execlist registers and the reset handshake registers (each base from `intel_engine_cs.c:64-200` via
 /// `i915-gt-regs-core`). Per planner:

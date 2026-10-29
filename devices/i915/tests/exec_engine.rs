@@ -515,7 +515,7 @@ fn the_default_build_executor_refuses_the_p3_writes_with_no_override() {
     };
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
     let mut rig = EngineRig::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
-    assert_eq!(ex.allow_list().len(), 3 + if cfg!(feature = "p2-memory") { 1 } else { 0 });
+    assert_eq!(ex.allow_list().len(), 3 + if cfg!(feature = "p2-memory") { 3 } else { 0 }, "forcewake x3, plus under p2: the GGTT invalidate and the private PAT pair");
     assert_eq!(rig.bring_up(&mut ex, &mut gm, &mut log).unwrap_err().name(), "WRITE-NOT-ALLOWED");
     assert!(chip.all_writes().is_empty());
 }

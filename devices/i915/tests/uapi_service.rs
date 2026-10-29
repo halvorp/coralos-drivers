@@ -262,6 +262,8 @@ fn a_session_stores_a_dword_through_execbuffer2_and_reads_it_back_through_its_le
     let mut wait = vec![0u8; 64];
     let n = WaitReq::encode(&mut wait, 0, 0, &[out], None).unwrap();
     assert!(send_raw(&mut w, inc, Opcode::SyncobjWait, &wait[..n]).unwrap().is_err(errno::ETIME));
+    // Mesa's zero-timeout poll never reaches the parked-timeout path: the stall snapshot is taken on the poll itself, so a lost completion has a stage
+    assert_eq!(w.log.find("[I915-STALL stage=").iter().filter(|l| l.contains("wait=syncobj-poll")).count(), 1, "first poll dumps the engine state once: {:?}", w.log.0);
     let n = WaitReq::encode(&mut wait, 0, 1_000_000_000, &[out], None).unwrap();
     assert!(send_raw(&mut w, inc, Opcode::SyncobjWait, &wait[..n]).is_none(), "the wait parks");
     let wait_rid = w.rid;

@@ -62,6 +62,40 @@ mod p2 {
         assert_eq!(chip.writes_to(0x101008), [1, 1], "one invalidate per bind");
     }
 
+    /// `bdw_setup_private_ppat` (intel_gtt.c:611-631): the firmware leaves every entry write-back (0x03); the driver writes the GEN9 table so a PTE that
+    /// asks for UNCACHED (index 3) is uncached for the non-snooping display. Expected words are worked out by hand from `GEN8_PPAT(i, x)` (intel_gtt.h:150).
+    #[test]
+    fn the_private_pat_is_programmed_to_the_gen9_table_and_read_back() {
+        let (chip, _mem, mut ex, _gm) = built();
+        chip.set(0x40e0, 0x0303_0303);
+        chip.set(0x40e4, 0x0303_0303);
+        let mut log = Lines::default();
+        // a chip whose PAT registers latch what is written
+        chip.0.borrow_mut().on_write = Some(Box::new(|regs, r, v| {
+            regs.insert(r, v);
+        }));
+        let rep = ex.program_private_ppat(&mut log).unwrap();
+        assert_eq!(chip.writes_to(0x40e0), [0x0003_0907], "entries 0..3 = WB|LLC, WC|LLC+eLLC, WB, UC (entry 3 = UC, the index PPAT_UNCACHED selects)");
+        assert_eq!(chip.writes_to(0x40e4), [0x3b2b_1b0b], "entries 4..7 = WB|LLC+eLLC with ages 0..3");
+        assert_eq!(rep.pat, (0x0003_0907, 0x3b2b_1b0b));
+        assert!(log.has("[I915-PAT-PROGRAM before=0x03030303:0x03030303 wrote=0x3b2b1b0b:0x00030907 readback=0x3b2b1b0b:0x00030907 OK]"), "{:?}", log.0);
+    }
+
+    #[test]
+    fn a_pat_that_reads_back_differently_is_reported_as_a_mismatch_not_hidden() {
+        let (chip, _mem, mut ex, _gm) = built();
+        chip.set(0x40e0, 0x0303_0303);
+        chip.set(0x40e4, 0x0303_0303);
+        // writes are ignored: the registers keep the firmware's value
+        chip.0.borrow_mut().on_write = Some(Box::new(|regs, r, _| {
+            regs.insert(r, 0x0303_0303);
+        }));
+        let mut log = Lines::default();
+        let rep = ex.program_private_ppat(&mut log).unwrap();
+        assert_eq!(rep.pat, (0x0303_0303, 0x0303_0303));
+        assert!(log.has("MISMATCH]"), "{:?}", log.0);
+    }
+
     #[test]
     fn a_store_outside_the_window_is_refused_and_the_plan_stops_before_its_invalidate() {
         let (chip, _mem, mut ex, mut gm) = built();

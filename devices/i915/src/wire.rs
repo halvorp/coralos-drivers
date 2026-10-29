@@ -16,7 +16,7 @@
 pub const SERVICE_EP: u16 = 65;
 /// The DISPLAY listen endpoint (D18): the loader's `EP_I915_DISPLAY`. RECV is this device's; SEND only the compositor's row holds, so a
 /// session opened over it is the display authority (`UapiService::bind_display_authority`). Read only by [`crate::service`].
-pub const DISPLAY_EP: u16 = 76;
+pub const DISPLAY_EP: u16 = 77;
 
 pub const REQ_MARKER: u8 = b'I';
 pub const REP_MARKER: u8 = b'i';

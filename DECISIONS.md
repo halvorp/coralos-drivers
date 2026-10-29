@@ -204,6 +204,8 @@ integration landed (the touchpad-prefs batch, matrix.connector, messages.service
 in `rt`, and the wait mask already covers endpoints above 63. A later registry reshuffle renumbers this file again, in the same change that moves the loader's grants.
 *Renumbered 2026-10-25 (the Atlas stack rebase onto CoralOS v01-beta):* the registry gave 70 to `EP_INSPECT_READ` (inspect.service) first, so the five are
 71..=75 and the dynamic base 76; `i915.device`'s DISPLAY listen endpoint (D18) is 76 and the base 77. Same rule: the numbers move with the loader's grants.
+*Renumbered 2026-10-29 (the Atlas stack forward-ported onto v01-beta 1c3c90bd4):* the registry gave 71 to `EP_FS_ADMIT` (storage's admission compartment) first, so the five are
+72..=76 and `i915.device`'s DISPLAY listen endpoint is 77, the dynamic base 78.
 
 **D17 — the Pixelbook Go's speakers work, PROTECTED: SPEAKERS-ARE-REFUSED-UNTIL-PROTECTED is amended, not bypassed (2026-10-16).**
 Owner ruling 2026-10-16 (the speakers played on the real unit under Alpine Linux 6.18 and were heard): the speakers must work. D11/D14's "refused until a speaker-protection path exists" stays a rule; what "protected" MEANS changes to what can be built and shown now, in four parts, all enforced by tests in this repository.
