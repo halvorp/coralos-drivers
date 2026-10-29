@@ -33,6 +33,7 @@ const GEN8_BASE: DeviceInfo = DeviceInfo {
     has_rps: true,
     has_runtime_pm: true,
     has_gt_uc: false,
+    has_global_mocs: false,
 };
 
 /// `GEN9_FEATURES` (i915_pci.c:475-479): `GEN(9)`, 4K|64K pages (:471-473), `has_gt_uc`; display version 9 (`skl_display`,
@@ -71,6 +72,7 @@ pub static CHV: DeviceInfo = DeviceInfo {
     has_rps: true,                // :457
     has_runtime_pm: true,         // :455
     has_gt_uc: false,
+    has_global_mocs: false,
 };
 
 pub static SKL_GT1: DeviceInfo = DeviceInfo { platform: Platform::Skylake, gt: 1, ..GEN9_BASE }; // i915_pci.c:485-488

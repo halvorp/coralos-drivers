@@ -216,3 +216,11 @@ fn row_flags_gen9_and_chv() {
     assert_eq!(c.dma_mask_size, 39);
     assert_eq!(c.max_pat_index, 3);
 }
+
+#[test]
+fn no_carried_row_has_global_mocs() {
+    // `.has_global_mocs = 1` first appears in GEN12_FEATURES (i915_pci.c:635); Gen8/Gen9 MOCS control registers are per engine.
+    for devid in [0x591c_u16, 0x5916, 0x1916, 0x22b0] {
+        assert!(!i915_devinfo_core::lookup(devid).unwrap().info.has_global_mocs, "{devid:#x}");
+    }
+}

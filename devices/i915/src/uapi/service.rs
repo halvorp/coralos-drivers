@@ -229,10 +229,15 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
     if dev.gen() >= 9 {
         let _ = hw.ex.program_private_ppat(hw.log);
     }
+    // intel_gt_init_hw -> intel_mocs_init (gt/intel_gt.c:219): on Gen9 the L3CC words (no global MOCS); the render engine's own control
+    // table follows in rig.bring_up (execlists_resume -> intel_mocs_init_engine), before the first request
+    if let Some(m) = i915_gt_core::mocs::mocs_settings(&dev.desc).map_err(|e| Fail::new(errno::ENODEV, e.name()))? {
+        hw.ex.program_gt_mocs(hw.log, &m)?;
+    }
     let hwsp = hw.gm.alloc.alloc_hwsp()?;
     let hwsp_ggtt = bind_ggtt_grant(hw, &mut ggtt, &hwsp)?.0;
     let ecfg = EngineConfig { status_page_ggtt: hwsp_ggtt, quirks: cfg.quirks, wa_ctx: None, stall_bound: cfg.stall_bound_ms };
-    let mut rig = EngineRig::new(&info, dev.gen(), ecfg, hwsp, hwsp_ggtt)?;
+    let mut rig = EngineRig::new(&info, &dev.desc, ecfg, hwsp, hwsp_ggtt)?;
     rig.bring_up(hw.ex, hw.gm, hw.log)?;
     let mut d = dev;
     d.route_engines(1 << i915_devinfo_core::engine::RCS0); // GPU-ENGINES-ADVERTISED-ARE-ROUTED: only the render engine has a submit row

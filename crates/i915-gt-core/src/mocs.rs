@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! MOCS (Memory Object Control State): the Gen9 table Kaby Lake uses and the plan that programs it (gt/intel_mocs.c).
-//! Kaby Lake is `IS_GEN9_BC` (intel_mocs.c:497), so its table is `skl_mocs_table` (:138-155); it has per-ENGINE control
-//! registers (`has_global_mocs` is false before Icelake, :444-447) and the render-engine L3CC words `LNCFCMOCS(i)` (:439-442).
+//! MOCS (Memory Object Control State): the Gen9 tables and the plans that program them (gt/intel_mocs.c).
+//! [`mocs_settings`] is `get_mocs_settings` (intel_mocs.c:454-534) over the platform descriptor: a Gen9 big-core part (`IS_GEN9_BC`,
+//! :497 - Skylake, Kaby Lake) gets `skl_mocs_table` (:138-155), a Gen9 LP part (`IS_GEN9_LP`, :501) `broxton_mocs_table` (:157-163).
+//! Gen9 has per-ENGINE control registers (`has_global_mocs` is a GEN12_FEATURES flag, i915_pci.c:635) and the render-engine L3CC
+//! words `LNCFCMOCS(i)` (`has_l3cc`, :439-442). [`gt_init_writes`] is `intel_mocs_init` (:666-685, from `intel_gt_init_hw`),
+//! [`engine_init_writes`] is `intel_mocs_init_engine` (:631-649, from `execlists_resume`, i.e. every engine resume incl. after reset).
 use crate::engine::{EngineClass, EngineInfo};
 use crate::error::GtError;
 use crate::effect::WritePlan;
 use i915_devinfo_core::engine::{BCS0, RCS0, VCS0, VCS1, VECS0};
 use i915_gt_regs_core as r;
 use i915_common_core::Reg;
+use i915_devinfo_core::PlatformDescriptor;
 
 // ---- field encoders (intel_mocs.c:34-54) ----------------------------------------------------------------------------------
 
@@ -61,8 +65,10 @@ pub struct MocsEntry {
 }
 
 /// `struct drm_i915_mocs_table` (intel_mocs.c:24-31) over a sparse entry list.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MocsTable {
+    /// The Linux table's name without `_mocs_table` (`skl`, `bxt`): what the device's marker names.
+    pub name: &'static str,
     /// `ARRAY_SIZE(table)`: one past the highest index the designated initialisers name.
     pub size: u32,
     /// Registers programmed per table.
@@ -79,9 +85,45 @@ static SKL_ENTRIES: [(u8, MocsEntry); 4] = [
     (63, MocsEntry { control_value: LE_3_WB | LE_TC_1_LLC | le_lrum(3), l3cc_value: L3_1_UC as u16 }), // intel_mocs.c:152-154
 ];
 
+/// `GEN9_MOCS_ENTRIES` + the rest of `broxton_mocs_table` (intel_mocs.c:157-163; "the LE_TGT_CACHE is not used on Broxton").
+static BXT_ENTRIES: [(u8, MocsEntry); 3] = [
+    SKL_ENTRIES[0],
+    SKL_ENTRIES[1],
+    (I915_MOCS_CACHED, MocsEntry { control_value: LE_1_UC | LE_TC_2_LLC_ELLC | le_lrum(3), l3cc_value: L3_3_WB as u16 }), // intel_mocs.c:160-162
+];
+
 /// The table `get_mocs_settings` picks for a Gen9 big-core part (`IS_GEN9_BC`, intel_mocs.c:497-500), with
-/// `unused_entries_index = I915_MOCS_PTE` (:461).
-pub const KBL_MOCS_TABLE: MocsTable = MocsTable { size: 64, n_entries: GEN9_NUM_MOCS_ENTRIES, entries: &SKL_ENTRIES, unused_entries_index: I915_MOCS_PTE };
+/// `unused_entries_index = I915_MOCS_PTE` (:461). `size` = `ARRAY_SIZE(skl_mocs_table)` = 64 (designated index 63).
+pub const SKL_MOCS_TABLE: MocsTable = MocsTable { name: "skl", size: 64, n_entries: GEN9_NUM_MOCS_ENTRIES, entries: &SKL_ENTRIES, unused_entries_index: I915_MOCS_PTE };
+/// The table for a Gen9 LP part (`IS_GEN9_LP`, intel_mocs.c:501-504). `size` = `ARRAY_SIZE(broxton_mocs_table)` = 3.
+pub const BXT_MOCS_TABLE: MocsTable = MocsTable { name: "bxt", size: 3, n_entries: GEN9_NUM_MOCS_ENTRIES, entries: &BXT_ENTRIES, unused_entries_index: I915_MOCS_PTE };
+
+/// What `get_mocs_settings` returns (intel_mocs.c:454-534): the table plus its flags (`HAS_GLOBAL_MOCS` / `HAS_ENGINE_MOCS` /
+/// `HAS_RENDER_L3CC`, :433-437).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MocsSettings {
+    pub table: MocsTable,
+    pub engine_mocs: bool,
+    pub global_mocs: bool,
+    pub render_l3cc: bool,
+}
+
+/// `get_mocs_settings` (intel_mocs.c:454-534) for the generations this port carries. `Ok(None)` is Linux's `flags = 0` for a part
+/// below Gen9 (no table, no warning: :505-509); a part above Gen9 is refused by name (this port carries no Gen11+ table). The table is
+/// validated as Linux does (:511-523) before it is returned.
+pub fn mocs_settings(desc: &PlatformDescriptor) -> Result<Option<MocsSettings>, GtError> {
+    let ver = desc.gen();
+    let table = match ver {
+        v if v < 9 => return Ok(None),
+        9 if desc.is_gen9_lp() => BXT_MOCS_TABLE,
+        9 => SKL_MOCS_TABLE,
+        v => return Err(GtError::NoMocsTable { graphics_ver: v }),
+    };
+    table.validate_gen9()?;
+    // has_mocs() = !IS_DGFX (:449-452): every carried part is integrated.
+    let global = desc.info.has_global_mocs;
+    Ok(Some(MocsSettings { table, engine_mocs: !global, global_mocs: global, render_l3cc: true }))
+}
 
 impl MocsTable {
     fn used(&self, index: u32) -> Option<&MocsEntry> {
@@ -189,4 +231,50 @@ pub fn l3cc_writes(table: &MocsTable) -> Result<L3ccWrites, GtError> {
 /// table always (`HAS_ENGINE_MOCS`), plus the L3CC words when it is the render engine (`HAS_RENDER_L3CC`).
 pub fn engine_programs_l3cc(engine: &EngineInfo) -> bool {
     engine.class == EngineClass::Render
+}
+
+/// One MOCS program: an engine's control table and/or the L3CC words, in Linux's order (control first, :644-648).
+#[derive(Clone, Copy, Debug)]
+pub struct MocsWrites {
+    control: Option<ControlWrites>,
+    l3cc: Option<L3ccWrites>,
+}
+
+impl MocsWrites {
+    /// How many control registers the program writes (0 or `n_entries`).
+    pub fn control_entries(&self) -> u32 {
+        self.control.map_or(0, |c| c.table.n_entries - c.next)
+    }
+    /// How many `LNCFCMOCS` words the program writes (0 or `(n_entries + 1) / 2`).
+    pub fn l3cc_words(&self) -> u32 {
+        self.l3cc.map_or(0, |l| l.table.n_entries.div_ceil(2) - l.next)
+    }
+}
+
+impl Iterator for MocsWrites {
+    type Item = WritePlan;
+    fn next(&mut self) -> Option<WritePlan> {
+        if let Some(w) = self.control.as_mut().and_then(Iterator::next) {
+            return Some(w);
+        }
+        self.l3cc.as_mut().and_then(Iterator::next)
+    }
+}
+
+/// `intel_mocs_init` (intel_mocs.c:666-685, called from `intel_gt_init_hw`, gt/intel_gt.c:219 - at bring-up and again in a full reset,
+/// gt/intel_reset.c:1264): the global table when the part has one (refused: not carried), then the L3CC words.
+pub fn gt_init_writes(s: &MocsSettings) -> Result<MocsWrites, GtError> {
+    if s.global_mocs {
+        return Err(GtError::MocsGlobalNotCarried);
+    }
+    Ok(MocsWrites { control: None, l3cc: if s.render_l3cc { Some(l3cc_writes(&s.table)?) } else { None } })
+}
+
+/// `intel_mocs_init_engine` (intel_mocs.c:631-649, called from `execlists_resume`, gt/intel_execlists_submission.c:2952-2954 - every
+/// engine resume, at bring-up and after an engine or full reset): the engine's own control table (`HAS_ENGINE_MOCS`), then the L3CC words
+/// when it is the render engine (`HAS_RENDER_L3CC && engine->class == RENDER_CLASS`).
+pub fn engine_init_writes(s: &MocsSettings, engine: &EngineInfo) -> Result<MocsWrites, GtError> {
+    let control = if s.engine_mocs { Some(engine_control_writes(&s.table, engine)?) } else { None };
+    let l3cc = if s.render_l3cc && engine_programs_l3cc(engine) { Some(l3cc_writes(&s.table)?) } else { None };
+    Ok(MocsWrites { control, l3cc })
 }

@@ -36,6 +36,11 @@ pub enum GtError {
     MocsSkipCaching { index: u32, l3cc: u16 },
     /// A MOCS table with more entries than the hardware has.
     MocsTableTooLarge { size: u32, n_entries: u32 },
+    /// `get_mocs_settings` on a graphics version this port carries no MOCS table for ("Platform that should have a MOCS table does
+    /// not", intel_mocs.c:505-509).
+    NoMocsTable { graphics_ver: u8 },
+    /// A part with global MOCS registers (`GEN12_GLOBAL_MOCS`, intel_mocs.c:651-654): not carried by this port.
+    MocsGlobalNotCarried,
     /// A context workaround needs the register's current value and the caller supplied none.
     CtxWaNeedsRead { reg: Reg },
     /// A reset wait ran out of its bound: the register never took the wanted value in `polls` reads.
@@ -70,6 +75,8 @@ impl GtError {
             GtError::NoSuchEngine { .. } => "NO-SUCH-ENGINE",
             GtError::MocsSkipCaching { .. } => "MOCS-SKIP-CACHING",
             GtError::MocsTableTooLarge { .. } => "MOCS-TABLE-TOO-LARGE",
+            GtError::NoMocsTable { .. } => "NO-MOCS-TABLE",
+            GtError::MocsGlobalNotCarried => "MOCS-GLOBAL-NOT-CARRIED",
             GtError::CtxWaNeedsRead { .. } => "CTX-WA-NEEDS-READ",
             GtError::ResetTimeout { stage: ResetStage::EngineReadyToReset, .. } => "RESET-READY-TIMEOUT",
             GtError::ResetTimeout { stage: ResetStage::GdrstAck, .. } => "GDRST-ACK-TIMEOUT",

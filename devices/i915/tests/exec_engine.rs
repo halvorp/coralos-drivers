@@ -27,6 +27,11 @@ const RESULT_VA: [u64; 2] = [0x2000_0000, 0x3000_0000];
 const MI_STORE_DWORD_IMM_GEN4: u32 = (0x20 << 23) | 2; // intel_gpu_commands.h:136 (MI_INSTR(0x20, 2))
 const MI_BATCH_BUFFER_END: u32 = 0x0a << 23; // intel_gpu_commands.h:62
 
+/// The Gen9 MOCS words: rcs0's control block and the LNCFCMOCS words.
+fn is_mocs(r: u32) -> bool {
+    (0xc800..0xc900).contains(&r) || (0xb020..0xb0a0).contains(&r)
+}
+
 fn rcs() -> EngineInfo {
     *engines_for(&kbl().info).unwrap().as_slice().iter().find(|e| e.class == EngineClass::Render).unwrap()
 }
@@ -111,7 +116,7 @@ fn world(contexts: usize) -> World {
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
     let hwsp_ggtt = bind_ggtt(&mut ex, &mut gm, &mut log, &mut ggtt, &hwsp);
     assert_eq!(hwsp_ggtt % 4096, 0);
-    let mut rig = EngineRig::new(&rcs(), 9, config(hwsp_ggtt), hwsp, hwsp_ggtt).unwrap();
+    let mut rig = EngineRig::new(&rcs(), &kbl(), config(hwsp_ggtt), hwsp, hwsp_ggtt).unwrap();
     rig.bring_up(&mut ex, &mut gm, &mut log).unwrap();
     let mut ctxs = vec![];
     for n in 0..contexts {
@@ -184,7 +189,8 @@ mod p3 {
         let w = world(0);
         let h = w.hwsp_ggtt;
         assert_eq!(
-            w.chip.all_writes().into_iter().filter(|(r, _)| *r != 0x101008).collect::<Vec<_>>(),
+            // the MOCS words between the CSB reset and enable_execlists (execlists_resume -> intel_mocs_init_engine) are pinned in exec_mocs.rs
+            w.chip.all_writes().into_iter().filter(|(r, _)| *r != 0x101008 && !is_mocs(*r)).collect::<Vec<_>>(),
             [
                 (0x23a0, 0xffff_0505), // RING_CONTEXT_STATUS_PTR: both pointers at csb_size - 1 = 5, mask 0xffff (reset_csb_pointers, :2804-2844)
                 (0x23a0, 0xffff_0505), // "once more for luck and our trusty paranoia"
@@ -312,7 +318,8 @@ mod p3 {
         let before = w.chip.all_writes().len();
         let out = w.rig.recover(&mut w.ex, &mut w.gm, &mut w.log, ResetScope::Engines, &[]).unwrap();
         assert_eq!((out.attempts, out.proceeded_past_not_ready), (1, false));
-        let ws: Vec<(u32, u32)> = w.chip.all_writes()[before..].to_vec();
+        // the MOCS reprogrammed before enable_execlists are pinned in exec_mocs.rs
+        let ws: Vec<(u32, u32)> = w.chip.all_writes()[before..].iter().copied().filter(|(r, _)| !is_mocs(*r)).collect();
         assert_eq!(
             ws,
             [
@@ -461,7 +468,7 @@ fn shipped_world() -> (Chip, Executor<Chip>, Gm, Lines, EngineRig, u32, u32) {
     let (_mem, mut gm) = memory();
     let ex = Executor::with_grant(chip.clone(), &kbl(), &FW, None).unwrap();
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
-    let rig = EngineRig::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
+    let rig = EngineRig::new(&rcs(), &kbl(), config(0x1000), hwsp, 0x1000).unwrap();
     let image = gm.alloc.alloc_context_image(rcs().context_size).unwrap();
     let ring = gm.alloc.alloc_ring(4096).unwrap();
     (chip, ex, gm, Lines::default(), rig, image.device_addr as u32, ring.device_addr as u32)
@@ -514,7 +521,7 @@ fn the_default_build_executor_refuses_the_p3_writes_with_no_override() {
         (chip, ex, gm, Lines::default())
     };
     let hwsp = gm.alloc.alloc_hwsp().unwrap();
-    let mut rig = EngineRig::new(&rcs(), 9, config(0x1000), hwsp, 0x1000).unwrap();
+    let mut rig = EngineRig::new(&rcs(), &kbl(), config(0x1000), hwsp, 0x1000).unwrap();
     assert_eq!(ex.allow_list().len(), 3 + if cfg!(feature = "p2-memory") { 3 } else { 0 }, "forcewake x3, plus under p2: the GGTT invalidate and the private PAT pair");
     assert_eq!(rig.bring_up(&mut ex, &mut gm, &mut log).unwrap_err().name(), "WRITE-NOT-ALLOWED");
     assert!(chip.all_writes().is_empty());

@@ -72,6 +72,9 @@ fn p3_adds_exactly_the_execlist_and_reset_registers() {
         0x1a0d0,  // RING_RESET_CTL(VECS0, base 0x1a000)
         0x941c,   // GEN6_GDRST, intel_gt_regs.h:663
     ]);
+    // the MOCS (intel_mocs.c): GEN9_GFX_MOCS(0..64) of rcs0 from 0xc800 (intel_gt_regs.h:1023-1024), GEN9_LNCFCMOCS(0..32) from 0xb020 (:960)
+    want.extend((0..64).map(|i| 0xc800 + 4 * i));
+    want.extend((0..32).map(|i| 0xb020 + 4 * i));
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(BAR0_WRITE_RANGES.len(), want.len() + 1);
@@ -142,6 +145,13 @@ mod planner_write_sets {
                 writes.push(w.reg);
             }
         }
+        // P3: the MOCS - intel_mocs_init (the gt program) and intel_mocs_init_engine (the render engine's), from the planner
+        {
+            use i915_gt_core::mocs::{engine_init_writes, gt_init_writes, mocs_settings};
+            let m = mocs_settings(&d).unwrap().unwrap();
+            writes.extend(gt_init_writes(&m).unwrap().map(|w| w.reg));
+            writes.extend(engine_init_writes(&m, &rcs).unwrap().map(|w| w.reg));
+        }
         // P3: the reset planner, both scopes
         writes.extend(reset_writes(ResetScope::Engines, &[rcs]));
         writes.extend(reset_writes(ResetScope::AllEngines, engines.as_slice()));
@@ -201,6 +211,8 @@ fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     want.push(0x101008);
     want.extend([0x40e0, 0x40e4]);
     want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
+    want.extend((0..64).map(|i| 0xc800 + 4 * i)); // GEN9_GFX_MOCS(i) of rcs0
+    want.extend((0..32).map(|i| 0xb020 + 4 * i)); // GEN9_LNCFCMOCS(i)
     want.push(0x7019c); // PLANE_SURF(PIPE_A, PLANE_1), skl_universal_plane_regs.h:153
     // the logical-size fastset (resize::plan_scanout_resize): PIPESRC(A), both pipe-A scaler blocks, PLANE_1 STRIDE/POS/SIZE, WM 0-7, WM_TRANS
     want.push(0x6001c);

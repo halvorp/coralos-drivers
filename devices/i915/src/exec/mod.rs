@@ -11,6 +11,7 @@
 //! * [`dma`]     - [`dma::GpuAlloc`]: table pages, ring, context image and HWSP over `Dma::alloc` (addr_width from the platform,
 //!   budget from the endowment), `cpu_mapping` kept beside `device_addr`, never identity.
 //! * [`memory`]  - P2: execute a `BindPlan` in order (AwaitRetire, entries, flushes), prove the GGTT entries read back, the marker.
+//! * [`mocs`]    - the MOCS control tables and L3CC words (`intel_mocs_init` / `intel_mocs_init_engine`), read back, the marker.
 //! * [`engine`]  - P3: execlists bring-up, request submission, CSB/seqno service, hang declaration, engine and full reset.
 //! * [`journal`] - plan section 5: a `[I915-STEP begun id=0x...]` record before every risky step, `done`/`failed` after, and the
 //!   next-boot refusal of a step that began and never ended.
@@ -29,6 +30,7 @@ pub mod dma;
 pub mod engine;
 pub mod journal;
 pub mod memory;
+pub mod mocs;
 pub mod plans;
 pub mod plans_link;
 

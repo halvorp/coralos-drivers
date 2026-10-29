@@ -5,7 +5,7 @@
 //! the GGTT window is closed, and every other register write the executor is asked to make is REFUSED by name and counted.
 //!
 //! `p2-memory` adds [`P2_MEMORY_REGS`] and opens the GGTT window ([`GGTT_WINDOW`]); `p3-exec` (which implies `p2-memory`) adds
-//! [`P3_EXEC_REGS`]. Each list is the write set of that increment's planners, no more: the tests in `tests/exec_allow.rs` RUN the
+//! [`P3_EXEC_REGS`] and [`P3_MOCS_REGS`]. Each list is the write set of that increment's planners, no more: the tests in `tests/exec_allow.rs` RUN the
 //! planners and require set equality, so a register that no planner writes cannot be granted and a planner write that is not
 //! granted fails there before it can fail on silicon. `p4-present` (D18) adds ONE display register, the adopted plane's `PLANE_SURF`; every
 //! other display register is in no list: a clock or link plan is refused whole.
@@ -76,6 +76,26 @@ pub const P3_EXEC_REGS: [Reg; 11] = [
     r::GEN6_GDRST,
 ];
 
+/// P3: the MOCS words a render-engine resume and `intel_gt_init_hw` write on Gen9 (gt/intel_mocs.c, run by `exec::mocs`):
+///  * `init_mocs_table(rcs0)` (:583-589, from `intel_mocs_init_engine` :644-645) - the 64 per-engine control registers `GEN9_GFX_MOCS(i)`
+///    from `__GEN9_RCS0_MOCS0` (intel_gt_regs.h:1023-1024). Gen9 has no global MOCS (`has_global_mocs`, i915_pci.c:635 is GEN12) and this
+///    device resumes only the render engine, so no other engine's block (VCS0 0xc900, VECS0 0xcb00, BCS0 0xcc00) is granted;
+///  * `init_l3cc_table` (:615-629, from `intel_mocs_init` :683-684 and `intel_mocs_init_engine` :647-648) - the 32 words
+///    `GEN9_LNCFCMOCS(i)` (intel_gt_regs.h:960-962).
+pub const P3_MOCS_REGS: [Reg; 96] = {
+    let mut out = [Reg::new(0); 96];
+    let mut i = 0;
+    while i < 64 {
+        out[i] = Reg::new(r::GEN9_RCS0_MOCS0 + i as u32 * 4);
+        i += 1;
+    }
+    while i < 96 {
+        out[i] = r::gen9_lncfcmocs(i as u32 - 64);
+        i += 1;
+    }
+    out
+};
+
 /// P4 (D18): what the scanout pair's flips write. Every flip between images is ONE register - `PLANE_SURF` of the adopted plane, the
 /// adoption planner's write set (`i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST`, `plan_surface_replacement`). The flip off
 /// the firmware's framebuffer onto a LOGICAL-size image (and the restore) is the fastset's write set
@@ -103,7 +123,7 @@ const fn on(b: bool, n: usize) -> usize {
 }
 
 /// How many registers the compiled-in allow-list holds.
-pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len());
+pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len() + P3_MOCS_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len());
 
 const fn compose() -> [Reg; N_ALLOW] {
     let mut out = [Reg::new(0); N_ALLOW];
@@ -126,6 +146,12 @@ const fn compose() -> [Reg; N_ALLOW] {
         let mut i = 0;
         while i < P3_EXEC_REGS.len() {
             out[n] = P3_EXEC_REGS[i];
+            n += 1;
+            i += 1;
+        }
+        let mut i = 0;
+        while i < P3_MOCS_REGS.len() {
+            out[n] = P3_MOCS_REGS[i];
             n += 1;
             i += 1;
         }
