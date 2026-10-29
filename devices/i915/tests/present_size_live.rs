@@ -56,7 +56,7 @@ fn world_with(policy: LogicalSize, tweak: impl Fn(FirmwareGeometry) -> FirmwareG
     let ready = i915_device::startup::startup(&mut bar, &mut cfg, &mut lg).unwrap();
     let adoption: Adoption = ready.adoption;
     let fw = FirmwareScanout::from_readout(&ready.state, Pipe::A, 0).unwrap();
-    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x7017c, 0x45270]) {
+    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x7017c, 0x45270, 0x70080, 0x70084, 0x70088, 0x70168]).chain((0x70140..=0x7015c).step_by(4)) {
         bar.set(r, 0);
     }
     let g = read_firmware_geometry(|off| RegRead::read32(&mut bar, off).unwrap(), &ready.device.caps, &ready.state, adoption.adopted().unwrap()).unwrap();
@@ -155,6 +155,9 @@ fn an_underrun_after_the_latch_rolls_every_register_back_to_the_firmware_s() {
     assert_eq!(last_write(&chip, 0x7027c), g.buf_cfg);
     assert_eq!(last_write(&chip, 0x70278), g.nv12_buf_cfg);
     assert_eq!(last_write(&chip, 0x45270), g.linetime);
+    // the hidden cursor's reserve moved to the top of the DBUF with the fastset, and back with the rollback
+    assert_eq!(chip.writes_to(0x7017c).first(), Some(&((891 << 16) | 860)));
+    assert_eq!((last_write(&chip, 0x7017c), last_write(&chip, 0x70084)), (g.cur_buf_cfg, g.curbase));
     assert_eq!(last_write(&chip, PLANE_SURF), 0, "the firmware's framebuffer");
     assert_eq!(last_write(&chip, DE_PIPE_IMR_A), 0xffff_ffff);
     assert!(live.log.has("[I915-SCANOUT-SIZE ROLLBACK latched"), "{:?}", live.log.0);
@@ -170,6 +173,7 @@ fn a_ddb_the_wider_plane_does_not_fit_is_refused_by_name_and_the_firmware_size_i
     let l = live.log.find("[I915-SCANOUT-SIZE REFUSED why=ddb-too-small need=");
     assert_eq!(l.len(), 1, "{:?}", live.log.0);
     assert!(l[0].contains(" have=4 "), "{}", l[0]);
+    assert!(l[0].contains(" ddb_how=kept-other-pipes-active dbuf=892 plane=0..4 "), "the refusal names how the DDB was chosen, and from what: {}", l[0]);
     let (id, inc) = authority(&mut live, &t);
     let q = call(&mut live, &t, id, Opcode::DisplayQuery, inc, &[]).body::<DisplayQueryRep>();
     assert_eq!((q.width, q.height), (1920, 1080));

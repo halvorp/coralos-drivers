@@ -11,7 +11,7 @@
 //! `[I915-SCANOUT-SIZE ROLLBACK why=underrun]` when the pipe underran at the logical size and the firmware's geometry goes back.
 use super::Adoption;
 use crate::log::{emit, Log};
-use i915_display_modeset_core::resize::{plan_scanout_resize, FirmwareGeometry, LogicalSize, ResizeRefusal, ScanoutResize};
+use i915_display_modeset_core::resize::{plan_scanout_resize, plane_ddb, FirmwareGeometry, LogicalSize, ResizeRefusal, ScanoutResize};
 use i915_display_modeset_core::scanout_health::ScanoutHealth;
 use i915_kbl_display_core::platform::DisplayCaps;
 
@@ -34,8 +34,8 @@ pub fn choose<L: Log>(log: &mut L, caps: &DisplayCaps, adoption: &Adoption, geom
     match plan_scanout_resize(caps, a, fw, w, h) {
         Ok(Some(r)) => {
             emit(log, format_args!(
-                "[I915-SCANOUT-SIZE planned logical={}x{} panel={}x{} scaler=ps{} ratio={} how=fastset wm_levels={} ddb={} ddb_how={} wm0_need={} stride={} policy={:?}] - applied with the first present",
-                r.logical_w, r.logical_h, r.panel_w, r.panel_h, r.scaler_id as u32 + 1, Ratio(r.ratio_milli()), r.wm_levels, r.ddb_blocks, r.ddb_how, r.wm0_need, r.stride, policy));
+                "[I915-SCANOUT-SIZE planned logical={}x{} panel={}x{} scaler=ps{} ratio={} how=fastset wm_levels={} ddb={} {} wm0_need={} stride={} policy={:?}] - applied with the first present",
+                r.logical_w, r.logical_h, r.panel_w, r.panel_h, r.scaler_id as u32 + 1, Ratio(r.ratio_milli()), r.wm_levels, r.ddb_blocks, r.ddb, r.wm0_need, r.stride, policy));
             Some(r)
         }
         Ok(None) => {
@@ -43,11 +43,11 @@ pub fn choose<L: Log>(log: &mut L, caps: &DisplayCaps, adoption: &Adoption, geom
             None
         }
         Err(ResizeRefusal::DdbTooSmall { need, have }) => {
-            emit(log, format_args!("[I915-SCANOUT-SIZE REFUSED why=ddb-too-small need={} have={} logical={}x{} panel={}x{}] - the adopted {}x{} is kept", need, have, w, h, a.active_w, a.active_h, a.fb.width, a.fb.height));
+            emit(log, format_args!("[I915-SCANOUT-SIZE REFUSED why=ddb-too-small need={} have={} {} logical={}x{} panel={}x{}] - the adopted {}x{} is kept", need, have, plane_ddb(caps, fw), w, h, a.active_w, a.active_h, a.fb.width, a.fb.height));
             None
         }
         Err(e) => {
-            emit(log, format_args!("[I915-SCANOUT-SIZE REFUSED why={} logical={}x{} panel={}x{} detail={:?}] - the adopted {}x{} is kept", e.name(), w, h, a.active_w, a.active_h, e, a.fb.width, a.fb.height));
+            emit(log, format_args!("[I915-SCANOUT-SIZE REFUSED why={} logical={}x{} panel={}x{} detail={:?} {}] - the adopted {}x{} is kept", e.name(), w, h, a.active_w, a.active_h, e, plane_ddb(caps, fw), a.fb.width, a.fb.height));
             None
         }
     }

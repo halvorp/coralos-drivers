@@ -100,16 +100,17 @@ pub const P3_MOCS_REGS: [Reg; 96] = {
 /// adoption planner's write set (`i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST`, `plan_surface_replacement`). The flip off
 /// the firmware's framebuffer onto a LOGICAL-size image (and the restore) is the fastset's write set
 /// (`i915_display_modeset_core::resize::RESIZE_WRITE_ALLOWLIST`): the pipe source, the pipe's scaler blocks, the plane's stride / pos /
-/// size, its watermark words and its DDB entry (`skl_write_plane_wm`), and the pipe's line-time watermark (`hsw_set_linetime_wm`). The
-/// transcoder, its timings, the link, the clocks and the cursor's DDB stay as the firmware left them. The post-resize health readback's
+/// size, its watermark words and its DDB entry (`skl_write_plane_wm`), the pipe's line-time watermark (`hsw_set_linetime_wm`), and - when
+/// the cursor's DDB entry moves - the hidden cursor's block (`skl_write_cursor_wm`, CURPOS, CURBASE: `i9xx_cursor_update_arm`). The
+/// transcoder, its timings, the link and the clocks stay as the firmware left them. The post-resize health readback's
 /// underrun watch (`i915_display_modeset_core::scanout_health::UNDERRUN_WRITE_ALLOWLIST`) writes pipe A's `GEN8_DE_PIPE_IIR` (the
 /// write-1-to-clear ack, intel_display_irq.c:1500) and `GEN8_DE_PIPE_IMR` (the underrun bit only, `bdw_update_pipe_irq`,
 /// intel_display_irq.c:227-249); never IER.
-pub const P4_PRESENT_REGS: [Reg; 29] = {
+pub const P4_PRESENT_REGS: [Reg; 41] = {
     let a = i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST;
     let r = i915_display_modeset_core::resize::RESIZE_WRITE_ALLOWLIST;
     let u = i915_display_modeset_core::scanout_health::UNDERRUN_WRITE_ALLOWLIST;
-    let mut out = [Reg::new(0); 29];
+    let mut out = [Reg::new(0); 41];
     out[0] = a[0];
     let mut i = 0;
     while i < r.len() {

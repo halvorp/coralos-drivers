@@ -287,3 +287,12 @@ intel_display_irq.c:1493-1528) - so the watch acks IIR and unmasks that one IMR 
 IER-enabled is refused as `underrun-ier-enabled`), and puts IMR back after `[I915-SCANOUT-HEALTH ... underrun=0|1|unobserved after_ms=N]`. An
 underrun rolls the firmware's geometry and framebuffer back at once (`[I915-SCANOUT-SIZE ROLLBACK why=underrun]`) and the pair's later presents are
 `-EIO SCANOUT-SIZE-ROLLED-BACK`.
+THE CURSOR IS RE-PLACED, NOT A REASON TO KEEP (2026-10-29, silicon "amber mountain marsh": `REFUSED why=ddb-too-small need=228 have=152`). The first
+cut kept the firmware's plane DDB whenever the cursor's reserve was not at the top of the DBUF; the Pixelbook Go's firmware left PLANE_1 0..152 with
+the cursor's reserve elsewhere, so the 2560-wide plane was refused where Linux gives it 860. Linux always puts the cursor's reserve at the top of the
+pipe's DDB (skl_crtc_allocate_plane_ddb, skl_watermark.c:1452-1458) and, when an entry changes, adds the cursor to the commit
+(skl_ddb_add_affected_planes :2426-2459): `i9xx_cursor_update_arm` with no state writes `skl_write_cursor_wm` then CURPOS and CURBASE (intel_cursor.c:616-716).
+So a HIDDEN cursor's block is written with the fastset (and back with the restore), its reserve the firmware's when already at the top and at least
+32 blocks, else the one-pipe floor of 32. Only two conditions keep the firmware's plane DDB: another active pipe (`intel_crtc_dbuf_weights` :488-520,
+not ported) and a VISIBLE cursor (CURCNTR & MCURSOR_MODE_MASK) whose reserve is not at the top (its size needs the PCU latencies). Every plan and
+refusal line now carries `ddb_how=.. dbuf=.. plane=a..b cursor=c..d fw_plane=.. fw_cursor=.. other_pipes=.. cursor_visible=..`.

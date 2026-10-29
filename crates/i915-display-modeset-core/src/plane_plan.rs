@@ -87,13 +87,18 @@ pub fn plane_disable_plan(pipe: Pipe, plane_id: u8, wm: &RegWrites<{ NUM_LEVELS 
 /// `i9xx_cursor_update_arm()` (`CURPOS = 0`, `CURBASE = 0`). The reserve is written even though nothing is shown: it is what keeps the
 /// other planes out of the cursor's blocks.
 pub fn cursor_hidden_plan(pipe: Pipe, pm: &PipeWm) -> Plan {
+    cursor_hidden_writes(pipe, &pm.cursor_ddb)
+}
+
+/// [`cursor_hidden_plan`] for the cursor reserve `ddb`.
+pub fn cursor_hidden_writes(pipe: Pipe, ddb: &Ddb) -> Plan {
     let zero = WmLevel::default();
     let mut p = Plan::new();
     for level in 0..NUM_LEVELS {
         p.push(Effect::Write { reg: Reg::new(cur_wm(pipe, level as u32)), value: cursor_wm_reg_val(&zero) });
     }
     p.push(Effect::Write { reg: Reg::new(cur_wm_trans(pipe)), value: cursor_wm_reg_val(&zero) });
-    p.push(Effect::Write { reg: Reg::new(cur_buf_cfg(pipe)), value: cursor_ddb_reg_val(&pm.cursor_ddb) });
+    p.push(Effect::Write { reg: Reg::new(cur_buf_cfg(pipe)), value: cursor_ddb_reg_val(ddb) });
     p.push(Effect::Write { reg: Reg::new(curpos(pipe)), value: 0 });
     p.push(Effect::Write { reg: Reg::new(curbase(pipe)), value: 0 });
     p
