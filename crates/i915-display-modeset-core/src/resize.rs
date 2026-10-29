@@ -29,10 +29,16 @@
 //! ONE active pipe its DDB is the whole DBUF (`intel_crtc_ddb_weight` = the pipe mode's hdisplay, the only weight: skl_watermark.c:471-486,
 //! :526-560; `dbuf.size` 896 less 4); `skl_crtc_allocate_plane_ddb` puts the cursor's fixed reserve at the top (:1452-1458,
 //! `skl_cursor_allocation` = `max(32, ..)` with one pipe, :633-668) and grants the only plane with a data rate every other block
-//! (:1505-1530). So the plane gets `[0, dbuf - cursor)`: the cursor's reserve is the firmware's own when it sits at the top (it is never
-//! moved), else Linux's one-pipe floor of 32 (the cursor's latency term is not computable here; it is hidden, so its reserve is
-//! unused). Another active pipe (the weighted split is not ported) or a cursor reserve that is not at the top KEEPS the firmware's
-//! plane DDB, named in `ddb_how`. `hsw_set_linetime_wm` is rewritten with the fastset (intel_display.c:6662-6677; `skl_linetime_wm`
+//! (:1505-1530). So the plane gets `[0, dbuf - cursor)` and the cursor `[dbuf - cursor, dbuf)` - WHEREVER the firmware left either
+//! (silicon, 2026-10-29: PLANE_1 0..152 and the cursor's reserve off the top refused a 2560-wide plane that Linux's 860 holds). A
+//! cursor entry that changes is written as Linux does: `skl_ddb_add_affected_planes` adds the cursor to the commit (:2426-2459) and
+//! `i9xx_cursor_update_arm` (NULL state: hidden) writes `skl_write_cursor_wm` - zero CUR_WM levels, CUR_WM_TRANS, CUR_BUF_CFG - then
+//! CURPOS and CURBASE, which arms it (intel_cursor.c:616-716). A HIDDEN cursor's reserve is the firmware's when it is already at the
+//! top and at least the floor (no cursor write), else Linux's one-pipe floor of 32 (its latency term needs the PCU latencies this port
+//! does not read; a hidden cursor's watermarks are zero, so the floor is all it uses). KEPT, named in `ddb_how`: another active pipe
+//! (the DDB is split by `intel_crtc_dbuf_weights`, :488-520, not ported) and a VISIBLE cursor (CURCNTR & MCURSOR_MODE_MASK,
+//! `i9xx_cursor_get_hw_state`, intel_cursor.c:744-746) whose reserve is not at the top - its size is `skl_cursor_allocation`'s from
+//! those latencies, so it is never resized here; a visible cursor already at the top keeps its reserve and the plane gets the rest. `hsw_set_linetime_wm` is rewritten with the fastset (intel_display.c:6662-6677; `skl_linetime_wm`
 //! :4210-4229 from the pipe pixel rate, which an upscale leaves at the dotclock).
 //!
 //! Nothing here performs MMIO: [`read_firmware_geometry`] asks a closure for registers, and the plans are effect lists the device
@@ -49,7 +55,8 @@ use i915_kbl_display_core::regs::*;
 use i915_kbl_display_core::regs_write::*;
 use i915_kbl_display_core::skl_pfit::{aspect_window, pfit_enable_writes, PfitError, Window};
 use i915_kbl_display_core::skl_plane::WriteTiling;
-use i915_kbl_display_core::skl_wm::NUM_LEVELS;
+use i915_kbl_display_core::skl_wm::{Ddb, NUM_LEVELS};
+use crate::plane_plan::cursor_hidden_writes;
 use i915_kbl_display_core::transcoder::DdiMode;
 use i915_kbl_display_core::types::{Pipe, Transcoder};
 
@@ -116,7 +123,8 @@ impl LogicalSize {
 /// PLANE_1's STRIDE / POS / SIZE, its eight watermark levels and its transition watermark. The PLANE_SURF write is
 /// `adopt::ADOPT_WRITE_ALLOWLIST`'s. Pipe A / plane 1 only - the same pipe and plane the adoption's flip is limited to.
 /// PLANE_1's PLANE_BUF_CFG / PLANE_NV12_BUF_CFG (`skl_write_plane_wm`) and pipe A's WM_LINETIME (`hsw_set_linetime_wm`) with them.
-pub const RESIZE_WRITE_ALLOWLIST: [Reg; 26] = [
+/// The cursor block of pipe A (`skl_write_cursor_wm` + CURPOS / CURBASE) when its DDB entry moves.
+pub const RESIZE_WRITE_ALLOWLIST: [Reg; 38] = [
     Reg::new(pipesrc(Transcoder::A)),
     ps_a(PS_1A_CTRL, 0),
     ps_a(PS_VPHASE_1A, 0),
@@ -143,6 +151,18 @@ pub const RESIZE_WRITE_ALLOWLIST: [Reg; 26] = [
     Reg::new(PLANE_BUF_CFG_1_A),
     Reg::new(PLANE_NV12_BUF_CFG_1_A),
     Reg::new(WM_LINETIME_A),
+    Reg::new(cur_wm(Pipe::A, 0)),
+    Reg::new(cur_wm(Pipe::A, 1)),
+    Reg::new(cur_wm(Pipe::A, 2)),
+    Reg::new(cur_wm(Pipe::A, 3)),
+    Reg::new(cur_wm(Pipe::A, 4)),
+    Reg::new(cur_wm(Pipe::A, 5)),
+    Reg::new(cur_wm(Pipe::A, 6)),
+    Reg::new(cur_wm(Pipe::A, 7)),
+    Reg::new(CUR_WM_TRANS_A),
+    Reg::new(CUR_BUF_CFG_A),
+    Reg::new(CURAPOS),
+    Reg::new(CURABASE),
 ];
 const fn ps_a(base: u32, id: u32) -> Reg {
     Reg::new(scaler_reg(base, Pipe::A, id))
@@ -172,6 +192,12 @@ pub struct FirmwareGeometry {
     pub nv12_buf_cfg: u32,
     /// The pipe's CUR_BUF_CFG: where the cursor's DDB reserve sits (never moved by the resize).
     pub cur_buf_cfg: u32,
+    /// The cursor's CURCNTR, CUR_WM levels, CUR_WM_TRANS, CURPOS and CURBASE: what the restore writes back when the cursor's entry moves.
+    pub curcntr: u32,
+    pub cur_wm: [u32; NUM_LEVELS],
+    pub cur_wm_trans: u32,
+    pub curpos: u32,
+    pub curbase: u32,
     /// WM_LINETIME as the firmware left it.
     pub linetime: u32,
     /// Another pipe is active: the DDB is split by weight among the pipes (not ported), so the plane's DDB is kept.
@@ -215,6 +241,11 @@ pub fn read_firmware_geometry<R: FnMut(u32) -> u32>(mut rd: R, caps: &DisplayCap
         buf_cfg: rd(p(PLANE_BUF_CFG_1_A)),
         nv12_buf_cfg: rd(p(PLANE_NV12_BUF_CFG_1_A)),
         cur_buf_cfg: rd(cur_buf_cfg(a.pipe)),
+        curcntr: rd(curcntr(a.pipe)),
+        cur_wm: core::array::from_fn(|level| rd(cur_wm(a.pipe, level as u32))),
+        cur_wm_trans: rd(cur_wm_trans(a.pipe)),
+        curpos: rd(curpos(a.pipe)),
+        curbase: rd(curbase(a.pipe)),
         linetime: rd(wm_linetime(a.pipe)),
         other_pipes_active: r.pipes.iter().enumerate().any(|(i, p)| i != a.pipe.index() && matches!(p.state, PipeState::Active(_))),
         vtotal: act.timings.vtotal,
@@ -315,26 +346,71 @@ pub const fn ddb_size(buf_cfg: u32) -> u32 {
 /// `skl_cursor_allocation`'s floor with one active pipe (skl_watermark.c:667).
 pub const CURSOR_DDB_ONE_PIPE: u32 = 32;
 
-/// The plane's DDB entry as Linux allocates it for the single plane of the single active pipe (module doc), or the firmware's own
-/// when that allocation is not one this port computes; with how it was chosen.
-pub fn plane_ddb(caps: &DisplayCaps, fw: &FirmwareGeometry) -> ((u32, u32), &'static str) {
-    let kept = ddb_entry(fw.buf_cfg);
-    if fw.other_pipes_active {
-        return (kept, "kept-other-pipes-active");
+/// `MCURSOR_MODE_MASK` (intel_cursor_regs.h:33): any of these set in CURCNTR is a visible cursor (`i9xx_cursor_get_hw_state`).
+pub const MCURSOR_MODE_MASK: u32 = 0x27;
+
+/// How the plane's (and the cursor's) DDB entries were chosen, and every input the choice read - printed on the plan and refusal lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DdbChoice {
+    pub how: &'static str,
+    /// `dbuf.size` of the platform, in blocks.
+    pub dbuf: u32,
+    /// The entries after the resize, half-open.
+    pub plane: (u32, u32),
+    pub cursor: (u32, u32),
+    /// The entries the firmware left.
+    pub fw_plane: (u32, u32),
+    pub fw_cursor: (u32, u32),
+    pub other_pipes_active: bool,
+    pub cursor_visible: bool,
+}
+
+impl DdbChoice {
+    /// Does the cursor's entry change (its block is then written with the fastset)?
+    pub fn moves_cursor(&self) -> bool {
+        self.cursor != self.fw_cursor
     }
+}
+
+impl core::fmt::Display for DdbChoice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "ddb_how={} dbuf={} plane={}..{} cursor={}..{} fw_plane={}..{} fw_cursor={}..{} other_pipes={} cursor_visible={}",
+            self.how, self.dbuf, self.plane.0, self.plane.1, self.cursor.0, self.cursor.1, self.fw_plane.0, self.fw_plane.1,
+            self.fw_cursor.0, self.fw_cursor.1, self.other_pipes_active as u8, self.cursor_visible as u8
+        )
+    }
+}
+
+/// The plane's DDB entry as Linux allocates it for the single plane of the single active pipe (module doc), or the firmware's own
+/// when that allocation is not one this port computes - with how, and from what.
+pub fn plane_ddb(caps: &DisplayCaps, fw: &FirmwareGeometry) -> DdbChoice {
     let dbuf = caps.dbuf_blocks as u32;
-    let (cs, ce) = ddb_entry(fw.cur_buf_cfg);
-    let cursor = if ce == 0 {
-        CURSOR_DDB_ONE_PIPE
-    } else if ce == dbuf && cs < ce {
-        ce - cs
+    let (fw_plane, fw_cursor) = (ddb_entry(fw.buf_cfg), ddb_entry(fw.cur_buf_cfg));
+    let cursor_visible = fw.curcntr & MCURSOR_MODE_MASK != 0;
+    let mut c = DdbChoice { how: "", dbuf, plane: fw_plane, cursor: fw_cursor, fw_plane, fw_cursor, other_pipes_active: fw.other_pipes_active, cursor_visible };
+    let at_top = fw_cursor.1 == dbuf && fw_cursor.0 < fw_cursor.1;
+    let size = fw_cursor.1.saturating_sub(fw_cursor.0);
+    let cursor = if fw.other_pipes_active {
+        c.how = "kept-other-pipes-active";
+        return c;
+    } else if at_top && (cursor_visible || size >= CURSOR_DDB_ONE_PIPE) {
+        size
+    } else if cursor_visible {
+        c.how = "kept-cursor-visible-not-at-top";
+        return c;
     } else {
-        return (kept, "kept-cursor-not-at-top");
+        CURSOR_DDB_ONE_PIPE
     };
     if cursor >= dbuf {
-        return (kept, "kept-cursor-fills-dbuf");
+        c.how = "kept-cursor-fills-dbuf";
+        return c;
     }
-    ((0, dbuf - cursor), "linux-single-plane")
+    c.how = "linux-single-plane";
+    c.plane = (0, dbuf - cursor);
+    c.cursor = (dbuf - cursor, dbuf);
+    c
 }
 
 /// The watermark bound for a plane `new_w` wide from the firmware's level for `old_w` (see the module doc): blocks scaled up by the
@@ -381,6 +457,8 @@ pub struct ScanoutResize {
     /// The plane's DDB after the resize, in blocks, how it was chosen (`plane_ddb`), and what the wider plane's level 0 needs of it.
     pub ddb_blocks: u32,
     pub ddb_how: &'static str,
+    /// The DDB choice with its inputs, for the marker.
+    pub ddb: DdbChoice,
     pub wm0_need: u32,
     /// The raster, for how long the health readback waits ([`ScanoutResize::health_after_ms`]).
     pub vtotal: u32,
@@ -488,7 +566,8 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
     let window = aspect_window(w, h, panel_w, panel_h);
     let pf = pfit_enable_writes(caps.display_ver, a.pipe, fw.scaler_id as u32, mode, w, h, window).map_err(ResizeRefusal::Scaler)?;
     // the DDB (Linux's single-plane allocation, or the firmware's), then the watermarks: the bound, then skl_check_wm_level against it
-    let ((ddb_start, ddb_end), ddb_how) = plane_ddb(caps, fw);
+    let ddb_choice = plane_ddb(caps, fw);
+    let ((ddb_start, ddb_end), ddb_how) = (ddb_choice.plane, ddb_choice.how);
     let ddb = ddb_end.saturating_sub(ddb_start);
     if ddb == 0 {
         return Err(ResizeRefusal::NoDdb);
@@ -557,6 +636,24 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
     back.push((pl(PLANE_BUF_CFG_1_A), fw.buf_cfg));
     forward.push((pl(PLANE_NV12_BUF_CFG_1_A), 0));
     back.push((pl(PLANE_NV12_BUF_CFG_1_A), fw.nv12_buf_cfg));
+    // the hidden cursor's block when its entry moves: skl_write_cursor_wm, CURPOS, CURBASE (arms) - i9xx_cursor_update_arm(NULL)
+    if ddb_choice.moves_cursor() {
+        let cur = Ddb { start: ddb_choice.cursor.0 as u16, end: ddb_choice.cursor.1 as u16 };
+        for e in cursor_hidden_writes(pipe, &cur) {
+            if let Effect::Write { reg, value } = e {
+                let r = reg.offset();
+                let fw_v = match r {
+                    _ if r == cur_buf_cfg(pipe) => fw.cur_buf_cfg,
+                    _ if r == cur_wm_trans(pipe) => fw.cur_wm_trans,
+                    _ if r == curpos(pipe) => fw.curpos,
+                    _ if r == curbase(pipe) => fw.curbase,
+                    _ => (0..NUM_LEVELS).find(|&l| cur_wm(pipe, l as u32) == r).map_or(0, |l| fw.cur_wm[l]),
+                };
+                forward.push((r, value));
+                back.push((r, fw_v));
+            }
+        }
+    }
     let evade = VblankEvade::new(fw.vblank_start, fw.vtotal, fw.htotal, fw.dotclock_khz, scanline_offset(caps.display_ver, fw.hdmi), EVADE_US);
     Ok(Some(ScanoutResize {
         pipe,
@@ -574,6 +671,7 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
         wm_levels: kept,
         ddb_blocks: ddb,
         ddb_how,
+        ddb: ddb_choice,
         wm0_need,
         vtotal: fw.vtotal,
         htotal: fw.htotal,

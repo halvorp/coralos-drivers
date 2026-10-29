@@ -197,7 +197,7 @@ fn p4_resize_writes() -> Vec<i915_common_core::Reg> {
     let (mut bar, mut cfg, mut lg) = (common::bar_atlas(), common::config_page(0x591c, 0x02), common::Lines::default());
     let ready = i915_device::startup::startup(&mut bar, &mut cfg, &mut lg).unwrap();
     // the geometry words the readout itself never reads: the watermark block, the DDB and the scaler phases
-    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x68288, 0x68294, 0x7017c, 0x45270]) {
+    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x68288, 0x68294, 0x7017c, 0x45270, 0x70080, 0x70084, 0x70088, 0x70168]).chain((0x70140..=0x7015c).step_by(4)) {
         bar.set(r, 0);
     }
     let a = *ready.adoption.adopted().unwrap();
@@ -232,6 +232,9 @@ fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     want.push(0x70268);
     // skl_write_plane_wm's DDB words, hsw_set_linetime_wm, and the underrun watch (GEN8_DE_PIPE_IMR / IIR of pipe A)
     want.extend([0x7027c, 0x70278, 0x45270, 0x44404, 0x44408]);
+    // the hidden cursor's block when its DDB entry moves (skl_write_cursor_wm, CURPOS, CURBASE)
+    want.extend((0..8).map(|l| 0x70140 + 4 * l));
+    want.extend([0x70168, 0x7017c, 0x70088, 0x70084]);
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(p4_flip_writes().iter().map(|r| r.offset()).collect::<Vec<_>>(), [0x7019c], "the flip writes that one register and no other");

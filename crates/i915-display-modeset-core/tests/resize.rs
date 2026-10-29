@@ -354,12 +354,65 @@ fn the_plane_ddb_is_recomputed_as_linux_allocates_a_single_plane_on_a_single_pip
     // PLANE_BUF_CFG after the watermark words (skl_write_plane_wm), before PLANE_SURF (forward_plan appends it last)
     let at = |reg: u32| p.forward.iter().position(|(r, _)| *r == reg).unwrap();
     assert!(at(0x70268) < at(0x7027c) && at(0x7027c) < at(0x70278));
-    // a cursor that is not at the top of the DDB would have to move: the firmware's plane DDB is kept, named
+    // a VISIBLE cursor whose reserve is not at the top: its size is skl_cursor_allocation's, from latencies this port does not read, so
+    // neither entry moves - the firmware's plane DDB is kept, named
     regs.insert(0x7017c, (31 << 16) | 0);
     regs.insert(0x7027c, (891 << 16) | 32);
+    regs.insert(0x70080, 0x27); // CURCNTR: MCURSOR_MODE_MASK set
     let (a, fw) = setup(&regs);
     let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap().unwrap();
-    assert_eq!((p.ddb_blocks, p.ddb_how), (860, "kept-cursor-not-at-top"));
+    assert_eq!((p.ddb_blocks, p.ddb_how), (860, "kept-cursor-visible-not-at-top"));
+}
+
+/// The Pixelbook Go as silicon showed it (stick "amber mountain marsh", 2026-10-29): the firmware gave PLANE_1 152 blocks
+/// (`REFUSED why=ddb-too-small need=228 have=152`), pipes B and C not powered, the cursor hidden. Linux re-places a hidden cursor's
+/// reserve at the top of the pipe's DDB (skl_crtc_allocate_plane_ddb :1452-1458) and updates it with the commit
+/// (skl_ddb_add_affected_planes :2426-2459 -> i9xx_cursor_update_arm -> skl_write_cursor_wm), wherever the firmware left it.
+fn atlas_silicon_ddb(cursor_buf_cfg: u32) -> BTreeMap<u32, u32> {
+    let mut regs = atlas();
+    regs.insert(0x7027c, 151 << 16); // PLANE_BUF_CFG 0..152
+    regs.insert(0x7017c, cursor_buf_cfg);
+    regs
+}
+
+#[test]
+fn the_silicon_152_block_plane_gets_linux_s_860_wherever_the_firmware_left_the_hidden_cursor() {
+    for (cursor, what) in [
+        ((895 << 16) | 864, "the top of a 896-block DBUF (the firmware did not keep the 4 bypass blocks)"),
+        ((183 << 16) | 152, "right above the plane"),
+        (0, "no reserve"),
+    ] {
+        let (a, fw) = setup(&atlas_silicon_ddb(cursor));
+        assert!(!fw.other_pipes_active);
+        let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap_or_else(|e| panic!("{what}: {e:?}")).unwrap();
+        assert_eq!((p.ddb_blocks, p.ddb_how), (860, "linux-single-plane"), "{what}");
+        assert_eq!((p.ddb.dbuf, p.ddb.plane, p.ddb.cursor, p.ddb.fw_plane, p.ddb.fw_cursor), (892, (0, 860), (860, 892), (0, 152), ddb_entry(cursor)), "{what}");
+        assert_eq!(write_of(&p, 0x7027c), 859 << 16);
+        // the hidden cursor's block, as i9xx_cursor_update_arm(NULL) writes it: zero watermarks, the new reserve, CURPOS, CURBASE (arms)
+        assert_eq!(write_of(&p, 0x7017c), (891 << 16) | 860, "{what}");
+        assert_eq!(write_of(&p, 0x70140), 0);
+        assert_eq!(write_of(&p, 0x70168), 0);
+        let at = |reg: u32| p.forward.iter().position(|(r, _)| *r == reg).unwrap();
+        assert!(at(0x7027c) < at(0x7017c) && at(0x7017c) < at(0x70088) && at(0x70088) < at(0x70084), "CUR_BUF_CFG, CURPOS, CURBASE last");
+        let back = |reg: u32| p.back.iter().find(|(r, _)| *r == reg).map(|(_, v)| *v).unwrap();
+        assert_eq!((back(0x7027c), back(0x7017c)), (151 << 16, cursor), "the restore puts both firmware entries back");
+        let line = format!("{}", p.ddb);
+        assert!(line.starts_with("ddb_how=linux-single-plane dbuf=892 plane=0..860 cursor=860..892 fw_plane=0..152 fw_cursor="), "{line}");
+        assert!(line.ends_with(" other_pipes=0 cursor_visible=0"), "{line}");
+    }
+    // a cursor reserve already at the top and at least Linux's 32-block floor is left where it is: no cursor write at all
+    let (a, fw) = setup(&atlas_silicon_ddb((891 << 16) | 860));
+    let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap().unwrap();
+    assert_eq!(p.ddb_blocks, 860);
+    assert!(p.forward.iter().all(|(r, _)| *r != 0x7017c && *r != 0x70084));
+}
+
+#[test]
+fn every_kept_ddb_names_its_inputs() {
+    let (_, fw) = setup(&atlas_silicon_ddb((183 << 16) | 152));
+    let c = plane_ddb(&KBL_DISPLAY, &FirmwareGeometry { other_pipes_active: true, ..fw });
+    assert_eq!((c.how, c.plane), ("kept-other-pipes-active", (0, 152)));
+    assert_eq!(format!("{c}"), "ddb_how=kept-other-pipes-active dbuf=892 plane=0..152 cursor=152..184 fw_plane=0..152 fw_cursor=152..184 other_pipes=1 cursor_visible=0");
 }
 
 #[test]
