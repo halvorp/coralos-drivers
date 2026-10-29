@@ -109,6 +109,20 @@ impl RingAcct {
 
     /// Fold a new `LPIB` reading into the hardware total. A position beyond the ring is not a position (a dead register reads all-ones):
     /// `false`, nothing changes. A position that did not move is zero bytes.
+    /// Bytes the hardware has read since the last [`RingAcct::advance_hw`], from a fresh `LPIB` (wrap-corrected); `None` for a position
+    /// outside the ring. Reads nothing into the account.
+    pub fn hw_delta(&self, lpib: u32) -> Option<u32> {
+        if lpib >= self.ring_bytes {
+            return None;
+        }
+        Some(if lpib >= self.last_lpib { lpib - self.last_lpib } else { self.ring_bytes - self.last_lpib + lpib })
+    }
+
+    /// The `LPIB` the account last folded in.
+    pub const fn last_lpib(&self) -> u32 {
+        self.last_lpib
+    }
+
     pub fn advance_hw(&mut self, lpib: u32) -> bool {
         if lpib >= self.ring_bytes {
             return false;

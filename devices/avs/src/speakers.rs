@@ -261,6 +261,14 @@ impl Speakers {
             let t = ucm[side as usize];
             emit(&mut rig.m, format_args!("[AVS-SPK PROTECT addr={:#04x} side={} ucm-writes-acked={} readbacks-ok={} ok]", self.amp(side).addr, side.prefix(), t.writes_acked, t.verified));
         }
+        // what the parts now hold on the PCM path (read only): format, clock ratio, digital volume, path gain, tone generator
+        for amp in self.amps {
+            let mut v = [0u8; 5];
+            for (i, r) in max98373_core::regs::BRINGUP_READBACK.iter().enumerate() {
+                v[i] = Self::read(rig, amp.addr, *r).unwrap_or(0xEE);
+            }
+            emit(&mut rig.m, format_args!("[AVS-SPK PATH addr={:#04x} fmt={:02x} clk={:02x} dig_vol={:02x} path_gain={:02x} tone_gen={:02x}]", amp.addr, v[0], v[1], v[2], v[3], v[4]));
+        }
         self.protected = true;
         Ok(())
     }

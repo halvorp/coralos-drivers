@@ -153,10 +153,8 @@ impl Allow {
         if let Some(pp) = l.pp {
             push(&mut hda, e(pp + hda::AZX_REG_PP_PPCTL, D32))?;
         }
-        if let Some(spb) = l.spb {
-            push(&mut hda, e(spb + hda::AZX_REG_SPB_SPBFCCTL, D32))?;
-            push(&mut hda, e(spb + hda::AZX_SPB_BASE + hda::AZX_SPB_INTERVAL * l.playback.index + hda::AZX_SPB_SPIB, D32))?;
-        }
+        // no SPB registers: the playback stream runs without SPIB, as Linux's AVS PCM path does (session.rs, `spib: None`), so no plan
+        // writes SPBFCCTL or the stream's SPIB and neither is granted
         for b in &l.link_bases {
             push(&mut hda, e(b + hda::AZX_REG_ML_LOSIDV, D32))?;
         }
@@ -303,7 +301,7 @@ impl I2cAllow {
             _ => return Err(I2cRefusal::AmplifierShape { addr }),
         };
         // read-only diagnostics: the revision, and the interrupt/fault banks read after a speaker session starts (never written)
-        let readable_only = read_len == 1 && (reg == max98373_core::regs::R21FF_REV_ID || max98373_core::regs::STATUS_READBACK.contains(&reg));
+        let readable_only = read_len == 1 && (reg == max98373_core::regs::R21FF_REV_ID || max98373_core::regs::STATUS_READBACK.contains(&reg) || reg == max98373_core::regs::R2040_TONE_GEN_CFG);
         if readable_only || self.amp_regs.contains(&reg) {
             Ok(())
         } else {

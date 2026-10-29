@@ -88,6 +88,8 @@ pub struct Dsp {
     pub out: Output,
     /// The speaker path's DSP gain as last applied (Q1.31 linear; 0 is silence). Always at or below [`gain::CEILING_LINEAR`].
     pub gain: u32,
+    /// Periods served in poll mode from the `LPIB` advance because no completion bit was seen.
+    pub lpib_periods: u32,
 }
 
 /// Why a session did not start.
@@ -235,9 +237,30 @@ impl Dsp {
     }
 
     /// Poll mode ([`crate::irqmode`]): look at the causes the interrupt would have signalled, then the ring if a period completed.
+    ///
+    /// The completion bit is not the only witness: if no period's `BCIS` was seen but `LPIB` has moved a whole period or more since the
+    /// last refill, the period is served from the position (`lpib_periods` counts these), so a completion the poll missed - it is
+    /// cleared by whoever reads it first - can never starve the ring.
     pub fn poll<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<bool, PumpError> {
         self.pump.look(rig)?;
+        if self.pump.pend.periods == 0 {
+            let pos = rig.read(lpib(self.host.index))?;
+            if self.acct.hw_delta(pos).is_some_and(|d| d >= self.acct.period_bytes) {
+                self.pump.pend.periods = 1;
+                self.lpib_periods = self.lpib_periods.saturating_add(1);
+            }
+        }
         self.after_service(rig, bufs, fifo)
+    }
+
+    /// The watchdog's verdict, named by what the position says: `LPIB` where the last refill left it is a DMA that stopped
+    /// (`dma-stalled`, detail = the position); a position that moved with no period served is `period-timeout`.
+    pub fn stall_name<M: Machine>(&self, rig: &mut Rig<M>) -> (&'static str, u32) {
+        match rig.read(lpib(self.host.index)) {
+            Ok(pos) if pos == self.acct.last_lpib() || pos >= self.acct.ring_bytes => ("dma-stalled", pos),
+            Ok(pos) => ("period-timeout", pos),
+            Err(_) => ("period-timeout", 0xdead_dead),
+        }
     }
 
     fn after_service<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<bool, PumpError> {
@@ -428,7 +451,12 @@ fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Code
             bdl: ring_bdl,
             bdl_addr: bufs.ring_bdl.phys,
             posbuf: false,
-            spib: ctl.caps.spb.map(|_| RING_BYTES),
+            // NO SPIB on the playback host stream. Linux's AVS PCM path never enables it (sound/soc/intel/avs/pcm.c touches no SPB
+            // register; only the host-DMA code loader does, loader.c:386-387 / :454-455, and turns it off again at :418-419 / :469-470).
+            // With SPBFCCTL set and SPIB = the ring size, nothing ever advances SPIB, so the engine fetched the ring ONCE and stalled at its
+            // end: the Atlas, 2026-10-29 (drivers c1fa296), `[AVS-DEV POS t=100ms ... lpib=0x4000 ... pcm_fed=0]` and then
+            // `[AVS-DEV FAULT step=period-timeout]` - no period completed after the first ring, so no client PCM was ever moved.
+            spib: None,
             format_bits: FORMAT.container_bits as u32,
         },
         min_fw: SKL_MIN_FW_VERSION,
@@ -486,7 +514,7 @@ fn start_inner<M: Machine>(rig: &mut Rig<M>, a: &StartArgs<'_>, codec: &mut Code
         Err(StartFail::Layout("boot-never-ended"))
     }?;
     let _ = FwInput::Done;
-    let mut dsp = Dsp { pump, running, host, acct, last_period_ms: rig.now(), last_tick_ms: rig.now(), hold: true, out, gain: 0 };
+    let mut dsp = Dsp { pump, running, host, acct, last_period_ms: rig.now(), last_tick_ms: rig.now(), hold: true, out, gain: 0, lpib_periods: 0 };
 
     // ---- the output stage: clocks, route, output stages, volume ----
     if speaker_path {
