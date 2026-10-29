@@ -30,6 +30,7 @@ pub mod latency;
 pub mod plan;
 pub mod plane_plan;
 pub mod resize;
+pub mod scanout_health;
 
 pub use error::ModesetError;
 pub use plan::{Body, Interactive, Plan, Readback, Stage, StageId};

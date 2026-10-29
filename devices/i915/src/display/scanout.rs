@@ -81,6 +81,8 @@ pub enum ScanoutError {
     FlipInFlight { seq: u64 },
     /// The surface-replacement planner refused the image (it is not the adopted layout).
     Plan(ModesetError),
+    /// The logical-size fastset was rolled back (the pipe underran at that size): the pair's logical-size images are not presented again.
+    SizeRolledBack,
 }
 
 impl ScanoutError {
@@ -92,6 +94,7 @@ impl ScanoutError {
             ScanoutError::NotRendering { .. } => "SCANOUT-NOT-RENDERING",
             ScanoutError::FlipInFlight { .. } => "SCANOUT-FLIP-IN-FLIGHT",
             ScanoutError::Plan(e) => e.name(),
+            ScanoutError::SizeRolledBack => "SCANOUT-SIZE-ROLLED-BACK",
         }
     }
     pub const fn errno(&self) -> i32 {
@@ -100,6 +103,7 @@ impl ScanoutError {
             ScanoutError::UnknownImage { .. } => errno::ENOENT,
             ScanoutError::ReuseViolation { .. } | ScanoutError::FlipInFlight { .. } => errno::EBUSY,
             ScanoutError::NotRendering { .. } | ScanoutError::Plan(_) => errno::EINVAL,
+            ScanoutError::SizeRolledBack => errno::EIO,
         }
     }
 }
@@ -189,6 +193,8 @@ pub struct ScanoutPair {
     flip: Option<Flip>,
     /// The logical-size fastset, when the pair's images are not the firmware's size.
     resize: Option<ScanoutResize>,
+    /// The fastset was rolled back ([`ScanoutPair::roll_back_geometry`]): presents are refused.
+    rolled_back: bool,
 }
 
 impl ScanoutPair {
@@ -219,7 +225,7 @@ impl ScanoutPair {
             rotation: Rotation::R0,
         };
         let img = |(handle, key, ggtt): (u32, u64, u32)| Image { handle, key, ggtt, state: ImageState::Free };
-        ScanoutPair { owner, images: [img(images[0]), img(images[1])], live, firmware: live, template, firmware_live: true, restore_wanted: false, next_seq: 1, latched_seq: 0, latch_timeouts: 0, flip: None, resize }
+        ScanoutPair { owner, images: [img(images[0]), img(images[1])], live, firmware: live, template, firmware_live: true, restore_wanted: false, next_seq: 1, latched_seq: 0, latch_timeouts: 0, flip: None, resize, rolled_back: false }
     }
 
     /// The logical-size fastset this pair's images were made for, if any.
@@ -298,17 +304,7 @@ impl ScanoutPair {
         if self.firmware_live {
             return None; // the in-flight flip that wanted it never latched over the firmware: nothing to put back
         }
-        if let Some(r) = &self.resize {
-            // the geometry goes back with the framebuffer: the firmware's own register values, then its PLANE_SURF
-            let fw_surf = self.firmware.plane.surf;
-            let plan = AdoptPlan {
-                write: r.restore_plan(self.firmware.surf_raw),
-                latch: latch_poll(self.firmware.pipe, self.firmware.plane.plane_id, fw_surf),
-                rollback: r.forward_plan(self.live.plane.surf),
-                old_surf: self.live.plane.surf,
-                new_surf: fw_surf,
-            };
-            self.flip = Some(Flip { idx: FIRMWARE_IDX, seq: 0, plan: plan.clone(), phase: Phase::AwaitLatch(AdoptSession::begin(&plan)), geometry: true });
+        if let Some(plan) = self.begin_geometry_restore() {
             return Some(Ok(plan));
         }
         let fw = ReplacementSurface { gtt_addr: self.firmware.plane.surf, ..self.template };
@@ -319,6 +315,44 @@ impl ScanoutPair {
             }
             Err(e) => Some(Err(ScanoutError::Plan(e))),
         }
+    }
+
+    /// The geometry goes back with the framebuffer: the firmware's own register values, then its PLANE_SURF - as a flip to the
+    /// firmware's framebuffer, confirmed by the same latch read. `None` without a resize.
+    fn begin_geometry_restore(&mut self) -> Option<AdoptPlan> {
+        let r = self.resize.as_ref()?;
+        let fw_surf = self.firmware.plane.surf;
+        let plan = AdoptPlan {
+            write: r.restore_plan(self.firmware.surf_raw),
+            latch: latch_poll(self.firmware.pipe, self.firmware.plane.plane_id, fw_surf),
+            rollback: r.forward_plan(self.live.plane.surf),
+            old_surf: self.live.plane.surf,
+            new_surf: fw_surf,
+        };
+        self.flip = Some(Flip { idx: FIRMWARE_IDX, seq: 0, plan: plan.clone(), phase: Phase::AwaitLatch(AdoptSession::begin(&plan)), geometry: true });
+        Some(plan)
+    }
+
+    /// The logical size is unhealthy on the glass (the pipe underran): put the firmware's geometry and framebuffer back NOW, with the
+    /// authority still attached, and refuse its later presents ([`ScanoutError::SizeRolledBack`]). `None` when there is nothing to
+    /// roll back yet (a flip in flight finishes first) or at all (no resize, or the firmware's framebuffer is already live).
+    pub fn roll_back_geometry(&mut self) -> Option<AdoptPlan> {
+        if self.flip.is_some() || self.firmware_live || self.resize.is_none() {
+            return None;
+        }
+        self.rolled_back = true;
+        self.restore_wanted = false;
+        self.begin_geometry_restore()
+    }
+
+    /// Was the logical-size fastset rolled back?
+    pub const fn rolled_back(&self) -> bool {
+        self.rolled_back
+    }
+
+    /// Is a flip (or the restore) in flight?
+    pub fn flip_in_flight(&self) -> bool {
+        self.flip.is_some()
     }
 
     /// The firmware framebuffer's GGTT address (what the restore writes).
@@ -391,6 +425,9 @@ impl ScanoutPair {
         let i = self.mine(inc, handle)?;
         if let Some(f) = &self.flip {
             return Err(ScanoutError::FlipInFlight { seq: f.seq });
+        }
+        if self.rolled_back {
+            return Err(ScanoutError::SizeRolledBack);
         }
         let st = self.images[i].state;
         if st != ImageState::Rendering {

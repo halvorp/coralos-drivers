@@ -139,9 +139,9 @@ fn plan_2560x1440_on_the_4k_panel() {
     assert_eq!(p.window, Window { x: 0, y: 0, w: 3840, h: 2160 }, "16:9 onto 16:9: the whole panel");
     let order: Vec<u32> = p.forward.iter().map(|(r, _)| *r).collect();
     assert_eq!(
-        &order[..10],
-        &[0x6001c, 0x68180, 0x68188, 0x68194, 0x68170, 0x68174, 0x70188, 0x7018c, 0x70190, 0x70240],
-        "intel_pipe_fastset (PIPESRC, skl_pfit_enable) then skl_plane_update_noarm (STRIDE, POS, SIZE, WM)"
+        &order[..11],
+        &[0x6001c, 0x68180, 0x68188, 0x68194, 0x68170, 0x68174, 0x45270, 0x70188, 0x7018c, 0x70190, 0x70240],
+        "intel_pipe_fastset (PIPESRC, skl_pfit_enable, hsw_set_linetime_wm) then skl_plane_update_noarm (STRIDE, POS, SIZE, WM, DDB)"
     );
     assert_eq!(write_of(&p, 0x6001c), (2559 << 16) | 1439, "PIPESRC_WIDTH(w - 1) | PIPESRC_HEIGHT(h - 1)");
     assert_eq!(write_of(&p, 0x68180), 0x9000_0000, "PS_SCALER_EN | PS_BINDING_PIPE | HQ (kept) | PS_FILTER_MEDIUM");
@@ -214,9 +214,32 @@ fn every_refusal_is_named() {
     on_b.pipe = Pipe::B;
     assert_eq!(refuse(&on_b, &fw, 2560, 1440), "RESIZE-PLANE-NOT-IN-ALLOW-LIST");
     // no DDB, and a level 0 that no longer fits it
-    assert_eq!(refuse(&a, &FirmwareGeometry { buf_cfg: 0, ..fw }, 2560, 1440), "RESIZE-PLANE-NO-DDB");
-    let tiny = FirmwareGeometry { buf_cfg: 3 << 16, ..fw }; // 4 blocks
-    assert_eq!(refuse(&a, &tiny, 2560, 1440), "RESIZE-WM-LEVEL0-EXCEEDS-DDB");
+    assert_eq!(refuse(&a, &FirmwareGeometry { buf_cfg: 0, other_pipes_active: true, ..fw }, 2560, 1440), "RESIZE-PLANE-NO-DDB");
+    // a 4-block DDB the plan may not regrow (another pipe holds DDB: the weighted split is not ported) and a level 0 that no longer fits it
+    let tiny = FirmwareGeometry { buf_cfg: 3 << 16, other_pipes_active: true, ..fw };
+    assert_eq!(refuse(&a, &tiny, 2560, 1440), "ddb-too-small");
+    // need = the 2560-wide level 0's min_ddb_alloc, have = the firmware's PLANE_BUF_CFG size (skl_crtc_allocate_plane_ddb's -EINVAL)
+    let e = plan_scanout_resize(&KBL_DISPLAY, &a, &tiny, 2560, 1440).unwrap_err();
+    let ResizeRefusal::DdbTooSmall { need, have } = e else { panic!("{e:?}") };
+    assert_eq!(have, 4);
+    let l0 = rescale_wm(&fw.wm, 1920, 2560)[0];
+    assert_eq!(need, l0.min_ddb_alloc());
+    assert!(need > have);
+}
+
+#[test]
+fn the_planned_resize_carries_the_ddb_it_was_checked_against_and_its_health_delay() {
+    let (a, fw) = setup(&atlas());
+    let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap().unwrap();
+    assert_eq!(p.ddb_blocks, 860, "892 blocks less the 32-block cursor reserve: what the firmware left too");
+    assert_eq!(p.ddb_how, "linux-single-plane");
+    assert_eq!(write_of(&p, 0x7027c), 859 << 16, "PLANE_BUF_CFG 0..860 (end - 1 in the high half)");
+    assert_eq!(write_of(&p, 0x70278), 0, "PLANE_NV12_BUF_CFG: no Y plane (skl_write_plane_wm, display ver < 11)");
+    assert_eq!(p.wm0_need, rescale_wm(&fw.wm, 1920, 2560)[0].min_ddb_alloc());
+    assert!(p.wm0_need <= p.ddb_blocks);
+    // 4000 x 2222 at the readout's dotclock: three frames, rounded up, + 1 ms
+    let khz = fw.dotclock_khz.expect("the Atlas raster has a dotclock") as u64;
+    assert_eq!(p.health_after_ms(), (3 * 4000 * 2222u64).div_ceil(khz) + 1);
 }
 
 #[test]
@@ -286,10 +309,10 @@ fn the_watermark_bound_is_never_below_linux_for_the_wider_plane() {
 fn levels_that_no_longer_fit_the_ddb_are_disabled_from_the_first_misfit_up() {
     let (a, fw) = setup(&atlas());
     let levels = rescale_wm(&fw.wm, 1920, 2560);
-    // a DDB that holds level 2 but not level 3
+    // a DDB that holds level 2 but not level 3, kept (another pipe is active: the plan may not regrow it)
     let ddb = levels[2].min_ddb_alloc();
     assert!(levels[3].min_ddb_alloc() > ddb);
-    let small = FirmwareGeometry { buf_cfg: (ddb - 1) << 16, ..fw };
+    let small = FirmwareGeometry { buf_cfg: (ddb - 1) << 16, other_pipes_active: true, ..fw };
     let p = plan_scanout_resize(&KBL_DISPLAY, &a, &small, 2560, 1440).unwrap().unwrap();
     assert_eq!(p.wm_levels, 3);
     for level in 3..8u32 {
@@ -312,4 +335,40 @@ fn vblank_evasion_window_follows_intel_vblank_evade() {
     assert_eq!(VblankEvade::new(2160, 2222, 4000, None, 1, EVADE_US), None, "no dotclock: nothing to evade by");
     let (_, fw) = setup(&atlas());
     assert_eq!((fw.vblank_start, fw.vtotal, fw.htotal), (2160, 2222, 4000));
+}
+
+#[test]
+fn the_plane_ddb_is_recomputed_as_linux_allocates_a_single_plane_on_a_single_pipe() {
+    // the firmware gave the plane 0..500 and the cursor the top 32 blocks: Linux's allocation is the pipe's whole DDB (one active pipe,
+    // intel_crtc_ddb_weight), the cursor's fixed reserve at the top (skl_cursor_allocation), every other block to the one plane with a data rate
+    let mut regs = atlas();
+    regs.insert(0x7027c, 499 << 16);
+    regs.insert(0x7017c, (891 << 16) | 860);
+    let (a, fw) = setup(&regs);
+    assert_eq!((fw.buf_cfg, fw.cur_buf_cfg, fw.other_pipes_active), (499 << 16, (891 << 16) | 860, false));
+    let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap().unwrap();
+    assert_eq!((p.ddb_blocks, p.ddb_how), (860, "linux-single-plane"));
+    assert_eq!(write_of(&p, 0x7027c), 859 << 16);
+    let back = |reg: u32| p.back.iter().find(|(r, _)| *r == reg).map(|(_, v)| *v).unwrap();
+    assert_eq!(back(0x7027c), 499 << 16, "the restore puts the firmware's DDB back");
+    // PLANE_BUF_CFG after the watermark words (skl_write_plane_wm), before PLANE_SURF (forward_plan appends it last)
+    let at = |reg: u32| p.forward.iter().position(|(r, _)| *r == reg).unwrap();
+    assert!(at(0x70268) < at(0x7027c) && at(0x7027c) < at(0x70278));
+    // a cursor that is not at the top of the DDB would have to move: the firmware's plane DDB is kept, named
+    regs.insert(0x7017c, (31 << 16) | 0);
+    regs.insert(0x7027c, (891 << 16) | 32);
+    let (a, fw) = setup(&regs);
+    let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap().unwrap();
+    assert_eq!((p.ddb_blocks, p.ddb_how), (860, "kept-cursor-not-at-top"));
+}
+
+#[test]
+fn the_fastset_rewrites_the_line_time_watermark_as_hsw_set_linetime_wm_does() {
+    let (a, fw) = setup(&atlas());
+    let p = plan_scanout_resize(&KBL_DISPLAY, &a, &fw, 2560, 1440).unwrap().unwrap();
+    // skl_linetime_wm: DIV_ROUND_UP(htotal * 1000 * 8, pixel_rate); an upscale's pixel rate is the dotclock (ilk_pipe_pixel_rate)
+    let khz = fw.dotclock_khz.unwrap();
+    assert_eq!(write_of(&p, 0x45270), (4000 * 1000 * 8u32).div_ceil(khz).min(0x1ff));
+    let at = |reg: u32| p.forward.iter().position(|(r, _)| *r == reg).unwrap();
+    assert!(at(0x68174) < at(0x45270) && at(0x45270) < at(0x70188), "intel_pipe_fastset: skl_pfit_enable, then hsw_set_linetime_wm, then the plane");
 }

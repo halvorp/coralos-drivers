@@ -17,6 +17,10 @@
 //!  * THE LOGICAL SIZE (`display::size`): with a planned fastset the images are made at the logical size, and the flip off the firmware's
 //!    framebuffer (and the restore back onto it) is the whole geometry burst, written once PIPEDSL is outside the vblank-evasion window
 //!    ([`evade`], `intel_vblank_evade`) so the pipe source, the scaler and the plane latch on one vblank.
+//!  * THE HEALTH READBACK (`scanout_health`): the pipe's FIFO underrun bit is watched from just before the fastset burst; a few frames
+//!    after its latch (`ScanoutResize::health_after_ms`) what latched is read back into one `[I915-SCANOUT-HEALTH ...]` line, the
+//!    firmware's IMR goes back, and an underrun rolls the firmware's geometry and framebuffer back at once
+//!    (`ScanoutPair::roll_back_geometry`, `[I915-SCANOUT-SIZE ROLLBACK why=underrun]`).
 use super::fail::Fail;
 use super::service::{Done, Hw, UapiService, WaitKind};
 use crate::display::scanout::{ImageState, LatchStep, Released, ScanoutError, ScanoutPair, SeqState};
@@ -26,6 +30,8 @@ use alloc::vec::Vec;
 use coralos_hal::{Dma, Mmio};
 use i915_display_modeset_core::adopt::surf_alignment;
 use i915_display_modeset_core::resize::VblankEvade;
+use i915_display_modeset_core::scanout_health::{read_health, UnderrunWatch};
+use i915_kbl_display_core::regs_write::{gen8_de_pipe_ier, gen8_de_pipe_imr};
 use i915_kbl_display_core::types::Pipe;
 use i915_gem_core::{ObjId, SessionId};
 use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, VmaId};
@@ -44,6 +50,17 @@ pub(crate) struct PairRec {
     pub pair: ScanoutPair,
     pub objs: [ObjId; 2],
     pub size: u64,
+    /// The health readback of the logical-size fastset: armed with its burst, due a few frames after its latch.
+    pub health: Option<Health>,
+}
+
+/// One pending health readback.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Health {
+    /// The underrun watch, `None` when it could not be armed (named when it was refused).
+    pub watch: Option<UnderrunWatch>,
+    /// When the fastset was proven latched; `None` until then.
+    pub latched_ms: Option<u64>,
 }
 
 fn scan_fail(e: ScanoutError) -> Fail {
@@ -141,7 +158,7 @@ impl UapiService {
             "[I915-SCANOUT pair acquired inc={} handles={},{} ggtt={:#x},{:#x} size={:#x} {}x{} stride={} align={:#x} caching=none]",
             inc, made[0].0, made[1].0, made[0].2, made[1].2, size, w, h, stride, align));
         let rep = acquire_rep(&pair, &a, size);
-        self.scanout = Some(PairRec { pair, objs: [made[0].1, made[1].1], size });
+        self.scanout = Some(PairRec { pair, objs: [made[0].1, made[1].1], size, health: None });
         Ok(rep)
     }
 
@@ -205,11 +222,14 @@ impl UapiService {
 
     /// Does the pair want the loop to come back (a flip waiting for its GPU work, or for the latch)?
     pub(crate) fn scanout_wants_time(&self) -> bool {
-        self.scanout.as_ref().is_some_and(|r| r.pair.awaiting_gpu().is_some() || r.pair.wants_latch_reads() || r.pair.restoring())
+        self.scanout.as_ref().is_some_and(|r| {
+            r.pair.awaiting_gpu().is_some() || r.pair.wants_latch_reads() || r.pair.restoring() || r.health.is_some_and(|h| h.latched_ms.is_some())
+        })
     }
 
     /// Move the pair on: arm a flip whose image is idle, read the latch of an armed one.
     pub(crate) fn advance_scanout<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {
+        self.advance_health(hw);
         let Some(rec) = self.scanout.as_mut() else { return };
         match rec.pair.ready_to_restore() {
             Some(Ok(plan)) => {
@@ -229,10 +249,17 @@ impl UapiService {
             if !self.gem.object_busy(ObjId(img.key)) {
                 if let Some(plan) = rec.pair.ready_to_arm() {
                     let geometry = rec.pair.flip_is_geometry();
+                    if geometry {
+                        // the underrun watch is armed before the burst, so an underrun the new size causes is latched in IIR
+                        rec.health = Some(Health { watch: arm_watch(hw, rec.pair.resize().map_or(Pipe::A, |r| r.pipe)), latched_ms: None });
+                    }
                     if let Some(e) = rec.pair.geometry_evade() {
                         evade(hw, &e, rec.pair.resize().map_or(Pipe::A, |r| r.pipe));
                     }
                     if let Err(e) = hw.ex.run_link_effects(&plan.write) {
+                        if let Some(Health { watch: Some(w), .. }) = rec.health.take() {
+                            let _ = hw.ex.run_link_effects(&w.disarm_plan());
+                        }
                         if geometry {
                             // part of the burst may have landed: put every register of it back (the firmware's framebuffer is still live)
                             let back = hw.ex.run_link_effects(&plan.rollback).map_or_else(|b| b.name(), |()| "ok");
@@ -267,6 +294,9 @@ impl UapiService {
                     if let Some(r) = rec.pair.resize() {
                         crate::display::size::report_ok(hw.log, r);
                     }
+                    if let Some(h) = rec.health.as_mut() {
+                        h.latched_ms = Some(hw.now_ms);
+                    }
                 }
                 let what = match released {
                     Released::Firmware => "firmware",
@@ -281,10 +311,67 @@ impl UapiService {
             LatchStep::TimedOut { seq, got } => {
                 emit(hw.log, format_args!("[I915-PRESENT latch_timeout seq={} surflive={:#x} timeouts={}] - nothing released", seq, got, rec.pair.status().latch_timeouts));
             }
+            LatchStep::Restored if rec.pair.rolled_back() => {
+                emit(hw.log, format_args!("[I915-SCANOUT-SIZE ROLLBACK latched firmware-fb surf={:#x}] - the firmware's geometry is on the glass; the logical-size images are not presented again [I915-SCANOUT-RESTORED]", rec.pair.firmware_surf()));
+            }
             LatchStep::Restored => {
                 emit(hw.log, format_args!("[I915-SCANOUT restored firmware-fb surf={:#x}] - the display authority is gone; the boot framebuffer is on the glass [I915-SCANOUT-RESTORED]", rec.pair.firmware_surf()));
             }
             LatchStep::StillWaiting | LatchStep::Idle => {}
+        }
+    }
+
+    /// The health readback, once it is due and no flip is in flight: one line, the watch disarmed, and on an underrun the rollback.
+    fn advance_health<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {
+        let Some(rec) = self.scanout.as_mut() else { return };
+        let Some(h) = rec.health else { return };
+        let Some(latched) = h.latched_ms else { return };
+        let Some(r) = rec.pair.resize() else { return };
+        let (pipe, plane_id, scaler_id, due) = (r.pipe, r.plane_id, r.scaler_id, latched.saturating_add(r.health_after_ms()));
+        if rec.pair.firmware_live() {
+            // the authority ended and the firmware's geometry is back already: nothing left to judge
+            rec.health = None;
+            if let Some(w) = h.watch {
+                let _ = hw.ex.run_link_effects(&w.disarm_plan());
+            }
+            return;
+        }
+        if hw.now_ms < due || rec.pair.flip_in_flight() {
+            return;
+        }
+        rec.health = None;
+        let mut refused = None;
+        let ex = &mut *hw.ex;
+        let mut health = read_health(
+            |off| ex.rd(i915_common_core::Reg::new(off)).unwrap_or_else(|e| {
+                refused.get_or_insert(e.name());
+                0
+            }),
+            pipe, plane_id, scaler_id, h.watch.as_ref(), hw.now_ms - latched,
+        );
+        if let Some(name) = refused {
+            emit(hw.log, format_args!("[I915-SCANOUT-HEALTH read refused name={}] - the underrun bit is not judged", name));
+            health.iir = None;
+        }
+        crate::display::size::report_health(hw.log, &health);
+        if let Some(w) = h.watch {
+            if let Err(e) = hw.ex.run_link_effects(&w.disarm_plan()) {
+                emit(hw.log, format_args!("[I915-SCANOUT-HEALTH disarm refused name={}]", e.name()));
+            }
+        }
+        if health.underrun() != Some(true) {
+            return;
+        }
+        let Some(plan) = rec.pair.roll_back_geometry() else { return };
+        if let Some(r) = rec.pair.resize() {
+            crate::display::size::report_rollback(hw.log, r);
+        }
+        if let Some(e) = rec.pair.geometry_evade() {
+            evade(hw, &e, pipe);
+        }
+        if let Err(e) = hw.ex.run_link_effects(&plan.write) {
+            rec.pair.restore_failed();
+            emit(hw.log, format_args!("[I915-SCANOUT-SIZE ROLLBACK refused name={}] - the logical size stays on the glass", e.name()));
         }
     }
 
@@ -331,6 +418,32 @@ fn acquire_rep(p: &ScanoutPair, a: &i915_display_modeset_core::initial::AdoptedD
     let im = p.images();
     let (width, height, stride) = geometry_of(p, a);
     ScanoutAcquireRep { handle0: im[0].handle, handle1: im[1].handle, width, height, stride, fourcc: a.fb.fourcc, modifier: a.fb.modifier, size }
+}
+
+/// Arm the underrun watch of `pipe` from its IMR / IER (`scanout_health`); `None`, named, when it cannot be.
+fn arm_watch<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D, M, L>, pipe: Pipe) -> Option<UnderrunWatch> {
+    let rd = |hw: &mut Hw<'_, B, D, M, L>, off| hw.ex.rd(i915_common_core::Reg::new(off));
+    let (imr, ier) = match (rd(hw, gen8_de_pipe_imr(pipe)), rd(hw, gen8_de_pipe_ier(pipe))) {
+        (Ok(m), Ok(e)) => (m, e),
+        (Err(e), _) | (_, Err(e)) => {
+            emit(hw.log, format_args!("[I915-SCANOUT-HEALTH watch refused name={}] - underrun=unobserved", e.name()));
+            return None;
+        }
+    };
+    match UnderrunWatch::arm(pipe, imr, ier) {
+        Ok((w, plan)) => match hw.ex.run_link_effects(&plan) {
+            Ok(()) => Some(w),
+            Err(e) => {
+                let _ = hw.ex.run_link_effects(&w.disarm_plan());
+                emit(hw.log, format_args!("[I915-SCANOUT-HEALTH watch refused name={}] - underrun=unobserved", e.name()));
+                None
+            }
+        },
+        Err(u) => {
+            emit(hw.log, format_args!("[I915-SCANOUT-HEALTH watch refused name={} imr={:#x} ier={:#x}] - underrun=unobserved", u.name(), imr, ier));
+            None
+        }
+    }
 }
 
 /// Bound of the PIPEDSL reads one evasion makes: the window is `resize::EVADE_US` long, so a read loop leaves it long before this;

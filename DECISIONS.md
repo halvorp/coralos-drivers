@@ -273,3 +273,17 @@ compositor still sizes itself from the firmware framebuffer is never offered ano
 offers that size on `DISPLAY-QUERY` / `DISPLAY-SET-MODE` / `SCANOUT-ACQUIRE`, makes the pair at it, writes the fastset with the first flip off the firmware's
 framebuffer and the firmware's own values back with the restore. The write set (`resize::RESIZE_WRITE_ALLOWLIST`, pipe A / plane 1, as the adoption's flip) is
 part of `p4-present`. Markers: `[I915-SCANOUT-SIZE planned|... ok|REFUSED why=...]`.
+THE DDB AND THE HEALTH READBACK (2026-10-29, Astra + Argon ruling for the Atlas boot). The fastset also writes what `skl_write_plane_wm` writes
+after the watermark words - PLANE_BUF_CFG and PLANE_NV12_BUF_CFG (skl_universal_plane.c:821-860) - and `hsw_set_linetime_wm` (intel_display.c:6662-6677).
+The plane's DDB is Linux's allocation for ONE plane on ONE active pipe: the pipe holds the whole DBUF (`intel_crtc_ddb_weight`,
+skl_watermark.c:471-486), the cursor's fixed reserve sits at the top (:1452-1458) and the only plane with a data rate gets every other block
+(:1505-1530) - the cursor's reserve being the firmware's own when it is at the top, else `skl_cursor_allocation`'s one-pipe floor of 32 (:667;
+its latency term needs the PCU latencies i915.device does not read, and the cursor is hidden). Another active pipe, or a cursor reserve that is not
+at the top, keeps the firmware's plane DDB (`ddb_how=kept-...`). The watermark LEVELS stay the bound from the firmware's levels (no PCU latency
+read); a level-0 that does not fit is `REFUSED why=ddb-too-small need=N have=M`, Linux's -EINVAL (:1494-1499). A few frames after the latch the
+device reads back what latched and pipe A's CPU FIFO underrun bit - on display ver 9 Linux polls nothing (intel_fifo_underrun.c:529-541) and sees
+underruns only in GEN8_DE_PIPE_IIR bit 31 with the bit unmasked in IMR (`bdw_set_fifo_underrun_reporting` :284-291, `gen8_de_irq_handler`
+intel_display_irq.c:1493-1528) - so the watch acks IIR and unmasks that one IMR bit before the burst (never IER: no interrupt is raised; masked but
+IER-enabled is refused as `underrun-ier-enabled`), and puts IMR back after `[I915-SCANOUT-HEALTH ... underrun=0|1|unobserved after_ms=N]`. An
+underrun rolls the firmware's geometry and framebuffer back at once (`[I915-SCANOUT-SIZE ROLLBACK why=underrun]`) and the pair's later presents are
+`-EIO SCANOUT-SIZE-ROLLED-BACK`.
