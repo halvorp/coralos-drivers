@@ -22,8 +22,9 @@ pub struct Rig<M: Machine> {
     pub refused: Refusals,
     /// The first refusal's name, kept for the status line.
     pub first_refusal: Option<&'static str>,
-    /// The cAVS interrupt cannot reach this task (the function's MSI is not enabled, or an interrupt was found pending that never woke
-    /// the wait): the pump LOOKS at the causes on a bounded clock instead of blocking on the line. See [`crate::irqmode`].
+    /// The cAVS interrupt cannot reach this task (no line, the function's MSI on or its INTx disabled, an interrupt found pending that
+    /// never woke the wait, or a shared line left masked after a storm): the pump LOOKS at the causes on a bounded clock instead of
+    /// blocking on the line, and the line is never re-armed. See [`crate::irqmode`].
     pub irq_poll: bool,
     /// Waits that timed out with their cause already pending in the hardware: interrupts that never arrived.
     pub lost_irqs: u32,
@@ -132,6 +133,14 @@ impl<M: Machine> Rig<M> {
             return Err(PadFault::NotAllowed { community: reg.community, off: reg.off });
         }
         self.m.pad_write(reg, value)
+    }
+
+    /// Re-arm (unmask) the cAVS line after its causes were serviced and written back - never in poll mode: a line the device stopped
+    /// using stays masked, so a shared line another function holds asserted cannot storm this core.
+    pub fn rearm_irq(&mut self) {
+        if !self.irq_poll {
+            self.m.rearm_avs_irq();
+        }
     }
 
     /// Block until `deadline_ms` or the first wanted wake.
