@@ -181,3 +181,23 @@ pub const PIPEDSL_LINE_MASK: u32 = 0x000f_ffff; // intel_display_regs.h:728 REG_
 pub const fn pipedsl(pipe: Pipe) -> u32 {
     PIPEDSL_A + (pipe as u32) * crate::regs::PIPE_STEP
 }
+
+// ---- the DE pipe interrupt bank (intel_display_regs.h:1249-1253): ISR / IMR / IIR / IER, 0x10 per pipe ----
+pub const GEN8_DE_PIPE_ISR_A: u32 = 0x44400; // intel_display_regs.h:1249
+pub const GEN8_PIPE_FIFO_UNDERRUN: u32 = 1 << 31; // intel_display_regs.h:1253 REG_BIT(31)
+/// `GEN8_DE_PIPE_ISR(pipe)` = `_MMIO(0x44400 + 0x10 * pipe)` (intel_display_regs.h:1249).
+pub const fn gen8_de_pipe_isr(pipe: Pipe) -> u32 {
+    GEN8_DE_PIPE_ISR_A + 0x10 * (pipe as u32)
+}
+/// `GEN8_DE_PIPE_IMR(pipe)` (intel_display_regs.h:1250).
+pub const fn gen8_de_pipe_imr(pipe: Pipe) -> u32 {
+    gen8_de_pipe_isr(pipe) + 4
+}
+/// `GEN8_DE_PIPE_IIR(pipe)` (intel_display_regs.h:1251).
+pub const fn gen8_de_pipe_iir(pipe: Pipe) -> u32 {
+    gen8_de_pipe_isr(pipe) + 8
+}
+/// `GEN8_DE_PIPE_IER(pipe)` (intel_display_regs.h:1252).
+pub const fn gen8_de_pipe_ier(pipe: Pipe) -> u32 {
+    gen8_de_pipe_isr(pipe) + 0xc
+}

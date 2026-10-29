@@ -151,6 +151,14 @@ mod planner_write_sets {
         // P4: the logical-size fastset - the resize planner's own write set, for the firmware's fitter on either of pipe A's scalers
         #[cfg(feature = "p4-present")]
         writes.extend(super::p4_resize_writes());
+        // P4: the health readback's underrun watch - its arm and disarm plans, run on a masked IMR (both registers written)
+        #[cfg(feature = "p4-present")]
+        {
+            use i915_display_modeset_core::scanout_health::UnderrunWatch;
+            let (w, arm) = UnderrunWatch::arm(i915_kbl_display_core::types::Pipe::A, 0xffff_ffff, 0).unwrap();
+            writes.extend(i915_display_link_core::plan::written_regs(&arm));
+            writes.extend(i915_display_link_core::plan::written_regs(&w.disarm_plan()));
+        }
         let mut set: Vec<u32> = writes.iter().map(|r| r.offset()).chain(FORCEWAKE_SET).collect();
         set.sort();
         set.dedup();
@@ -179,7 +187,7 @@ fn p4_resize_writes() -> Vec<i915_common_core::Reg> {
     let (mut bar, mut cfg, mut lg) = (common::bar_atlas(), common::config_page(0x591c, 0x02), common::Lines::default());
     let ready = i915_device::startup::startup(&mut bar, &mut cfg, &mut lg).unwrap();
     // the geometry words the readout itself never reads: the watermark block, the DDB and the scaler phases
-    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x68288, 0x68294]) {
+    for r in (0x70240..=0x7027c).step_by(4).chain([0x68188, 0x68194, 0x68288, 0x68294, 0x7017c, 0x45270]) {
         bar.set(r, 0);
     }
     let a = *ready.adoption.adopted().unwrap();
@@ -210,6 +218,8 @@ fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     want.extend([0x70188, 0x7018c, 0x70190]);
     want.extend((0..8).map(|l| 0x70240 + 4 * l));
     want.push(0x70268);
+    // skl_write_plane_wm's DDB words, hsw_set_linetime_wm, and the underrun watch (GEN8_DE_PIPE_IMR / IIR of pipe A)
+    want.extend([0x7027c, 0x70278, 0x45270, 0x44404, 0x44408]);
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(p4_flip_writes().iter().map(|r| r.offset()).collect::<Vec<_>>(), [0x7019c], "the flip writes that one register and no other");

@@ -22,7 +22,18 @@
 //! and `lines` does not grow with the width. So the firmware's own level, its blocks scaled by `new_width / old_width` (rounded up) plus
 //! one block per line of the level and one more, is never below what Linux would program for the wider plane ([`rescale_wm`]; the host test checks it against the
 //! Rust port of `skl_compute_wm_levels`, itself checked against GCC-compiled Linux). A level that then no longer fits the plane's
-//! DDB is DISABLED exactly as `skl_check_wm_level` does (:1353-1357); level 0 not fitting is a named refusal. The DDB is kept.
+//! DDB is DISABLED exactly as `skl_check_wm_level` does (:1353-1357); level 0 not fitting is a named refusal (`ddb-too-small`).
+//!
+//! THE DDB IS RECOMPUTED AS LINUX ALLOCATES IT, where that needs no latency. The fastset runs `skl_compute_ddb` and `skl_write_plane_wm`
+//! writes PLANE_BUF_CFG / PLANE_NV12_BUF_CFG after the watermark words (skl_universal_plane.c:821-860), latched with PLANE_SURF. With
+//! ONE active pipe its DDB is the whole DBUF (`intel_crtc_ddb_weight` = the pipe mode's hdisplay, the only weight: skl_watermark.c:471-486,
+//! :526-560; `dbuf.size` 896 less 4); `skl_crtc_allocate_plane_ddb` puts the cursor's fixed reserve at the top (:1452-1458,
+//! `skl_cursor_allocation` = `max(32, ..)` with one pipe, :633-668) and grants the only plane with a data rate every other block
+//! (:1505-1530). So the plane gets `[0, dbuf - cursor)`: the cursor's reserve is the firmware's own when it sits at the top (it is never
+//! moved), else Linux's one-pipe floor of 32 (the cursor's latency term is not computable here; it is hidden, so its reserve is
+//! unused). Another active pipe (the weighted split is not ported) or a cursor reserve that is not at the top KEEPS the firmware's
+//! plane DDB, named in `ddb_how`. `hsw_set_linetime_wm` is rewritten with the fastset (intel_display.c:6662-6677; `skl_linetime_wm`
+//! :4210-4229 from the pipe pixel rate, which an upscale leaves at the dotclock).
 //!
 //! Nothing here performs MMIO: [`read_firmware_geometry`] asks a closure for registers, and the plans are effect lists the device
 //! executes through its write guard ([`RESIZE_WRITE_ALLOWLIST`]). Copyright (c) Intel Corporation.
@@ -31,6 +42,7 @@ use alloc::vec::Vec;
 use i915_common_core::Reg;
 use i915_display_link_core::plan::{written_regs, Effect, Plan};
 use i915_kbl_display_core::plane::Tiling;
+use i915_kbl_display_core::mode_write::{linetime_reg_value, linetime_wm};
 use i915_kbl_display_core::platform::DisplayCaps;
 use i915_kbl_display_core::readout::{PipeState, ReadoutState};
 use i915_kbl_display_core::regs::*;
@@ -103,7 +115,8 @@ impl LogicalSize {
 /// THE resize write allow-list: the pipe source of pipe A, both of pipe A's scaler blocks (CTRL, VPHASE, HPHASE, WIN_POS, WIN_SZ),
 /// PLANE_1's STRIDE / POS / SIZE, its eight watermark levels and its transition watermark. The PLANE_SURF write is
 /// `adopt::ADOPT_WRITE_ALLOWLIST`'s. Pipe A / plane 1 only - the same pipe and plane the adoption's flip is limited to.
-pub const RESIZE_WRITE_ALLOWLIST: [Reg; 23] = [
+/// PLANE_1's PLANE_BUF_CFG / PLANE_NV12_BUF_CFG (`skl_write_plane_wm`) and pipe A's WM_LINETIME (`hsw_set_linetime_wm`) with them.
+pub const RESIZE_WRITE_ALLOWLIST: [Reg; 26] = [
     Reg::new(pipesrc(Transcoder::A)),
     ps_a(PS_1A_CTRL, 0),
     ps_a(PS_VPHASE_1A, 0),
@@ -127,6 +140,9 @@ pub const RESIZE_WRITE_ALLOWLIST: [Reg; 23] = [
     wm_a(6),
     wm_a(7),
     Reg::new(PLANE_WM_TRANS_1_A),
+    Reg::new(PLANE_BUF_CFG_1_A),
+    Reg::new(PLANE_NV12_BUF_CFG_1_A),
+    Reg::new(WM_LINETIME_A),
 ];
 const fn ps_a(base: u32, id: u32) -> Reg {
     Reg::new(scaler_reg(base, Pipe::A, id))
@@ -153,6 +169,13 @@ pub struct FirmwareGeometry {
     pub wm: [u32; NUM_LEVELS],
     pub wm_trans: u32,
     pub buf_cfg: u32,
+    pub nv12_buf_cfg: u32,
+    /// The pipe's CUR_BUF_CFG: where the cursor's DDB reserve sits (never moved by the resize).
+    pub cur_buf_cfg: u32,
+    /// WM_LINETIME as the firmware left it.
+    pub linetime: u32,
+    /// Another pipe is active: the DDB is split by weight among the pipes (not ported), so the plane's DDB is kept.
+    pub other_pipes_active: bool,
     /// The transcoder timing the vblank evasion needs.
     pub vtotal: u32,
     pub vblank_start: u32,
@@ -190,6 +213,10 @@ pub fn read_firmware_geometry<R: FnMut(u32) -> u32>(mut rd: R, caps: &DisplayCap
         wm,
         wm_trans: rd(p(PLANE_WM_TRANS_1_A)),
         buf_cfg: rd(p(PLANE_BUF_CFG_1_A)),
+        nv12_buf_cfg: rd(p(PLANE_NV12_BUF_CFG_1_A)),
+        cur_buf_cfg: rd(cur_buf_cfg(a.pipe)),
+        linetime: rd(wm_linetime(a.pipe)),
+        other_pipes_active: r.pipes.iter().enumerate().any(|(i, p)| i != a.pipe.index() && matches!(p.state, PipeState::Active(_))),
         vtotal: act.timings.vtotal,
         vblank_start: act.timings.vblank_start,
         htotal: act.timings.htotal,
@@ -223,8 +250,9 @@ pub enum ResizeRefusal {
     Scaler(PfitError),
     /// The plane has no DDB allocation to hold any watermark.
     NoDdb,
-    /// The rescaled level-0 watermark does not fit the plane's DDB (`skl_allocate_plane_ddb`: no level fits -> -EINVAL).
-    WmLevel0ExceedsDdb { min_ddb_alloc: u32, ddb: u32 },
+    /// The wider plane's level-0 watermark needs more blocks than its DDB holds (`skl_crtc_allocate_plane_ddb`: no level fits ->
+    /// -EINVAL "Requested display configuration exceeds system DDB limitations", skl_watermark.c:1494-1499).
+    DdbTooSmall { need: u32, have: u32 },
 }
 
 impl ResizeRefusal {
@@ -239,7 +267,7 @@ impl ResizeRefusal {
             ResizeRefusal::PlaneOutOfRange { .. } => "RESIZE-PLANE-OUT-OF-RANGE",
             ResizeRefusal::Scaler(e) => e.name(),
             ResizeRefusal::NoDdb => "RESIZE-PLANE-NO-DDB",
-            ResizeRefusal::WmLevel0ExceedsDdb { .. } => "RESIZE-WM-LEVEL0-EXCEEDS-DDB",
+            ResizeRefusal::DdbTooSmall { .. } => "ddb-too-small",
         }
     }
 }
@@ -269,14 +297,44 @@ impl WmWord {
     }
 }
 
-/// The DDB entry PLANE_BUF_CFG holds, as a size in blocks (`plane_ddb_reg_val` stores `end - 1`; 0 = no allocation).
-pub const fn ddb_size(buf_cfg: u32) -> u32 {
+/// The DDB entry PLANE_BUF_CFG / CUR_BUF_CFG holds as `(start, end)` half-open (`skl_ddb_entry_init_from_hw`: the register stores
+/// `end - 1`; 0 = no allocation).
+pub const fn ddb_entry(buf_cfg: u32) -> (u32, u32) {
     if buf_cfg == 0 {
-        return 0;
+        return (0, 0);
     }
-    let start = buf_cfg & PLANE_BUF_START_MASK;
-    let end = ((buf_cfg & PLANE_BUF_END_MASK) >> PLANE_BUF_END_SHIFT) + 1;
+    (buf_cfg & PLANE_BUF_START_MASK, ((buf_cfg & PLANE_BUF_END_MASK) >> PLANE_BUF_END_SHIFT) + 1)
+}
+
+/// The DDB entry PLANE_BUF_CFG holds, as a size in blocks.
+pub const fn ddb_size(buf_cfg: u32) -> u32 {
+    let (start, end) = ddb_entry(buf_cfg);
     end.saturating_sub(start)
+}
+
+/// `skl_cursor_allocation`'s floor with one active pipe (skl_watermark.c:667).
+pub const CURSOR_DDB_ONE_PIPE: u32 = 32;
+
+/// The plane's DDB entry as Linux allocates it for the single plane of the single active pipe (module doc), or the firmware's own
+/// when that allocation is not one this port computes; with how it was chosen.
+pub fn plane_ddb(caps: &DisplayCaps, fw: &FirmwareGeometry) -> ((u32, u32), &'static str) {
+    let kept = ddb_entry(fw.buf_cfg);
+    if fw.other_pipes_active {
+        return (kept, "kept-other-pipes-active");
+    }
+    let dbuf = caps.dbuf_blocks as u32;
+    let (cs, ce) = ddb_entry(fw.cur_buf_cfg);
+    let cursor = if ce == 0 {
+        CURSOR_DDB_ONE_PIPE
+    } else if ce == dbuf && cs < ce {
+        ce - cs
+    } else {
+        return (kept, "kept-cursor-not-at-top");
+    };
+    if cursor >= dbuf {
+        return (kept, "kept-cursor-fills-dbuf");
+    }
+    ((0, dbuf - cursor), "linux-single-plane")
 }
 
 /// The watermark bound for a plane `new_w` wide from the firmware's level for `old_w` (see the module doc): blocks scaled up by the
@@ -320,6 +378,14 @@ pub struct ScanoutResize {
     pub vscale: u32,
     /// How many of the watermark levels stay enabled after the DDB check.
     pub wm_levels: u8,
+    /// The plane's DDB after the resize, in blocks, how it was chosen (`plane_ddb`), and what the wider plane's level 0 needs of it.
+    pub ddb_blocks: u32,
+    pub ddb_how: &'static str,
+    pub wm0_need: u32,
+    /// The raster, for how long the health readback waits ([`ScanoutResize::health_after_ms`]).
+    pub vtotal: u32,
+    pub htotal: u32,
+    pub dotclock_khz: Option<u32>,
     /// The register writes before PLANE_SURF, in Linux's order (pipe source, scaler, plane, watermarks).
     pub forward: Vec<(u32, u32)>,
     /// The firmware's values of the same registers, in the same order: what puts the firmware's geometry back.
@@ -329,6 +395,14 @@ pub struct ScanoutResize {
 }
 
 impl ScanoutResize {
+    /// When the post-resize health readback is due after the latch: [`HEALTH_FRAMES`] frames of the raster, rounded up, plus 1 ms
+    /// ([`HEALTH_FALLBACK_MS`] without a dotclock).
+    pub fn health_after_ms(&self) -> u64 {
+        match self.dotclock_khz {
+            Some(khz) if khz != 0 => (HEALTH_FRAMES as u64 * self.vtotal as u64 * self.htotal as u64).div_ceil(khz as u64) + 1,
+            _ => HEALTH_FALLBACK_MS,
+        }
+    }
     /// Upscale ratio panel / logical, in thousandths (horizontal), for the marker.
     pub const fn ratio_milli(&self) -> u32 {
         (self.panel_w as u64 * 1000 / self.logical_w as u64) as u32
@@ -353,6 +427,12 @@ impl ScanoutResize {
         written_regs(&self.forward_plan(0))
     }
 }
+
+/// How many frames after the latch the health readback reads the underrun status: an underrun the new watermarks cause shows within
+/// the first frames of scanout at the new size.
+pub const HEALTH_FRAMES: u32 = 3;
+/// Three frames at 60 Hz, when the raster has no dotclock to compute them from.
+pub const HEALTH_FALLBACK_MS: u64 = 51;
 
 /// `skl_plane_max_height()` for display ver < 11 (skl_universal_plane.c): 4096.
 const PLANE_MAX_HEIGHT: u32 = 4096;
@@ -407,12 +487,14 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
     };
     let window = aspect_window(w, h, panel_w, panel_h);
     let pf = pfit_enable_writes(caps.display_ver, a.pipe, fw.scaler_id as u32, mode, w, h, window).map_err(ResizeRefusal::Scaler)?;
-    // the watermarks: the bound, then skl_check_wm_level against the plane's DDB
-    let ddb = ddb_size(fw.buf_cfg);
+    // the DDB (Linux's single-plane allocation, or the firmware's), then the watermarks: the bound, then skl_check_wm_level against it
+    let ((ddb_start, ddb_end), ddb_how) = plane_ddb(caps, fw);
+    let ddb = ddb_end.saturating_sub(ddb_start);
     if ddb == 0 {
         return Err(ResizeRefusal::NoDdb);
     }
     let mut levels = rescale_wm(&fw.wm, a.fb.width, w);
+    let wm0_need = levels[0].min_ddb_alloc();
     let mut kept = 0u8;
     let mut cut = false;
     for (i, l) in levels.iter_mut().enumerate() {
@@ -421,7 +503,7 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
         }
         if cut || l.min_ddb_alloc() > ddb {
             if i == 0 {
-                return Err(ResizeRefusal::WmLevel0ExceedsDdb { min_ddb_alloc: l.min_ddb_alloc(), ddb });
+                return Err(ResizeRefusal::DdbTooSmall { need: l.min_ddb_alloc(), have: ddb });
             }
             cut = true; // the levels above a level that does not fit are not possible either (skl_allocate_plane_ddb's level search)
             l.enable = false;
@@ -449,6 +531,13 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
         forward.push((r, v));
         back.push((r, fw_ps[k]));
     }
+    // hsw_set_linetime_wm: skl_linetime_wm from the pipe pixel rate, which an upscale leaves at the dotclock (no dotclock: kept)
+    if let Some(khz) = fw.dotclock_khz {
+        if let Ok(lt) = linetime_wm(fw.htotal, khz) {
+            forward.push((wm_linetime(pipe), linetime_reg_value(lt)));
+            back.push((wm_linetime(pipe), fw.linetime));
+        }
+    }
     // skl_plane_update_noarm: STRIDE, POS, SIZE, then skl_write_plane_wm
     forward.push((pl(PLANE_STRIDE_1_A), (stride / mult) & PLANE_STRIDE_MASK));
     back.push((pl(PLANE_STRIDE_1_A), fw.plane_stride));
@@ -463,6 +552,11 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
     }
     forward.push((pl(PLANE_WM_TRANS_1_A), trans));
     back.push((pl(PLANE_WM_TRANS_1_A), fw.wm_trans));
+    // skl_write_plane_wm: PLANE_BUF_CFG = the plane's DDB (end - 1 high), PLANE_NV12_BUF_CFG = no Y plane on display ver < 11
+    forward.push((pl(PLANE_BUF_CFG_1_A), ((((ddb_end - 1) << PLANE_BUF_END_SHIFT) & PLANE_BUF_END_MASK) | (ddb_start & PLANE_BUF_START_MASK))));
+    back.push((pl(PLANE_BUF_CFG_1_A), fw.buf_cfg));
+    forward.push((pl(PLANE_NV12_BUF_CFG_1_A), 0));
+    back.push((pl(PLANE_NV12_BUF_CFG_1_A), fw.nv12_buf_cfg));
     let evade = VblankEvade::new(fw.vblank_start, fw.vtotal, fw.htotal, fw.dotclock_khz, scanline_offset(caps.display_ver, fw.hdmi), EVADE_US);
     Ok(Some(ScanoutResize {
         pipe,
@@ -478,6 +572,12 @@ pub fn plan_scanout_resize(caps: &DisplayCaps, a: &AdoptedDisplay, fw: &Firmware
         hscale: pf.hscale,
         vscale: pf.vscale,
         wm_levels: kept,
+        ddb_blocks: ddb,
+        ddb_how,
+        wm0_need,
+        vtotal: fw.vtotal,
+        htotal: fw.htotal,
+        dotclock_khz: fw.dotclock_khz,
         forward,
         back,
         surf_reg: pl(PLANE_SURF_1_A),
