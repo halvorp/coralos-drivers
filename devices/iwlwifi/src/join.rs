@@ -23,7 +23,7 @@ use crate::link::*;
 use crate::rt_up::StoredBeacon;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use iwlwifi_fw_tlv_core::capa::CAPA_ULTRA_HB_CHANNELS;
+use iwlwifi_fw_tlv_core::capa::{CAPA_SESSION_PROT_CMD, CAPA_ULTRA_HB_CHANNELS};
 use iwlwifi_mvm_join_core::bss::{offered_rates, parse_beacon, Bss};
 use iwlwifi_mvm_join_core::ctxt::*;
 use iwlwifi_mvm_join_core::dot11::{self, AssocReq, CAP_ESS, CAP_PRIVACY, CAP_SHORT_PREAMBLE, CAP_SHORT_SLOT};
@@ -199,6 +199,25 @@ impl<H: Host> Driver<H> {
             bss.basic_rates
         ));
         let _ = (ant, mac_str(&mac));
+        {
+            let cv = self.fw.cmd_versions();
+            let sp = self.fw.info.capa.has(CAPA_SESSION_PROT_CMD);
+            self.log(format_args!(
+                "[IWL-JOIN-FW session_prot_capa={} uhb={} te_ver={} te_notif_ver={} phy_ver={} binding_ver={} mac_ver={} add_sta_ver={}]",
+                sp as u8,
+                self.fw.info.capa.has(CAPA_ULTRA_HB_CHANNELS) as u8,
+                cv.cmd_ver(LEGACY_GROUP, TIME_EVENT_CMD, 0),
+                cv.notif_ver(LEGACY_GROUP, TIME_EVENT_NOTIFICATION, 0),
+                cv.cmd_ver(LEGACY_GROUP, PHY_CONTEXT_CMD, 0),
+                cv.cmd_ver(LEGACY_GROUP, BINDING_CONTEXT_CMD, 0),
+                cv.cmd_ver(LEGACY_GROUP, MAC_CONTEXT_CMD, 0),
+                cv.cmd_ver(LEGACY_GROUP, ADD_STA, 0),
+            ));
+            if sp {
+                // iwl_mvm_protect_assoc would send SESSION_PROTECTION_CMD (MAC_CONF_GROUP), which is not ported.
+                return Err(JoinError::new("request", JoinWhy::Unsupported("firmware wants SESSION_PROTECTION_CMD")));
+            }
+        }
 
         let link = Link {
             bssid: bss.bssid,
@@ -331,37 +350,56 @@ impl<H: Host> Driver<H> {
         }
     }
 
-    /// Hold the channel while authenticating and associating. // iwl_mvm_protect_session
+    /// Hold the channel while authenticating and associating. // iwl_mvm_protect_session, mvm/time-event.c
+    ///
+    /// The command response only hands back the unique id (Linux never reads its `status`); whether the firmware could
+    /// schedule the event is the START notification's `status`. A start that was not executed is a named refusal: for a
+    /// station that is not associated Linux reports connection loss (`iwl_mvm_te_check_disconnect`). A start that does
+    /// not arrive within `max_delay` is logged and the join goes on, as `iwl_mvm_protect_session` does.
     fn join_time_event(&mut self, beacon_int: u16) -> Result<(), JoinError> {
-        let duration = beacon_int as u32 * 2; // OpenBSD iwm_auth: two beacon intervals
-        let max_delay = (beacon_int as u32 / 2).max(1);
+        // Linux's numbers, not OpenBSD's (2 x beacon interval, max_delay half of one: 200 / 50 TU at 100 TU, which
+        // left the firmware scheduler 50 TU to find a slot). // iwl_mvm_protect_assoc, mvm/mac80211.c:2604-2627
+        let _ = beacon_int;
+        let duration = TE_SESSION_PROTECTION_MAX_TIME;
+        let max_delay = TE_PROTECT_ASSOC_MAX_DELAY;
         let mut b = [0u8; 40];
         let n = time_event_protect(self.rt.mac_id, COLOR, duration, max_delay, &mut b).map_err(|e| JoinError::new("te", JoinWhy::Encode(e)))?;
         let rx = self.jcmd("te", TIME_EVENT_CMD, &b[..n])?;
-        let uid = match time_event_resp(&rx.payload) {
-            Ok(u) => u,
+        let resp = match time_event_resp(&rx.payload, TE_BSS_STA_AGGRESSIVE_ASSOC) {
+            Ok(r) => r,
             Err(e) => {
-                // the firmware's refusal, with both frames: what was asked (36 B) and what came back (16 B), so the next boot names the field
+                // the firmware's answer is not a TE response for this event: both frames, so the boot names the field
                 self.log(format_args!("[IWL-JOIN-TE-REFUSED cmd={:02x?} resp={:02x?}]", &b[..n], &rx.payload[..rx.payload.len().min(32)]));
                 return Err(JoinError::new("te", JoinWhy::TimeEvent(e)));
             }
         };
+        let uid = resp.unique_id;
         self.link_mut("te")?.te_uid = Some(uid);
-        self.log(format_args!("[IWL-JOIN-TE ok uid={uid} duration={duration}TU]"));
-        // Linux waits for the start notification for up to max_delay TU; it is not fatal if the notification is late.
+        self.log(format_args!(
+            "[IWL-JOIN-TE resp status={:#x} id={} uid={uid:#x} idc={:#x} duration={duration}TU max_delay={max_delay}TU]",
+            resp.status, resp.id, resp.id_and_color
+        ));
         let wait_ms = (max_delay as u64 * 1024 / 1000) as u32 + 5;
-        match self.t.wait_notif(wait_ms, |r| r.group == LEGACY_GROUP && r.cmd == TIME_EVENT_NOTIFICATION) {
-            Ok(rx) => {
-                let p = &rx.payload;
-                if p.len() >= 24 {
-                    let action = u32::from_le_bytes([p[16], p[17], p[18], p[19]]);
-                    let status = u32::from_le_bytes([p[20], p[21], p[22], p[23]]);
-                    self.log(format_args!("[IWL-JOIN-TE start action={action} status={status}]"));
+        let is_ours = move |r: &crate::transport::Rx| {
+            r.group == LEGACY_GROUP && r.cmd == TIME_EVENT_NOTIFICATION && time_event_notif(&r.payload).is_ok_and(|n| n.unique_id == uid)
+        };
+        match self.t.wait_notif(wait_ms, is_ours) {
+            Ok(rx) => match time_event_notif(&rx.payload) {
+                Ok(nf) => {
+                    self.log(format_args!("[IWL-JOIN-TE start action={:#x} status={} gp2={:#x}]", nf.action, nf.status, nf.timestamp));
+                    if nf.status == 0 {
+                        // "Time Event start notification failure": the scheduler found no slot. The event is gone in
+                        // the firmware (iwl_mvm_te_clear_data), so there is nothing to remove.
+                        self.link_mut("te")?.te_uid = None;
+                        return Err(JoinError::new("te", JoinWhy::TimeEvent(TimeEventRefusal::NotExecuted(nf.action))));
+                    }
                 }
-            }
-            Err(crate::transport::TransportError::Timeout { .. }) => self.log(format_args!("[IWL-JOIN-TE start notification late]")),
+                Err(e) => return Err(JoinError::new("te", JoinWhy::TimeEvent(e))),
+            },
+            Err(crate::transport::TransportError::Timeout { .. }) => self.log(format_args!("[IWL-JOIN-TE start notification late wait_ms={wait_ms}]")),
             Err(e) => return Err(JoinError::new("te", JoinWhy::Transport(e))),
         }
+        self.log(format_args!("[IWL-JOIN-TE ok uid={uid:#x} duration={duration}TU]"));
         Ok(())
     }
 

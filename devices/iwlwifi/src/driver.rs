@@ -324,8 +324,9 @@ impl<H: Host> Driver<H> {
                         Ok(rx) => {
                             if rx.cmd == CALIB_RES_NOTIF_PHY_DB {
                                 // iwl_wait_phy_db_entry -> iwl_phy_db_set_section: keep it for the RT image. // mvm/fw.c:240-259
-                                if let Err(e) = self.phydb.set_section(&rx.payload) {
-                                    self.log(format_args!("[IWL-PHYDB REFUSED {e:?}]"));
+                                match self.phydb.set_section(&rx.payload) {
+                                    Ok(st) => self.log(format_args!("[IWL-PHYDB type={} group={} size={}]", st.ty, st.chg_id, st.size)),
+                                    Err(e) => self.log(format_args!("[IWL-PHYDB REFUSED {e:?}]")),
                                 }
                             }
                             reply = rx.payload;

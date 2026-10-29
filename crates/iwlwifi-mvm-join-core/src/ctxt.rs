@@ -113,23 +113,69 @@ pub fn time_event_remove(mac_id: u8, mac_color: u8, unique_id: u32, out: &mut [u
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimeEventRefusal {
-    /// The response is not a `struct iwl_time_event_resp`; carries its length.
+    /// The response is not a `struct iwl_time_event_resp`; carries its length. // time-event.c: "Invalid TIME_EVENT_CMD response"
     Length(usize),
-    /// Status bit 0 clear: the firmware refused the event; carries the status word.
-    NotScheduled(u32),
+    /// The response names another time event type (`resp->id != te_data->id`); carries the id. // time-event.c WARN_ON_ONCE
+    WrongId(u32),
+    /// The notification is not a `struct iwl_time_event_notif`; carries its length.
+    NotifLength(usize),
+    /// The start notification says the firmware could not schedule the event (`notif->status == 0`, "Time Event start
+    /// notification failure"); for a station not yet associated Linux then reports connection loss. Carries the action.
+    /// // iwl_mvm_te_handle_notif, iwl_mvm_te_check_disconnect, mvm/time-event.c
+    NotExecuted(u32),
 }
 
-/// The response to `TIME_EVENT_CMD`: `{ status, id, unique_id, id_and_color }`; returns the unique id.
-/// Status bit 0 is success. // struct iwl_time_event_resp, fw/api/time-event.h; iwl_mvm_time_event_response
-pub fn time_event_resp(payload: &[u8]) -> Result<u32, TimeEventRefusal> {
+/// `struct iwl_time_event_resp` (MAC_TIME_EVENT_RSP_API_S_VER_1). // fw/api/time-event.h:238-243
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeEventResp {
+    pub status: u32,
+    pub id: u32,
+    pub unique_id: u32,
+    pub id_and_color: u32,
+}
+
+/// The response to `TIME_EVENT_CMD`, judged as Linux and FreeBSD judge it: the length must be the struct's and `id`
+/// the type that was asked for; `status` is NOT a verdict. "The FW sends the start/end time event notifications even
+/// for events that it fails to schedule. This is indicated in the status field of the notification." Whether the event
+/// was scheduled is read from the notification ([`time_event_notif`]). An earlier port refused `status == 0` here,
+/// which Linux never does. // iwl_mvm_time_event_response, mvm/time-event.c:555-582; iwm_time_event_response,
+/// FreeBSD sys/dev/iwm/if_iwm_time_event.c:262-289
+pub fn time_event_resp(payload: &[u8], want_id: u32) -> Result<TimeEventResp, TimeEventRefusal> {
     if payload.len() != TIME_EVENT_RESP_LEN {
         return Err(TimeEventRefusal::Length(payload.len()));
     }
-    let status = le32(payload, 0);
-    if status & 1 == 0 {
-        return Err(TimeEventRefusal::NotScheduled(status));
+    let r = TimeEventResp { status: le32(payload, 0), id: le32(payload, 4), unique_id: le32(payload, 8), id_and_color: le32(payload, 12) };
+    if r.id != want_id {
+        return Err(TimeEventRefusal::WrongId(r.id));
     }
-    Ok(le32(payload, 8))
+    Ok(r)
+}
+
+/// `struct iwl_time_event_notif` (MAC_TIME_EVENT_NTFY_API_S_VER_1). // fw/api/time-event.h:255-262
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimeEventNotif {
+    pub timestamp: u32,
+    pub session_id: u32,
+    pub unique_id: u32,
+    pub id_and_color: u32,
+    pub action: u32,
+    /// "true if scheduled, false otherwise (not executed)".
+    pub status: u32,
+}
+
+/// Decode `TIME_EVENT_NOTIFICATION`. // iwl_mvm_te_notif, mvm/time-event.c:521-553
+pub fn time_event_notif(payload: &[u8]) -> Result<TimeEventNotif, TimeEventRefusal> {
+    if payload.len() != TIME_EVENT_NOTIF_LEN {
+        return Err(TimeEventRefusal::NotifLength(payload.len()));
+    }
+    Ok(TimeEventNotif {
+        timestamp: le32(payload, 0),
+        session_id: le32(payload, 4),
+        unique_id: le32(payload, 8),
+        id_and_color: le32(payload, 12),
+        action: le32(payload, 16),
+        status: le32(payload, 20),
+    })
 }
 
 // ------------------------------------------------------------------------------------ MAC context

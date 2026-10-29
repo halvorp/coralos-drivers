@@ -240,9 +240,13 @@ impl<H: Host> Driver<H> {
         match self.t.send_cmd(LEGACY_GROUP, cmd, 0, &[Chunk { data: payload, nocopy: false }]) {
             Ok(rx) => {
                 self.rt.cmds += 1;
+                // every join command and its answer's first word, so a refusal names its step
+                let w0 = rx.payload.get(..4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]));
+                self.log(format_args!("[IWL-JCMD {stage} cmd={cmd:#04x} len={} resp_len={} w0={w0:#x?}]", payload.len(), rx.payload.len()));
                 Ok(rx)
             }
             Err(e) => {
+                self.log(format_args!("[IWL-JCMD {stage} cmd={cmd:#04x} len={} FAILED {e:?}]", payload.len()));
                 let _ = self.nic_fault_check(stage);
                 Err(JoinError::new(stage, JoinWhy::Transport(e)))
             }

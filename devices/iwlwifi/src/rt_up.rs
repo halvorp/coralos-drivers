@@ -276,7 +276,10 @@ impl<H: Host> Driver<H> {
             idx += 1;
         }
         self.nic_fault_check("phy_db")?;
-        self.log(format_args!("[IWL-RT-CMD phy_db ok sections={sent} bytes={bytes}]"));
+        let (n_papd, n_txp) = self.phydb.n_groups();
+        let n_of = |t: u16| self.phydb.send_order().filter(|(ty, _)| *ty == t).count();
+        let (s_papd, s_txp) = (n_of(iwlwifi_mvm_rt_core::phydb::CALIB_CHG_PAPD), n_of(iwlwifi_mvm_rt_core::phydb::CALIB_CHG_TXP));
+        self.log(format_args!("[IWL-RT-CMD phy_db ok sections={sent} bytes={bytes} papd={s_papd}/{n_papd} txp={s_txp}/{n_txp}]"));
 
         let cfg = PhyCfgV1::new(self.fw.info.phy_config.unwrap_or(0), self.valid_tx_ant, self.valid_rx_ant, 0, self.fw.regular_calib.flow_trigger, self.fw.regular_calib.event_trigger);
         let n = encode_phy_cfg_v1(&cfg, &mut b[..PHY_CFG_CMD_V1_LEN]).expect("12 bytes fit");

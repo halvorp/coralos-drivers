@@ -142,15 +142,33 @@ fn time_event_remove_bytes_and_response() {
     assert_eq!(u32::from_le_bytes(b[4..8].try_into().unwrap()), 3);
     assert_eq!(u32::from_le_bytes(b[8..12].try_into().unwrap()), 0x1234);
 
+    // { status, id, unique_id, id_and_color }: status is not a verdict (iwl_mvm_time_event_response never reads it)
     let mut r = [0u8; 16];
     put(&mut r, 0, &le32(1));
+    put(&mut r, 4, &le32(TE_BSS_STA_AGGRESSIVE_ASSOC));
     put(&mut r, 8, &le32(77));
-    assert_eq!(time_event_resp(&r), Ok(77));
+    put(&mut r, 12, &le32(0x201));
+    assert_eq!(time_event_resp(&r, TE_BSS_STA_AGGRESSIVE_ASSOC), Ok(TimeEventResp { status: 1, id: 0, unique_id: 77, id_and_color: 0x201 }));
     put(&mut r, 0, &le32(0));
-    assert_eq!(time_event_resp(&r), Err(TimeEventRefusal::NotScheduled(0)));
-    put(&mut r, 0, &le32(2)); // bit 0 clear
-    assert_eq!(time_event_resp(&r), Err(TimeEventRefusal::NotScheduled(2)));
-    assert_eq!(time_event_resp(&r[..12]), Err(TimeEventRefusal::Length(12)));
+    assert_eq!(time_event_resp(&r, TE_BSS_STA_AGGRESSIVE_ASSOC).map(|x| x.unique_id), Ok(77), "status 0 still carries the uid (Atlas 9260 fw 46 answered 0)");
+    put(&mut r, 4, &le32(5));
+    assert_eq!(time_event_resp(&r, TE_BSS_STA_AGGRESSIVE_ASSOC), Err(TimeEventRefusal::WrongId(5)));
+    assert_eq!(time_event_resp(&r[..12], TE_BSS_STA_AGGRESSIVE_ASSOC), Err(TimeEventRefusal::Length(12)));
+    assert_eq!(TE_BSS_STA_AGGRESSIVE_ASSOC, 0); // fw/api/time-event.h:13
+    assert_eq!(TIME_EVENT_RESP_LEN, 16);
+}
+
+#[test]
+fn time_event_notification_fields() {
+    // struct iwl_time_event_notif { timestamp, session_id, unique_id, id_and_color, action, status }: fw/api/time-event.h:255-262
+    let mut n = [0u8; 24];
+    for (i, v) in [0x1111u32, 0x2222, 77, 0x201, 1, 0].iter().enumerate() {
+        put(&mut n, 4 * i, &le32(*v));
+    }
+    let d = time_event_notif(&n).unwrap();
+    assert_eq!(d, TimeEventNotif { timestamp: 0x1111, session_id: 0x2222, unique_id: 77, id_and_color: 0x201, action: 1, status: 0 });
+    assert_eq!(time_event_notif(&n[..20]), Err(TimeEventRefusal::NotifLength(20)));
+    assert_eq!(TIME_EVENT_NOTIF_LEN, 24);
 }
 
 const NODE: [u8; 6] = [0x12, 0x22, 0x33, 0x44, 0x55, 0x66];

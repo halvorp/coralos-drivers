@@ -45,6 +45,12 @@ pub const TE_V2_START_IMMEDIATELY: u16 = 1 << 11; // fw/api/time-event.h:177
 pub const TIME_EVENT_CMD_LEN: usize = 36; // fw/api/time-event.h:214
 /// `sizeof(struct iwl_time_event_resp)`.
 pub const TIME_EVENT_RESP_LEN: usize = 16; // fw/api/time-event.h:238
+/// The session protection `iwl_mvm_protect_assoc` asks for without SESSION_PROT_CMD: duration and max_delay, in TU
+/// (Linux passes the `_MS` constant straight into the TU fields). // mvm/time-event.h:58, mvm/mac80211.c:2606,2625-2626
+pub const TE_SESSION_PROTECTION_MAX_TIME: u32 = 600; // time-event.h:58 IWL_MVM_TE_SESSION_PROTECTION_MAX_TIME_MS
+pub const TE_PROTECT_ASSOC_MAX_DELAY: u32 = 500; // mac80211.c:2626 iwl_mvm_protect_session(.., 500, false)
+/// `sizeof(struct iwl_time_event_notif)`.
+pub const TIME_EVENT_NOTIF_LEN: usize = 24; // fw/api/time-event.h:255-262
 
 // ---- station ----
 pub const STA_MODE_ADD: u8 = 0; // fw/api/sta.h:171

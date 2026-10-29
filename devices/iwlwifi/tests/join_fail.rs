@@ -32,6 +32,38 @@ fn authentication_refused_leaves_nothing_behind() {
 }
 
 #[test]
+fn a_time_event_response_with_status_zero_still_joins() {
+    // Linux (iwl_mvm_time_event_response) and FreeBSD never read the response's status; the Atlas 9260 fw 46 answered
+    // 0 and an earlier port refused the join for it ([IWL-JOIN FAIL stage=te TimeEvent(NotScheduled(0))]).
+    let (sim, mut d) = ready();
+    let mut a = JoinAp::new("CoralNet", 0x01, 6, None);
+    a.te_resp_status = 0;
+    put_ap(&sim, a);
+    d.join(&req("CoralNet", Security::Open, None)).expect("status 0 in the TE response is not a refusal");
+    assert!(log_has(&sim, "[IWL-JOIN-TE resp status=0x0 id=0 uid=0x77"));
+    assert!(log_has(&sim, "[IWL-JOIN-TE start action=0x1 status=1"));
+    no_violations(&sim);
+}
+
+#[test]
+fn a_time_event_the_firmware_could_not_schedule_is_a_named_refusal_and_the_driver_still_scans() {
+    let (sim, mut d) = ready();
+    let mut a = JoinAp::new("CoralNet", 0x01, 6, None);
+    a.te_start_status = 0;
+    put_ap(&sim, a);
+    let e = fails(&mut d, &req("CoralNet", Security::Open, None));
+    use iwlwifi_mvm_join_core::ctxt::TimeEventRefusal;
+    assert_eq!((e.stage, e.why.clone()), ("te", JoinWhy::TimeEvent(TimeEventRefusal::NotExecuted(1))));
+    assert!(d.link().is_none());
+    contexts_gone(&sim);
+    assert!(!sim.w().fw.rt.join.te, "no REMOVE of an event the firmware already dropped");
+    no_violations(&sim);
+    // the refusal leaves the device serving: a second join attempt runs, and fails the same named way
+    let e = fails(&mut d, &req("CoralNet", Security::Open, None));
+    assert_eq!(e.stage, "te");
+}
+
+#[test]
 fn association_refused_names_the_status() {
     let (sim, mut d) = ready();
     let mut a = JoinAp::new("CoralNet", 0x01, 6, None);

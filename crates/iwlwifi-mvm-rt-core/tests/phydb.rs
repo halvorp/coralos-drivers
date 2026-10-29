@@ -62,7 +62,24 @@ fn refusals_are_named() {
     assert_eq!(db.set_section(&[1, 0, 9, 0, 1, 2]), Err(PhyDbError::Short), "length says 9, 2 follow");
     assert_eq!(db.set_section(&notif(3, &[1])), Err(PhyDbError::BadType(3)), "IWL_PHY_DB_UNUSED");
     assert_eq!(db.set_section(&notif(6, &[1])), Err(PhyDbError::BadType(6)));
-    assert_eq!(db.set_section(&notif(CALIB_CHG_PAPD, &group(16, &[]))), Err(PhyDbError::GroupOutOfRange(16)));
-    assert_eq!(db.set_section(&notif(CFG, &vec![0u8; MAX_SECTION + 1])), Err(PhyDbError::TooLarge(CFG)));
     assert_eq!(db.n_groups(), (0, 0), "a refused section leaves no trace");
+    // the first PAPD index sizes the table (iwl-phy-db.c: kzalloc chg_id + 1); a later larger one is -EINVAL
+    db.set_section(&notif(CALIB_CHG_PAPD, &group(1, &[]))).unwrap();
+    assert_eq!(db.set_section(&notif(CALIB_CHG_PAPD, &group(2, &[]))), Err(PhyDbError::GroupOutOfRange(CALIB_CHG_PAPD, 2, 2)));
+}
+
+#[test]
+fn a_txp_section_larger_than_one_kib_is_kept_whole() {
+    // Atlas 9260 fw 46 at INIT: eight TXP sections were refused by a 1 KiB cap. Linux kmemdups any u16 length.
+    let mut db = PhyDb::new();
+    let big: Vec<u8> = (0..3000u32).map(|i| i as u8).collect();
+    let d = group(7, &big);
+    let st = db.set_section(&notif(CALIB_CHG_TXP, &d)).unwrap();
+    assert_eq!(st, Stored { ty: CALIB_CHG_TXP, chg_id: 7, size: d.len() });
+    let d0 = group(0, &[0xaa; 1500]);
+    db.set_section(&notif(CALIB_CHG_TXP, &d0)).unwrap();
+    assert_eq!(db.n_groups(), (0, 8));
+    let got: Vec<(u16, usize)> = db.send_order().map(|(t, b)| (t, b.len())).collect();
+    assert_eq!(got, vec![(1, 0), (2, 0), (5, 1502), (5, 3002)]);
+    assert_eq!(db.send_order().last().unwrap().1, &d[..], "the whole section, group id first");
 }

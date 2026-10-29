@@ -38,11 +38,15 @@ pub struct JoinAp {
     pub tx_status: u16,
     /// From the Nth frame the host sends on, the TX status reports a failure.
     pub fail_tx_from: Option<usize>,
+    /// The `status` word of the TIME_EVENT_CMD response (Linux never reads it) and of the START notification
+    /// ("true if scheduled, false otherwise (not executed)", fw/api/time-event.h:253).
+    pub te_resp_status: u32,
+    pub te_start_status: u32,
 }
 
 impl JoinAp {
     pub fn new(ssid: &str, last: u8, channel: u8, pmk: Option<[u8; 32]>) -> JoinAp {
-        JoinAp { bssid: [0x02, 0xaa, 0xbb, 0xcc, 0xdd, last], ssid: ssid.as_bytes().to_vec(), channel, pmk, auth_status: 0, assoc_status: 0, aid: 3, ignore_auth: 0, ignore_assoc: 0, no_m1: false, tx_status: 1, fail_tx_from: None }
+        JoinAp { bssid: [0x02, 0xaa, 0xbb, 0xcc, 0xdd, last], ssid: ssid.as_bytes().to_vec(), channel, pmk, auth_status: 0, assoc_status: 0, aid: 3, ignore_auth: 0, ignore_assoc: 0, no_m1: false, tx_status: 1, fail_tx_from: None, te_resp_status: 1, te_start_status: 1 }
     }
     pub fn five(&self) -> bool {
         self.channel > 14
@@ -284,21 +288,23 @@ pub(super) fn time_event(w: &mut World, c: &SeenCmd, o: &mut Out) -> Vec<u8> {
         // { id_and_color 0, action ADD, id AGGRESSIVE_ASSOC (0), apply_time 0, max_delay, depends_on 0, interval 1, duration, repeat 1, frags 0, policy 0x0803 }
         o.need(le32(p, 0) == MAC_ID && le32(p, 8) == 0 && le32(p, 12) == 0 && le32(p, 20) == 0 && le32(p, 24) == 1, || format!("TIME_EVENT_CMD ADD fields: {:02x?}", p));
         o.need(p[32] == 1 && p[33] == 0 && le16(p, 34) == 0x0803, || "TIME_EVENT_CMD repeat/frags/policy are not 1 / NONE / START|END|START_IMMEDIATELY".into());
-        o.need(le32(p, 28) == 200 && le32(p, 16) == 50, || format!("TIME_EVENT_CMD duration {} / max_delay {} (beacon interval 100 TU: 200 / 50)", le32(p, 28), le32(p, 16)));
+        o.need(le32(p, 28) == 600 && le32(p, 16) == 500, || format!("TIME_EVENT_CMD duration {} / max_delay {} (iwl_mvm_protect_assoc: 600 / 500, mac80211.c:2606,2626)", le32(p, 28), le32(p, 16)));
         let j = &mut w.fw.rt.join;
         o.need(j.sta && j.binding, || "TIME_EVENT_CMD before the station exists".into());
         o.need(!j.te, || "TIME_EVENT_CMD ADD while one is scheduled".into());
-        j.te = true;
-        // the start notification: { timestamp, session_id, unique_id, id_and_color, action START (1), status 1 }
+        let (resp_status, start_status) = j.ap.as_ref().map_or((1, 1), |a| (a.te_resp_status, a.te_start_status));
+        // an event the scheduler could not place is gone in the firmware after its failed START (iwl_mvm_te_clear_data)
+        j.te = start_status != 0;
+        // the start notification: { timestamp, session_id, unique_id, id_and_color, action START (1), status }
         let mut n = vec![0u8; 24];
         n[8..12].copy_from_slice(&TE_UID.to_le_bytes());
         n[16..20].copy_from_slice(&1u32.to_le_bytes());
-        n[20..24].copy_from_slice(&1u32.to_le_bytes());
+        n[20..24].copy_from_slice(&start_status.to_le_bytes());
         w.fw.notif_counter += 1;
         let seq = 0x8000 | w.fw.notif_counter;
         post_cmd(w, 700, 0x2a, seq, n);
         let mut r = vec![0u8; 16];
-        r[0..4].copy_from_slice(&1u32.to_le_bytes());
+        r[0..4].copy_from_slice(&resp_status.to_le_bytes());
         r[8..12].copy_from_slice(&TE_UID.to_le_bytes());
         r
     } else {

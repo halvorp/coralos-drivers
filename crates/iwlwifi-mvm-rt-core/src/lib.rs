@@ -15,7 +15,7 @@
 //! Copyright (C) 2015-2017 Intel Deutschland GmbH. The Linux files are `GPL-2.0 OR BSD-3-Clause`; this port is
 //! distributed under GPL-2.0-only.
 //!
-//! No MMIO, no allocation, no I/O. Left out on purpose (Linux does it, this crate does not): the smart-FIFO command
+//! No MMIO, no I/O; the one allocation is the PHY database (`phydb`, sized as Linux sizes it). Left out on purpose (Linux does it, this crate does not): the smart-FIFO command
 //! (`iwl_mvm_sf_update`; the firmware advertises no SMART_FIFO_OFFLOAD, so Linux sends an async SF_CFG_CMD with
 //! state INIT_OFF), LARI/PPAG/SAR/GEO/SGOM/TAS/UATS/RFI configuration (BIOS tables a Chromebook lacks), the LTR
 //! command (`ltr_enabled` is read from PCI config space, which is the config authority's), RSS/RXQ configuration
