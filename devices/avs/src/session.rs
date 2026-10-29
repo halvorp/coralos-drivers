@@ -221,12 +221,9 @@ impl Dsp {
     /// Fold the hardware position in and refill. Called for each serviced period interrupt.
     pub fn on_periods<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<(), PumpError> {
         let pos = rig.read(lpib(self.host.index))?;
-        if pos == u32::MAX {
-            // an all-ones read is a function that is not answering, not a position: named, never folded in as `stream-error 0xff`
-            return Err(PumpError::StreamUnreadable);
-        }
         if !self.acct.advance_hw(pos) {
-            return Err(PumpError::StreamError { sts: 0xff });
+            // all-ones: a function that is not answering, not a position (a reading at the ring's size is the wrap: RingAcct::position)
+            return Err(PumpError::StreamUnreadable);
         }
         refill(rig, &bufs.ring, &mut self.acct, fifo, if self.hold { Mode::Hold } else { Mode::Run });
         self.last_period_ms = rig.now();

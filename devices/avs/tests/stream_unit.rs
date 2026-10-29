@@ -40,10 +40,24 @@ fn the_hardware_position_is_wrap_corrected_and_a_dead_register_is_not_a_position
     assert_eq!(a.played_frames(), (16384 + 2048) / 4);
     let before = a;
     assert!(!a.advance_hw(0xffff_ffff), "all-ones is a dead register");
-    assert!(!a.advance_hw(16384), "a position AT the ring's size is not inside it");
     assert_eq!(a, before);
     assert!(a.advance_hw(2048), "no movement is zero bytes");
     assert_eq!(a.hw_total, before.hw_total);
+}
+
+#[test]
+fn a_position_at_or_past_the_ring_size_is_the_wrap_as_linux_reads_it_never_a_stream_error() {
+    // Linux avs_component_pointer (sound/soc/intel/avs/pcm.c:1337-1338): `if (pos >= hdac_stream(host_stream)->bufsize) pos = 0;` - the
+    // position register reads the buffer's size at the wrap. Atlas 2026-10-29 ("green mountain dune"): every session ended in
+    // [AVS-DEV FAULT step=stream-error detail=0xff], the on_periods refusal of exactly such a reading. FAILING FIRST: refused (false).
+    let mut a = RingAcct::new(16384, 4096, 4);
+    a.commit(Fill { pcm: 16384, silence: 0 }, false);
+    assert!(a.advance_hw(12288));
+    assert!(a.advance_hw(16384), "LPIB == the ring's size is position 0");
+    assert_eq!((a.hw_total, a.last_lpib()), (16384, 0));
+    assert_eq!(a.hw_delta(4096), Some(4096));
+    assert!(a.advance_hw(20000), "past it too, as Linux reads it: 0");
+    assert_eq!(a.hw_total, 16384, "0 after 0 is no movement");
 }
 
 #[test]
