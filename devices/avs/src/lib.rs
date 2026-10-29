@@ -38,6 +38,7 @@ pub mod fwexec;
 pub mod gpio;
 pub mod i2c;
 pub mod ipcrun;
+pub mod irqmode;
 pub mod jack;
 pub mod log;
 pub mod machine;

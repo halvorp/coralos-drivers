@@ -210,7 +210,8 @@ pub fn refill<M: Machine>(rig: &mut Rig<M>, ring: &DmaRegion, acct: &mut RingAcc
     acct.commit(fill, mode == Mode::Run);
 }
 
-fn lpib(index: u32) -> Reg {
+/// The host stream's link position in buffer (`SD_LPIB`).
+pub(crate) fn lpib(index: u32) -> Reg {
     Reg { space: Space::Hda, off: hda_ext_core::consts::SD_BASE + hda_ext_core::consts::SD_INTERVAL * index + AZX_REG_SD_LPIB, width: Width::D32 }
 }
 
@@ -230,6 +231,16 @@ impl Dsp {
     pub fn service<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<bool, PumpError> {
         self.pump.service_irq(rig)?;
         rig.m.rearm_avs_irq();
+        self.after_service(rig, bufs, fifo)
+    }
+
+    /// Poll mode ([`crate::irqmode`]): look at the causes the interrupt would have signalled, then the ring if a period completed.
+    pub fn poll<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<bool, PumpError> {
+        self.pump.look(rig)?;
+        self.after_service(rig, bufs, fifo)
+    }
+
+    fn after_service<M: Machine>(&mut self, rig: &mut Rig<M>, bufs: &Bufs, fifo: &mut Fifo) -> Result<bool, PumpError> {
         if self.pump.pend.periods > 0 {
             self.pump.pend.periods = 0;
             self.on_periods(rig, bufs, fifo)?;
@@ -245,7 +256,9 @@ impl Dsp {
             return Ok(());
         }
         self.last_tick_ms = now;
-        if let Wake::AvsIrq = rig.wait(Some(now), Want::IRQ_ONLY) {
+        if rig.irq_poll {
+            self.poll(rig, bufs, fifo)?;
+        } else if let Wake::AvsIrq = rig.wait(Some(now), Want::IRQ_ONLY) {
             self.service(rig, bufs, fifo)?;
         } else if self.pump.pend.periods > 0 {
             // periods the pump counted while it waited for something else (an IPC reply) are still owed their refill

@@ -302,7 +302,8 @@ impl I2cAllow {
             (2, 1) => u16::from_be_bytes([wr[0], wr[1]]),
             _ => return Err(I2cRefusal::AmplifierShape { addr }),
         };
-        let readable_only = read_len == 1 && reg == max98373_core::regs::R21FF_REV_ID;
+        // read-only diagnostics: the revision, and the interrupt/fault banks read after a speaker session starts (never written)
+        let readable_only = read_len == 1 && (reg == max98373_core::regs::R21FF_REV_ID || max98373_core::regs::STATUS_READBACK.contains(&reg));
         if readable_only || self.amp_regs.contains(&reg) {
             Ok(())
         } else {

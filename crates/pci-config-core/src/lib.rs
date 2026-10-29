@@ -16,4 +16,5 @@
 
 pub mod bar;
 pub mod capability;
+pub mod msi;
 pub mod regs;

@@ -29,6 +29,7 @@ dependencies = [
  "i2c-designware-core",
  "i2c-designware-master-core",
  "max98373-core",
+ "pci-config-core",
 ]
 
 [[package]]
@@ -100,4 +101,8 @@ checksum = "2b23ac50abb8261cb38c6e2a7192d3302e0836dac1628f6a93b82b4fad185897"
 
 [[package]]
 name = "max98373-core"
+version = "0.1.0"
+
+[[package]]
+name = "pci-config-core"
 version = "0.1.0"

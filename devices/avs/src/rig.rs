@@ -22,11 +22,16 @@ pub struct Rig<M: Machine> {
     pub refused: Refusals,
     /// The first refusal's name, kept for the status line.
     pub first_refusal: Option<&'static str>,
+    /// The cAVS interrupt cannot reach this task (the function's MSI is not enabled, or an interrupt was found pending that never woke
+    /// the wait): the pump LOOKS at the causes on a bounded clock instead of blocking on the line. See [`crate::irqmode`].
+    pub irq_poll: bool,
+    /// Waits that timed out with their cause already pending in the hardware: interrupts that never arrived.
+    pub lost_irqs: u32,
 }
 
 impl<M: Machine> Rig<M> {
     pub fn new(m: M, allow: Allow, i2c: I2cAllow, pads: PadAllow) -> Self {
-        Self { m, allow, i2c, pads, refused: Refusals::default(), first_refusal: None }
+        Self { m, allow, i2c, pads, refused: Refusals::default(), first_refusal: None, irq_poll: false, lost_irqs: 0 }
     }
 
     fn note(&mut self, what: &'static str) {

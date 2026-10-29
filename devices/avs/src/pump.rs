@@ -98,12 +98,14 @@ pub struct Pump {
     spurious: u32,
     /// How many interrupts were serviced, for the status and the tests.
     pub serviced: u64,
+    /// How many looks without a firing found a cause (poll mode; the last look of a wait).
+    pub looked: u64,
 }
 
 impl Pump {
     /// A fresh pump for one DSP boot: not ready until the DSP says `FW_READY`.
     pub fn new(correlation: Correlation) -> Self {
-        Self { ipc: Ipc::new(correlation), pend: Pending::default(), reply: Vec::new(), stream: None, spurious: 0, serviced: 0 }
+        Self { ipc: Ipc::new(correlation), pend: Pending::default(), reply: Vec::new(), stream: None, spurious: 0, serviced: 0, looked: 0 }
     }
 
     fn hda_sts(&self, index: u32) -> Reg {
@@ -112,6 +114,20 @@ impl Pump {
 
     /// Service one firing of the line. Returns whether anything was handled.
     pub fn service_irq<M: Machine>(&mut self, rig: &mut Rig<M>) -> Result<bool, PumpError> {
+        self.service(rig, true)
+    }
+
+    /// Look at the causes without the line having fired (poll mode, and the last look of a timed-out wait): the same service, but a look
+    /// that finds nothing is not a spurious interrupt and is not counted towards [`PumpError::IrqStorm`].
+    pub fn look<M: Machine>(&mut self, rig: &mut Rig<M>) -> Result<bool, PumpError> {
+        let found = self.service(rig, false)?;
+        if found {
+            self.looked = self.looked.saturating_add(1);
+        }
+        Ok(found)
+    }
+
+    fn service<M: Machine>(&mut self, rig: &mut Rig<M>, fired: bool) -> Result<bool, PumpError> {
         let mut handled = false;
         if let Some(index) = self.stream {
             let is = rig.read32(Space::Hda, AZX_REG_INTSTS)?;
@@ -136,7 +152,7 @@ impl Pump {
         if handled {
             self.spurious = 0;
             self.serviced += 1;
-        } else {
+        } else if fired {
             self.spurious += 1;
             if self.spurious >= SPURIOUS_LIMIT {
                 return Err(PumpError::IrqStorm);
@@ -230,6 +246,11 @@ impl Pump {
 
     /// Block until `cond` holds of what has been reported, or `deadline_ms` (absolute) passes. `Ok(true)` when it held. Only the cAVS
     /// interrupt wakes it; the client's requests and the jack stay queued for the main loop.
+    ///
+    /// POLL MODE ([`crate::irqmode`], `rig.irq_poll`): the interrupt cannot reach the task, so the causes are looked at every
+    /// [`crate::irqmode::WAIT_POLL_MS`] instead - a bounded timed wait between looks, never a spin. In line mode a wait that reaches its
+    /// deadline looks ONCE more: a cause found pending then is an interrupt that never arrived, which is named
+    /// (`[AVS-DEV IRQ-LOST ..]`), counted (`rig.lost_irqs`), and switches the device to poll mode for the rest of its life.
     pub fn wait_for<M: Machine>(&mut self, rig: &mut Rig<M>, deadline_ms: u64, cond: impl Fn(&Pending) -> bool) -> Result<bool, PumpError> {
         loop {
             if let Some(e) = self.pend.exception {
@@ -238,10 +259,24 @@ impl Pump {
             if cond(&self.pend) {
                 return Ok(true);
             }
-            if rig.now() >= deadline_ms {
+            let now = rig.now();
+            if now >= deadline_ms {
+                if rig.irq_poll {
+                    return Ok(false);
+                }
+                let found = self.look(rig)?;
+                if found && cond(&self.pend) {
+                    rig.lost_irqs = rig.lost_irqs.saturating_add(1);
+                    rig.irq_poll = true;
+                    crate::log::emit(&mut rig.m, format_args!("[AVS-DEV IRQ-LOST cause pending at the deadline, no interrupt woke the wait lost={} -> mode=poll]", rig.lost_irqs));
+                    return Ok(true);
+                }
                 return Ok(false);
             }
-            if let Wake::AvsIrq = rig.wait(Some(deadline_ms), Want::IRQ_ONLY) {
+            if rig.irq_poll {
+                rig.sleep_ms(crate::irqmode::WAIT_POLL_MS.min(deadline_ms - now));
+                self.look(rig)?;
+            } else if let Wake::AvsIrq = rig.wait(Some(deadline_ms), Want::IRQ_ONLY) {
                 self.service_irq(rig)?;
                 rig.m.rearm_avs_irq();
             }

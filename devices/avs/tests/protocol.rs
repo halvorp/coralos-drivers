@@ -456,14 +456,19 @@ fn while_playing_the_only_timers_are_the_watchdog_and_the_plans_own_bounded_slee
     // the steady state: every wait of the main loop wants the stream interrupt, the requests and the jack, with the watchdog as its deadline
     let steady = &dev.rig.m.waits[n..];
     assert!(steady.len() >= 20);
+    // the one other deadline is the session's +100 ms position probe (avs_device::device::PROBE_AT_MS: a one-shot diagnostic, not a poll);
+    // the +1 s probe lies past this window
+    assert_eq!(avs_device::device::PROBE_AT_MS, [100, 1000]);
+    let probes: Vec<_> = steady.iter().filter(|w| w.woke == avs_device::machine::Wake::Deadline).collect();
+    assert!(probes.len() <= 1, "only the +100 ms position probe may end a wait on its deadline: {probes:?}");
     for w in steady {
         assert!(w.want.avs_irq && w.want.requests && w.want.jack, "{w:?}");
         let d = w.deadline_ms.expect("a running stream has its watchdog");
-        assert!(d * 1000 > w.at_us || w.woke != avs_device::machine::Wake::Deadline);
+        assert!(d * 1000 > w.at_us || w.woke != avs_device::machine::Wake::Deadline || probes.len() == 1);
     }
     // wakeups are the periods (21.3 ms): about 23 in 500 ms, not a poll
     let irqs = steady.iter().filter(|w| w.woke == avs_device::machine::Wake::AvsIrq).count();
     assert!((20..=26).contains(&irqs), "{irqs} interrupt wakeups in 500 ms");
-    assert!(steady.iter().all(|w| w.woke != avs_device::machine::Wake::Deadline));
+    assert!(dev.rig.m.logs.iter().any(|l| l.starts_with("[AVS-DEV POS t=100ms")), "the +100 ms probe is on the log");
 }
 

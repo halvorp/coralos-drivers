@@ -171,6 +171,11 @@ pub trait Machine {
     fn wait(&mut self, deadline_ms: Option<u64>, want: Want) -> Wake;
     /// Re-arm the cAVS interrupt line after its cause was serviced (mandatory for a level line).
     fn rearm_avs_irq(&mut self);
+    /// Does the task hold a cAVS interrupt line it may wait on? (Provided: a host without the notion has one.) [`crate::irqmode`] polls
+    /// the causes when it does not.
+    fn avs_irq_granted(&self) -> bool {
+        true
+    }
     /// Consume one pending jack event without waiting; true if there was one. The loop looks here BEFORE it serves anything else, so a
     /// removal is handled ahead of the requests queued behind it.
     fn take_jack_event(&mut self) -> bool;

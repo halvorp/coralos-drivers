@@ -38,6 +38,7 @@ avs-boot-core = { path = "../../crates/avs-boot-core" }
 hda-ext-core = { path = "../../crates/hda-ext-core" }
 da7219-core = { path = "../../crates/da7219-core" }
 max98373-core = { path = "../../crates/max98373-core" }
+pci-config-core = { path = "../../crates/pci-config-core" }
 i2c-core-msg-core = { path = "../../crates/i2c-core-msg-core" }
 i2c-designware-core = { path = "../../crates/i2c-designware-core" }
 i2c-designware-master-core = { path = "../../crates/i2c-designware-master-core" }

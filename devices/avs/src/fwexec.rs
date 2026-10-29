@@ -195,6 +195,7 @@ pub fn perform<M: Machine>(rig: &mut Rig<M>, pump: &mut Pump, ctx: &mut FwCtx<'_
             if pump.wait_for(rig, deadline, |p| p.fw_ready)? {
                 Input::EventFired
             } else {
+                crate::irqmode::snapshot(rig, step.label);
                 Input::EventTimedOut
             }
         }
@@ -203,6 +204,7 @@ pub fn perform<M: Machine>(rig: &mut Rig<M>, pump: &mut Pump, ctx: &mut FwCtx<'_
             if pump.wait_for(rig, deadline, |p| p.cldma.is_some())? {
                 Input::IocStatus(pump.pend.cldma.take().unwrap_or(0))
             } else {
+                crate::irqmode::snapshot(rig, step.label);
                 Input::EventTimedOut
             }
         }

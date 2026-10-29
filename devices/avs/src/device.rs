@@ -116,7 +116,14 @@ pub struct Device<M: Machine> {
     pub stats: Stats,
     /// The busy-wake guard (spinguard.rs): the serve loop parks, and says which wake, when it would otherwise burn a core.
     spin: crate::spinguard::SpinGuard,
+    /// The running session's position probes ([`PROBE_AT_MS`]): absolute deadlines, taken in order, cleared with the session.
+    pub(crate) probes: [Option<u64>; 2],
 }
+
+/// When, after a session comes up, the device writes what the hardware did: the host stream's link position (did the DMA move: the
+/// DSP is pulling, so its pipeline runs and the SSP drains it), the periods and underruns, the interrupt counters, and on the speaker
+/// path the amplifiers' fault banks and, at the last probe, every pipeline's state as the DSP reports it.
+pub const PROBE_AT_MS: [u64; 2] = [100, 1000];
 
 impl<M: Machine> Device<M> {
     /// A device that has touched nothing. [`Device::start`] runs the ladder.
@@ -157,6 +164,7 @@ impl<M: Machine> Device<M> {
             rx: alloc::vec::Vec::new(),
             stats: Stats::default(),
             spin: crate::spinguard::SpinGuard::default(),
+            probes: [None, None],
         }
     }
 
@@ -414,6 +422,7 @@ impl<M: Machine> Device<M> {
 
     /// Bring a DSP session up for the open stream. On failure the device is left in the safe state with the fault recorded.
     pub fn start_session(&mut self) -> Result<(), StartFail> {
+        self.settle_irq_mode();
         let t0 = self.rig.m.now_ms();
         match self.try_start() {
             Ok(dsp) => {
@@ -426,7 +435,9 @@ impl<M: Machine> Device<M> {
                     self.st.speaker_hold = SpeakerHold::Released;
                 }
                 self.rig.m.rearm_avs_irq();
-                emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION up in {} ms output={}]", ms, self.dsp.as_ref().map_or("none", |d| d.out.name())));
+                emit(&mut self.rig.m, format_args!("[AVS-DEV SESSION up in {} ms output={} irq={} lost={}]", ms, self.dsp.as_ref().map_or("none", |d| d.out.name()), if self.rig.irq_poll { "poll" } else { "line" }, self.rig.lost_irqs));
+                let now = self.rig.now();
+                self.probes = [Some(now + PROBE_AT_MS[0]), Some(now + PROBE_AT_MS[1])];
                 Ok(())
             }
             Err(e) => {
@@ -442,6 +453,7 @@ impl<M: Machine> Device<M> {
 
     /// Take the session down (if there is one), fold its counters into the stream, and record whether the codec is verifiably safe.
     pub fn stop_session(&mut self, graceful: bool) {
+        self.probes = [None, None];
         let Some(dsp) = self.dsp.take() else { return };
         if let Some(s) = self.stream.as_mut() {
             s.played_base += dsp.acct.played_frames();
@@ -592,12 +604,11 @@ impl<M: Machine> Device<M> {
 
     // ---- the loop ----
 
-    fn next_deadline(&self) -> Option<u64> {
+    fn next_deadline(&self, now: u64) -> Option<u64> {
         let wd = self.dsp.as_ref().map(|d| d.last_period_ms + WATCHDOG_MS);
-        match (self.gnd_deadline, wd) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        // poll mode: a running stream is looked at on a clock, since no interrupt will wake the wait
+        let poll = if self.dsp.is_some() && self.rig.irq_poll { Some(now + crate::irqmode::STREAM_POLL_MS) } else { None };
+        [self.gnd_deadline, wd, poll, self.probes[0], self.probes[1]].into_iter().flatten().min()
     }
 
     /// One blocking wait and what it woke for.
@@ -608,7 +619,8 @@ impl<M: Machine> Device<M> {
             self.on_jack_event();
             return Wake::Jack;
         }
-        let deadline = self.next_deadline();
+        let now = self.rig.now();
+        let deadline = self.next_deadline(now);
         let want = Want { avs_irq: self.dsp.is_some(), jack: jack_ok, requests: self.session, accept: !self.session };
         let wake = self.rig.wait(deadline, want);
         // ... and the same after the wait: whatever woke the task, a jack event that arrived with it goes first, so the request or the
@@ -663,11 +675,19 @@ impl<M: Machine> Device<M> {
     }
 
     fn on_avs_irq(&mut self) {
+        self.service_stream(false);
+    }
+
+    /// The stream's interrupt causes: serviced after the line fired, or LOOKED at on the poll clock ([`crate::irqmode`]).
+    fn service_stream(&mut self, polled: bool) {
         let (Some(dsp), Some(bufs), Some(stream)) = (self.dsp.as_mut(), self.bufs.as_ref(), self.stream.as_mut()) else {
-            self.rig.m.rearm_avs_irq();
+            if !polled {
+                self.rig.m.rearm_avs_irq();
+            }
             return;
         };
-        match dsp.service(&mut self.rig, bufs, &mut stream.fifo) {
+        let r = if polled { dsp.poll(&mut self.rig, bufs, &mut stream.fifo) } else { dsp.service(&mut self.rig, bufs, &mut stream.fifo) };
+        match r {
             Ok(true) => {
                 self.stats.periods += 1;
                 self.send_period_event();
@@ -685,7 +705,16 @@ impl<M: Machine> Device<M> {
     }
 
     fn on_deadline(&mut self) {
+        if self.dsp.is_some() && self.rig.irq_poll {
+            self.service_stream(true);
+        }
         let now = self.rig.now();
+        for i in 0..self.probes.len() {
+            if self.probes[i].is_some_and(|d| now >= d) {
+                self.probes[i] = None;
+                self.probe_report(PROBE_AT_MS[i], i + 1 == self.probes.len());
+            }
+        }
         if self.gnd_deadline.is_some_and(|d| now >= d) {
             self.gnd_deadline = None;
             // armed by the contact being made, which is before the jack has been classified: it is the codec's own record that decides
@@ -700,6 +729,67 @@ impl<M: Machine> Device<M> {
         }
         if self.dsp.as_ref().is_some_and(|d| now >= d.last_period_ms + WATCHDOG_MS) {
             self.fault("period-timeout", 0);
+        }
+    }
+
+    /// Measure the cAVS interrupt's delivery (the function's MSI state, the line) and choose blocking or polling; one ring line. Run at
+    /// every session start: the configuration authority may have programmed the MSI since the last one.
+    fn settle_irq_mode(&mut self) {
+        match crate::irqmode::settle(&mut self.rig) {
+            Ok((p, mode)) => {
+                let (m, why) = match mode {
+                    crate::irqmode::IrqMode::Line if self.rig.irq_poll => ("poll", "lost-irq-earlier"),
+                    crate::irqmode::IrqMode::Line => ("line", "msi-enabled-or-no-msi-cap"),
+                    crate::irqmode::IrqMode::Poll(w) => ("poll", w.name()),
+                };
+                emit(
+                    &mut self.rig.m,
+                    format_args!(
+                        "[AVS-DEV IRQ mode={} why={} line={} msi-cap={:#x} msi-flags={:#06x} msi-addr={:#x} msi-data={:#x} cmd={:#06x} sts={:#06x} lost={}]",
+                        m, why, p.line_granted, p.msi_cap.unwrap_or(0), p.msi_flags, p.msi_addr_lo, p.msi_data, p.command, p.status, self.rig.lost_irqs
+                    ),
+                );
+            }
+            Err(e) => emit(&mut self.rig.m, format_args!("[AVS-DEV IRQ mode=unknown why=config-read-{} poll={}]", e.name(), self.rig.irq_poll)),
+        }
+    }
+
+    /// One position probe of the running session (see [`PROBE_AT_MS`]). Reads only, plus (at the last probe) one GET_PIPELINE_STATE per
+    /// pipeline, which the DSP answers without changing anything.
+    fn probe_report(&mut self, at_ms: u64, last: bool) {
+        let Some(dsp) = self.dsp.as_mut() else { return };
+        let lpib = self.rig.read(session::lpib(dsp.host.index)).unwrap_or(0xdead_dead);
+        emit(
+            &mut self.rig.m,
+            format_args!(
+                "[AVS-DEV POS t={}ms output={} lpib={:#x} hw_bytes={} played={} pcm_fed={} underruns={} gain={:#x} serviced={} looks={} poll={} lost={}]",
+                at_ms, dsp.out.name(), lpib, dsp.acct.hw_total, dsp.acct.played_frames(), dsp.acct.pcm_fed, dsp.acct.underruns, dsp.gain, dsp.pump.serviced, dsp.pump.looked, self.rig.irq_poll, self.rig.lost_irqs
+            ),
+        );
+        if dsp.out == Output::Speakers {
+            if let Some(s) = self.speakers.as_ref() {
+                let mut tag = crate::log::Line::new();
+                let _ = core::fmt::Write::write_fmt(&mut tag, format_args!("t={}ms", at_ms));
+                s.report_status(&mut self.rig, tag.as_str());
+            }
+        }
+        if last {
+            let Some(dsp) = self.dsp.as_mut() else { return };
+            let mut line = crate::log::Line::new();
+            let _ = core::fmt::Write::write_fmt(&mut line, format_args!("[AVS-DEV PPL t={}ms", at_ms));
+            for p in dsp.running.pipelines.iter() {
+                let state = match avs_ipc_core::request::get_pipeline_state(p.ppl) {
+                    Ok(req) => match crate::ipcrun::begin(&mut self.rig, &mut dsp.pump, &req, 0, false) {
+                        Ok(crate::ipcrun::Drive::Done(c)) => avs_ipc_core::header::REPLY_PPL_STATE.get(c.header) as i64,
+                        _ => -1,
+                    },
+                    Err(_) => -2,
+                };
+                let _ = core::fmt::Write::write_fmt(&mut line, format_args!(" ppl{}={}", p.ppl, ppl_state_name(state)));
+            }
+            let _ = core::fmt::Write::write_str(&mut line, "]");
+            line.finish();
+            self.rig.m.log(line.as_str());
         }
     }
 
@@ -733,5 +823,20 @@ impl<M: Machine> Device<M> {
     /// For the jack module.
     pub(crate) fn classify(&self, report: &da7219_core::aad::JackReport) -> Jack {
         jack_after(report, self.jack)
+    }
+}
+
+/// `enum avs_pipeline_state` (messages.h:306-312, avs-ipc-core's constants) as the ring prints it; negative: the query failed.
+fn ppl_state_name(state: i64) -> &'static str {
+    use avs_ipc_core::header::{AVS_PPL_STATE_INVALID, AVS_PPL_STATE_PAUSED, AVS_PPL_STATE_RESET, AVS_PPL_STATE_RUNNING, AVS_PPL_STATE_UNINITIALIZED};
+    match state {
+        -1 => "ipc-failed",
+        -2 => "request-refused",
+        s if s == AVS_PPL_STATE_INVALID as i64 => "invalid",
+        s if s == AVS_PPL_STATE_UNINITIALIZED as i64 => "uninitialized",
+        s if s == AVS_PPL_STATE_RESET as i64 => "reset",
+        s if s == AVS_PPL_STATE_PAUSED as i64 => "paused",
+        s if s == AVS_PPL_STATE_RUNNING as i64 => "running",
+        _ => "unknown",
     }
 }

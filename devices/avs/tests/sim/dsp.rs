@@ -108,6 +108,8 @@ pub struct Dsp {
     /// Knobs.
     pub rom_never_ready: bool,
     pub fw_never_ready: bool,
+    /// The code loader moves nothing and never signals completion (a DMA that does not run).
+    pub cl_never_signals: bool,
     pub hook: Option<Hook>,
     /// Everything seen.
     pub reqs: Vec<Req>,
@@ -137,6 +139,7 @@ impl Dsp {
             basefw_len,
             rom_never_ready: false,
             fw_never_ready: false,
+            cl_never_signals: false,
             hook: None,
             reqs: vec![],
             ppl_state: vec![],
@@ -297,7 +300,7 @@ impl Dsp {
     /// The code loader reads what the host wrote since the last read.
     fn cl_consume(&mut self, read_mem: &dyn Fn(u64, usize) -> Vec<u8>) {
         let avail = self.cl_written - self.cl_consumed;
-        if avail == 0 {
+        if avail == 0 || self.cl_never_signals {
             return;
         }
         let size = self.r32(cl_sd(AZX_REG_SD_CBL)) as u64;

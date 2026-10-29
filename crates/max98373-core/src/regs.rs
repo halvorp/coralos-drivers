@@ -4,6 +4,15 @@
 //! addresses, 8-bit values (`max98373-i2c.c`, `max98373_regmap`: `reg_bits = 16`, `val_bits = 8`).
 
 pub const R2000_SW_RESET: u16 = 0x2000; // max98373.h:7
+pub const R2001_INT_RAW1: u16 = 0x2001; // max98373.h:8
+pub const R2002_INT_RAW2: u16 = 0x2002; // max98373.h:9
+pub const R2003_INT_RAW3: u16 = 0x2003; // max98373.h:10
+pub const R2004_INT_STATE1: u16 = 0x2004; // max98373.h:11
+pub const R2005_INT_STATE2: u16 = 0x2005; // max98373.h:12
+pub const R2006_INT_STATE3: u16 = 0x2006; // max98373.h:13
+pub const R2007_INT_FLAG1: u16 = 0x2007; // max98373.h:14
+pub const R2008_INT_FLAG2: u16 = 0x2008; // max98373.h:15
+pub const R2009_INT_FLAG3: u16 = 0x2009; // max98373.h:16
 pub const R2020_PCM_TX_HIZ_EN_1: u16 = 0x2020; // max98373.h:30
 pub const R2021_PCM_TX_HIZ_EN_2: u16 = 0x2021; // max98373.h:31
 pub const R2022_PCM_TX_SRC_1: u16 = 0x2022; // max98373.h:32
@@ -70,3 +79,9 @@ pub const PCM_TO_SPK_MONOMIX_CFG_SHIFT: u8 = 6; // max98373.h:143
 pub const PCM_TO_SPK_CH0_SRC_MASK: u8 = 0xF; // max98373.h:144
 pub const SPK_EN_MASK: u8 = 0x1; // max98373.h:162
 pub const GLOBAL_EN_MASK: u8 = 0x1; // max98373.h:204
+
+/// The status registers a diagnostic READS and never writes: the raw, state and latched-flag interrupt banks (thermal, clock, brownout,
+/// PVDD/VBAT faults). Reading them has no side effect (the flags clear only through `INT_FLAG_CLR*`, max98373.h:20-22, which no plan
+/// writes). The I2C fence admits a one-byte read of these and of the revision, nothing else outside the write set.
+pub const STATUS_READBACK: [u16; 9] =
+    [R2001_INT_RAW1, R2002_INT_RAW2, R2003_INT_RAW3, R2004_INT_STATE1, R2005_INT_STATE2, R2006_INT_STATE3, R2007_INT_FLAG1, R2008_INT_FLAG2, R2009_INT_FLAG3];

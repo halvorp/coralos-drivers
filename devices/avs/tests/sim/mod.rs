@@ -120,6 +120,8 @@ pub struct Sim {
     pub i2c_cost_us: u64,
     /// The cAVS interrupt line is stuck asserted (a cause nobody can clear).
     pub force_irq: bool,
+    /// The cAVS causes are raised in the registers but the interrupt NEVER reaches the task (an MSI nobody programmed: Atlas 2026-10-29).
+    pub irq_undelivered: bool,
     /// The speaker-reset pad reads high whatever is driven (something else holds the amplifiers out of reset).
     pub pad_stuck_high: bool,
     /// The speaker-reset pad reads low whatever is driven (the amplifiers can never be released from reset).
@@ -196,6 +198,7 @@ impl Sim {
             layout_ready_calls: 0,
             i2c_cost_us: 300,
             force_irq: false,
+            irq_undelivered: false,
             pad_stuck_high: false,
             pad_stuck_low: false,
         }
@@ -301,7 +304,7 @@ impl Sim {
     }
 
     fn ready(&self, want: Want) -> Option<Wake> {
-        if want.avs_irq && self.irq_level() {
+        if want.avs_irq && !self.irq_undelivered && self.irq_level() {
             return Some(Wake::AvsIrq);
         }
         if want.accept && self.listen_pending > 0 {

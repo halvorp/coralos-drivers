@@ -7,6 +7,15 @@ use max98373_core::regs;
 fn the_registers_are_the_header_s() {
     for (name, got, want) in [
         ("R2000_SW_RESET", regs::R2000_SW_RESET, 0x2000u16),
+        ("R2001_INT_RAW1", regs::R2001_INT_RAW1, 0x2001),
+        ("R2002_INT_RAW2", regs::R2002_INT_RAW2, 0x2002),
+        ("R2003_INT_RAW3", regs::R2003_INT_RAW3, 0x2003),
+        ("R2004_INT_STATE1", regs::R2004_INT_STATE1, 0x2004),
+        ("R2005_INT_STATE2", regs::R2005_INT_STATE2, 0x2005),
+        ("R2006_INT_STATE3", regs::R2006_INT_STATE3, 0x2006),
+        ("R2007_INT_FLAG1", regs::R2007_INT_FLAG1, 0x2007),
+        ("R2008_INT_FLAG2", regs::R2008_INT_FLAG2, 0x2008),
+        ("R2009_INT_FLAG3", regs::R2009_INT_FLAG3, 0x2009),
         ("R2020_PCM_TX_HIZ_EN_1", regs::R2020_PCM_TX_HIZ_EN_1, 0x2020),
         ("R2021_PCM_TX_HIZ_EN_2", regs::R2021_PCM_TX_HIZ_EN_2, 0x2021),
         ("R2022_PCM_TX_SRC_1", regs::R2022_PCM_TX_SRC_1, 0x2022),
@@ -137,5 +146,15 @@ fn the_table_has_the_controls_the_ucm_names_and_only_registers_the_crate_knows()
                 panic!("{} and {} overlap in {:#06x}", a.name, b.name, a.reg);
             }
         }
+    }
+}
+
+#[test]
+fn the_status_readback_is_the_nine_interrupt_banks_and_none_is_written() {
+    // max98373.h:8-16, typed by hand
+    assert_eq!(regs::STATUS_READBACK, [0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009]);
+    let written = max98373_core::plan::written_registers(&max98373_core::plan::ATLAS_AMPS).unwrap();
+    for r in regs::STATUS_READBACK {
+        assert!(!written.contains(&r), "{r:#06x} is a status register and must never be written");
     }
 }

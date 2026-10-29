@@ -302,6 +302,9 @@ impl Machine for RtMachine {
             _ => Wake::Request,
         }
     }
+    fn avs_irq_granted(&self) -> bool {
+        self.irq.is_some() && !self.irq_denied
+    }
     fn rearm_avs_irq(&mut self) {
         if let Some(i) = self.irq.as_mut() {
             // an edge/MSI vector has nothing to re-arm; a refused arm is not a fault of the device
