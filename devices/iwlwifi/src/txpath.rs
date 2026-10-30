@@ -84,6 +84,23 @@ impl<H: Host> Transport<H> {
                     }
                 }
                 Wake::Deadline => {
+                    // LAST LOOK (Atlas 2026-10-30: [IWL-RT FAIL stage=paging ... host command] on every boot of one stick, with
+                    // nothing to say whether the card never answered or its interrupt never arrived): before giving up, service
+                    // whatever cause is pending once. A reply found now is a LOST INTERRUPT - named, and the command completes.
+                    let before = self.stats.irqs;
+                    let serviced = self.service_irq();
+                    let spurious = self.stats.spurious;
+                    if let Some(r) = self.reply.take() {
+                        self.awaiting = None;
+                        crate::host::say(self.host(), format_args!(
+                            "[iwlwifi] host command 0x{:02x}/0x{:02x}: reply found at the {} ms deadline with no interrupt [IWL-IRQ-LOST irqs={} spurious={}]",
+                            group, opcode, HOST_COMPLETE_TIMEOUT_MS, before, spurious));
+                        return Ok(r);
+                    }
+                    let pending = matches!(serviced, Ok(ref s) if !s.nothing);
+                    crate::host::say(self.host(), format_args!(
+                        "[iwlwifi] host command 0x{:02x}/0x{:02x}: no reply in {} ms [IWL-HCMD-TIMEOUT irqs={} spurious={} cause_pending_at_deadline={}]",
+                        group, opcode, HOST_COMPLETE_TIMEOUT_MS, before, spurious, pending as u8));
                     // "Error sending %s: time out after %dms." then iwl_trans_pcie_sync_nmi. // tx.c:2585-2598
                     self.awaiting = None;
                     self.nic.csr_write(CSR_RESET, CSR_RESET_REG_FLAG_FORCE_NMI);
