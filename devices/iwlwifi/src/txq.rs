@@ -31,7 +31,7 @@ pub const PAYLOAD_SLOT: usize = 2048;
 /// Bytes of one device-command slot: `iwl_cmd_header` + `iwl_tx_cmd_v6_params` + a header of up to 36 bytes + pad.
 pub const CMD_SLOT: usize = 128;
 /// The scheduler's byte-count table has this many entries per queue. // iwl-fh.h:590-594
-pub const TFD_QUEUE_BC_SIZE: usize = 256 + 64;
+pub const TFD_QUEUE_BC_SIZE: usize = iwlwifi_pcie_ring_core::txregs::MAX_TFD_QUEUE_SIZE as usize + 64;
 /// `TFD_QUEUE_SIZE_BC_DUP`: the first entries are duplicated after the 256th. // iwl-fh.h:590-594
 pub const TFD_QUEUE_SIZE_BC_DUP: usize = 64;
 

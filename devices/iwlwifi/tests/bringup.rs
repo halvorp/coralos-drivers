@@ -406,7 +406,7 @@ fn the_real_9260_46_file_comes_up_on_the_simulated_card() {
     assert_eq!(rep.alive.lmac.ucode_major, 46);
 }
 
-/// The 2026-10-16 Atlas silicon failure (teal-maple-glade-ring): `[IWL-FW-LOADED FAIL IWL-NIC-ACCESS
+/// The Atlas silicon failure: `[IWL-FW-LOADED FAIL IWL-NIC-ACCESS
 /// AccessTimeout { gp_cntrl: 134479880 }]` = 0x08040008 = HW_RF_KILL_SW | bit 18 | MAC_ACCESS_REQ, with INIT_DONE and
 /// MAC_CLOCK_READY CLEAR. The card gives no clock to an access request made before INIT_DONE (iwl-csr.h:277-278), so a
 /// `grab` before `apm_init` fails and latches STATUS_TRANS_DEAD. Linux reads HPM_DEBUG in `clear_persistence_bit` with

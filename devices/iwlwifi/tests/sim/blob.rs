@@ -152,15 +152,18 @@ pub fn from_file(bytes: Vec<u8>) -> Blob {
     let mut o = 88usize;
     let (mut n_scan, mut paging_size) = (0usize, 0usize);
     while o + 8 <= bytes.len() {
-        let ty = u32::from_le_bytes(bytes[o..o + 4].try_into().unwrap());
-        let len = u32::from_le_bytes(bytes[o + 4..o + 8].try_into().unwrap()) as usize;
-        let d = &bytes[o + 8..o + 8 + len];
-        let s = || SecModel { offset: u32::from_le_bytes(d[0..4].try_into().unwrap()), data: d[4..].to_vec() };
+        let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("a 4-byte slice"));
+        let (ty, len) = (word(o), word(o + 4) as usize);
+        let end = o.checked_add(8).and_then(|e| e.checked_add(len)).filter(|e| *e <= bytes.len());
+        let Some(end) = end else { panic!("firmware file truncated: the TLV at offset {o:#x} claims {len} bytes of {}", bytes.len()) };
+        let d = &bytes[o + 8..end];
+        assert!(d.len() >= 4 || !matches!(ty, 19 | 20 | 24 | 25 | 31 | 32), "firmware file: TLV type {ty} at offset {o:#x} is shorter than its leading dword");
+        let s = || SecModel { offset: u32::from_le_bytes(d[0..4].try_into().expect("a 4-byte slice")), data: d[4..].to_vec() };
         match ty {
             19 | 24 => regular.push(s()),
             20 | 25 => init.push(s()),
-            31 => n_scan = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize,
-            32 => paging_size = u32::from_le_bytes(d[0..4].try_into().unwrap()) as usize,
+            31 => n_scan = u32::from_le_bytes(d[0..4].try_into().expect("a 4-byte slice")) as usize,
+            32 => paging_size = u32::from_le_bytes(d[0..4].try_into().expect("a 4-byte slice")) as usize,
             _ => {}
         }
         o += 8 + (len + 3) / 4 * 4;

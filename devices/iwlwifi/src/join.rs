@@ -31,7 +31,6 @@ use iwlwifi_mvm_join_core::ids::*;
 use iwlwifi_mvm_join_core::rates;
 use iwlwifi_mvm_rt_core::encode::encode_scd_queue_cfg_enable;
 use iwlwifi_mvm_rt_core::ids::{ADD_STA, LEGACY_GROUP, MAC_CONTEXT_CMD, PHY_CONTEXT_CMD, SCD_QUEUE_CFG};
-use iwlwifi_pcie_ring_core::tx::Chunk;
 use wpa_supplicant_core::rsne::{self, Akm, Cipher, Rsne};
 use wpa_supplicant_core::{Config as SupConfig, Supplicant};
 
@@ -59,10 +58,6 @@ pub struct JoinReport {
     /// The signal of the beacon the join was made from, dBm.
     pub rssi: i16,
     pub elapsed_ms: u64,
-}
-
-fn mac_str(m: &[u8; 6]) -> [u8; 6] {
-    *m
 }
 
 impl<H: Host> Driver<H> {
@@ -188,7 +183,6 @@ impl<H: Host> Driver<H> {
         let mgmt_rate = rates::lowest_rate(bss.basic_rates, !five);
         let data_rate = pick_data_rate(bss.supported_rates, five);
         let mac = self.mac.ok_or(JoinError::new("request", JoinWhy::NotUp))?;
-        let ant = self.valid_tx_ant;
         self.log(format_args!(
             "[IWL-JOIN-REQ ssid-len={} bssid={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x} ch={channel} band={} sec={} bi={beacon_int} dtim={dtim_period} rates={:#05x} basic={:#05x} mgmt-rate={mgmt_rate} data-rate={data_rate}]",
             bss.ssid.len(),
@@ -198,7 +192,6 @@ impl<H: Host> Driver<H> {
             bss.supported_rates,
             bss.basic_rates
         ));
-        let _ = (ant, mac_str(&mac));
         {
             let cv = self.fw.cmd_versions();
             let sp = self.fw.info.capa.has(CAPA_SESSION_PROT_CMD);
@@ -599,8 +592,6 @@ impl<H: Host> Driver<H> {
         self.link = None;
         self.t.inbox.retain(|r| !(r.group == LEGACY_GROUP && matches!(r.cmd, TX_CMD | iwlwifi_mvm_rt_core::ids::REPLY_RX_MPDU_CMD)));
         self.log(format_args!("[IWL-LINK-GONE]"));
-        let _ = ADD_STA;
-        let _ = Chunk { data: &[], nocopy: false };
     }
 }
 
