@@ -276,9 +276,9 @@ impl<H: Host> Driver<H> {
 
     fn join_contexts(&mut self, bss: &Bss<'_>) -> Result<(), JoinError> {
         let uhb = self.fw.info.capa.has(CAPA_ULTRA_HB_CHANNELS);
-        let (channel, five, mac_addr) = {
+        let (channel, five) = {
             let l = self.link_mut("phy")?;
-            (l.channel, l.five_ghz, l.our_mac)
+            (l.channel, l.five_ghz)
         };
         let tx_ant = self.valid_tx_ant;
         let rx_ant = self.valid_rx_ant;
@@ -322,7 +322,6 @@ impl<H: Host> Driver<H> {
         self.add_sta_cmd("sta", &b[..n])?;
         self.link_mut("sta")?.done.sta = true;
         self.log(format_args!("[IWL-JOIN-STA ok sta={AP_STA_ID} queues={:#x}]", 1u32 << qid));
-        let _ = mac_addr;
         Ok(())
     }
 

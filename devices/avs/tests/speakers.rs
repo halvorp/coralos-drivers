@@ -42,7 +42,7 @@ fn gain_requests(sim: &Sim) -> Vec<u32> {
         .collect()
 }
 
-/// THE INVARIANT, checked at the end of every test that plays on the speakers: nothing above the ceiling was ever sent to the DSP.
+/// The invariant, checked at the end of every test that plays on the speakers: nothing above the ceiling was ever sent to the DSP.
 fn assert_gain_invariant(sim: &Sim) {
     for g in gain_requests(sim) {
         assert!(g <= CEILING_LINEAR, "the DSP volume stage was asked for {g} > ceiling {CEILING_LINEAR}");
@@ -243,7 +243,7 @@ fn every_ucm_protection_cset_is_written_in_order_and_read_back_before_anything_i
     let m = &dev.rig.m;
     let defaults = sim::amp::Amp::new(0).regs;
 
-    // 1. the ordered register list each amplifier received EQUALS the hand-written list (and nothing else was written to it)
+    // 1. the ordered register list each amplifier received equals the hand-written list (and nothing else was written to it)
     let right = expected_writes((4, 5), (0xCF, 0xFF), "Right", &defaults);
     let left = expected_writes((6, 7), (0x3F, 0xFF), "Left", &defaults);
     assert_eq!(m.amp(RIGHT).writes(), right, "the right amplifier's writes, in order");
@@ -257,12 +257,12 @@ fn every_ucm_protection_cset_is_written_in_order_and_read_back_before_anything_i
         let enable = a.txs.iter().find(|t| t.write && t.reg == 0x20FF).map(|t| t.seq).expect("GLOBAL_EN written");
         let last_protection = a.txs.iter().filter(|t| t.write && t.reg != 0x20FF && t.reg != 0x202B && t.reg != 0x2043).map(|t| t.seq).max().unwrap();
         assert!(last_protection < enable, "{addr:#x}: every protection write precedes GLOBAL_EN");
-        // 3. every protection register was READ BACK after its last write and before the enable
+        // 3. every protection register was read back after its last write and before the enable
         for (reg, _) in expected_image(if addr == RIGHT { "Right" } else { "Left" }) {
             let last_write = a.txs.iter().filter(|t| t.write && t.reg == reg).map(|t| t.seq).max().unwrap();
             assert!(a.txs.iter().any(|t| !t.write && t.reg == reg && t.seq > last_write && t.seq < enable), "{addr:#x}: register {reg:#06x} read back before the enable");
         }
-        // the audio clock exists before the part is enabled (power-up waits for the running pipelines), and nothing is CONFIGURED after it
+        // the audio clock exists before the part is enabled (power-up waits for the running pipelines), and nothing is configured after it
         assert!(a.txs.iter().filter(|t| t.write && ![0x20FF, 0x202B, 0x2043].contains(&t.reg)).all(|t| t.seq < dma), "{addr:#x}: nothing is configured once the audio is already flowing");
         assert!(enable > dma, "{addr:#x}: the part is enabled only after the host stream ran");
         assert_eq!(a.enabled_at.len(), 1);
@@ -394,10 +394,6 @@ fn no_client_request_can_raise_the_dsp_gain_above_the_ceiling() {
         assert_eq!(*gain_requests(&dev.rig.m).last().unwrap(), g.min(CEILING_LINEAR));
     }
     assert_gain_invariant(&dev.rig.m);
-    // the volume stage the DSP was created with started SILENT: the first gain request of the whole run is the device's, after the enable
-    let a = dev.rig.m.amp(RIGHT);
-    let enable_seq = a.enabled_at[0];
-    let _ = enable_seq;
 }
 
 #[test]
@@ -437,7 +433,6 @@ fn unplugging_headphones_moves_an_auto_stream_to_the_speakers_and_plugging_moves
     }
     assert_eq!(dev.rig.m.codec.regs[0x6b] & 0x48, 0x08, "the headphone amplifier is on and unmuted");
     // headphones out: the headset path is taken down and the speakers come back
-    let t_before = dev.rig.m.t_us;
     dev.rig.m.at_ms(1, sim::Ev::Unplug);
     run_ms(&mut dev, 600);
     let st = get_status(&mut dev, &mut c);
@@ -446,7 +441,6 @@ fn unplugging_headphones_moves_an_auto_stream_to_the_speakers_and_plugging_moves
     assert!(dev.rig.m.amps.iter().all(|a| a.enabled() && a.enabled_at.len() == 2));
     // the reset was held low at least 50 ms between the two speaker sessions (Linux's msleep(50))
     let pads: Vec<(u32, u64)> = dev.rig.m.pad_writes.iter().map(|w| w.1).zip(dev.rig.m.pad_times_us.iter().copied()).collect();
-    let _ = t_before;
     let mut last_low: Option<u64> = None;
     for (v, t) in pads {
         if v & 1 == 0 {

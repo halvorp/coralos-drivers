@@ -420,7 +420,7 @@ impl<M: Machine> Device<M> {
             self.bufs = Some(session::alloc_bufs(&mut self.rig.m).map_err(StartFail::Dma)?);
         }
         let Some(bufs) = self.bufs.as_ref() else { return Err(StartFail::OutOfMemory) };
-        // the speakers stay held: re-asserted at every session start, so a reset line something else released is caught here
+        // the speakers stay held: re-asserted at every session start, so a reset line that something else released is caught here
         self.st.speaker_hold = match self.speakers.as_mut() {
             Some(s) => s.hold(&mut self.rig),
             None => gpio::hold_speakers(&mut self.rig, board.spkr_rst_pad),

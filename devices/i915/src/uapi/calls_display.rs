@@ -30,7 +30,7 @@ impl UapiService {
                 }
                 Ok(Done::Len(msg::encode_reply::<msg::Empty>(out, Status::Ok, 0, None)?))
             }
-            // the presentation increment (D18, feature `p4-present`): the scanout pair served
+            // the presentation increment (feature `p4-present`): the scanout pair served
             #[cfg(feature = "p4-present")]
             _ => self.call_scanout(hw, h, inc, p, out),
             // a build without that increment refuses them by name, never a silent success

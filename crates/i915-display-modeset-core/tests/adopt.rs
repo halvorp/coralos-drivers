@@ -218,7 +218,7 @@ fn the_old_buffer_is_released_only_after_surflive_shows_the_new_address() {
     // low bits of SURFLIVE are not address bits
     assert!(!s.observe(0x0020_0005));
     assert_eq!(s.state(), LatchState::Confirmed { polls: 3 });
-    assert_eq!(s.release_old_buffer().unwrap(), OldBufferRelease { old_surf: 0x0010_0000 });
+    assert_eq!(s.release_old_buffer().unwrap().old_surf(), 0x0010_0000);
     // once decided, further samples change nothing
     assert!(!s.observe(0));
     assert_eq!(s.state(), LatchState::Confirmed { polls: 3 });

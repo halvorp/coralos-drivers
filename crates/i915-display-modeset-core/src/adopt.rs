@@ -22,7 +22,7 @@ use i915_kbl_display_core::readout::{PipeState, ReadoutState};
 use i915_kbl_display_core::regs::*;
 use i915_kbl_display_core::types::Pipe;
 
-/// THE adoption write allow-list: `PLANE_SURF(PIPE_A, PLANE_1)` and nothing else. `devices/i915` adopts this constant for its
+/// The adoption write allow-list: `PLANE_SURF(PIPE_A, PLANE_1)` and nothing else. `devices/i915` adopts this constant for its
 /// `WriteGuard` when the owner-attended adoption increment is approved; this crate never widens it and the device's own list is
 /// untouched by this change.
 pub const ADOPT_WRITE_ALLOWLIST: [Reg; 1] = [Reg::new(PLANE_SURF_1_A)];
@@ -167,7 +167,14 @@ pub struct AdoptSession {
 /// The right to release the old buffer - constructible only from a confirmed session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OldBufferRelease {
-    pub old_surf: u32,
+    old_surf: u32,
+}
+
+impl OldBufferRelease {
+    /// The `PLANE_SURF` address of the buffer that may now be released.
+    pub const fn old_surf(&self) -> u32 {
+        self.old_surf
+    }
 }
 
 impl AdoptSession {
