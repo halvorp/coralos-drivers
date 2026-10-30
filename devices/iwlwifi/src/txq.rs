@@ -137,7 +137,7 @@ impl<H: Host> Transport<H> {
             iwlwifi_mvm_join_core::txcmd::ByteCountRefusal::TooLong(len) => TransportError::TxByteCount { len },
         })?;
 
-        let tfd_bytes = {
+        {
             let q = &self.dtx[qi];
             let host = &mut self.nic.bus;
             host.dma_write(&q.first_tb, slot * IWL_FIRST_TB_SIZE_ALIGN, &cmd[..IWL_FIRST_TB_SIZE]);
@@ -150,9 +150,7 @@ impl<H: Host> Transport<H> {
                 tfd_add_tb(&mut tfd, q.payload.phys + (slot * PAYLOAD_SLOT) as u64, body.len() as u16, false)?;
             }
             host.dma_write(&q.ring, idx as usize * TFD_SIZE, &tfd);
-            tfd
-        };
-        let _ = tfd_bytes;
+        }
 
         // Set up the entry in the scheduler byte-count table. // tx.c:2268-2272, :2061-2100
         let bc_region = self.tx.as_ref().ok_or(TransportError::IsDown)?.bc;
