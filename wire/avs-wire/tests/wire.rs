@@ -172,6 +172,15 @@ fn a_status_body_round_trips_and_names_its_step() {
 }
 
 #[test]
+fn a_step_name_cut_inside_a_multibyte_character_is_cut_before_it() {
+    let mut s = StatusBody::new();
+    // 30 ASCII bytes, then a 2-byte character that straddles the 31-byte cut
+    let name = format!("{}\u{e9}tail", "a".repeat(30));
+    s.set_step(&name);
+    assert_eq!(s.step_str(), "a".repeat(30), "the half character is dropped, never stored as invalid UTF-8");
+}
+
+#[test]
 fn a_status_body_with_a_bad_field_is_refused_by_name() {
     let mut b = [0u8; 128];
     let n = StatusBody::new().encode(&mut b).unwrap();

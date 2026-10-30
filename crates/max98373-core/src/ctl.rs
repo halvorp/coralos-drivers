@@ -234,5 +234,5 @@ pub fn csets<'a>(list: &'a [Set]) -> impl Iterator<Item = Cset> + 'a {
     list.iter().flat_map(|s| [Cset { side: Side::Left, ctl: s.ctl, value: s.left }, Cset { side: Side::Right, ctl: s.ctl, value: s.right }])
 }
 
-/// Is every register-backed control of `regs` in the table listed in `regs.rs`? (Compile-time reachability only; kept so `regs` is used.)
+/// Compile-time anchor only: it names `regs::R21FF_REV_ID` so the `regs` module is reachable from the crate root. It checks no control.
 pub const _REGS_ARE_THE_CRATES: u16 = regs::R21FF_REV_ID;

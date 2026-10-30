@@ -126,8 +126,6 @@ fn a_speaker_stream_runs_the_protected_path_and_plays_the_clients_samples() {
     assert!(dev.codec_is_safe_for_test());
 
     // stop: silence, amplifiers off, reset low and proven
-    let (id, _, _) = (0, 0, 0);
-    let _ = id;
     let sid = dev.stream.as_ref().unwrap().id;
     let (s, _, _) = call(&mut dev, &mut c, Opcode::StreamStop, &stream_ref(sid));
     assert_eq!(s, Status::Ok);

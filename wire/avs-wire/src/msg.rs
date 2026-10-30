@@ -7,9 +7,10 @@ use crate::{frame, Cause, Jack, Opcode, Route, Status, StreamPhase, WireError, F
 
 /// Build a reply frame: the request's opcode and id, the status, then the body.
 pub fn reply(opcode: Opcode, request_id: u64, status: Status, body: &[u8], out: &mut [u8]) -> Result<usize, WireError> {
-    let mut p = [0u8; 4 + 128];
-    if body.len() > 128 {
-        return Err(WireError::PayloadTooBig { got: body.len() as u32, max: 128 });
+    const MAX_REPLY_BODY: usize = 128;
+    let mut p = [0u8; 4 + MAX_REPLY_BODY];
+    if body.len() > MAX_REPLY_BODY {
+        return Err(WireError::PayloadTooBig { got: body.len() as u32, max: MAX_REPLY_BODY as u32 });
     }
     p[..4].copy_from_slice(&(status as u32).to_le_bytes());
     p[4..4 + body.len()].copy_from_slice(body);

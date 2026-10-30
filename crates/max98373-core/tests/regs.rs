@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The register map, pinned to LINUX LITERALS (max98373.h) typed here by hand, and the control arithmetic against ALSA's.
+//! The register map, pinned to the Linux header literals (max98373.h), and the control arithmetic against ALSA's.
 use max98373_core::ctl::{self, Ctl, CtlError, Kind};
 use max98373_core::regs;
 

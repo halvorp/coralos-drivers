@@ -30,7 +30,10 @@ use avs_wire::{Cause, Jack, Output, Route, SpeakerHold, State, StatusBody};
 use avs_fw_core::effect::Space;
 
 /// A running stream that has seen no period interrupt for this long has stalled: three times the ring.
-pub const WATCHDOG_MS: u64 = 3 * (session::PERIODS as u64 * session::PERIOD_FRAMES as u64 * 1000 / 48_000) + 1;
+pub const WATCHDOG_MS: u64 = 3 * (session::PERIODS as u64 * session::PERIOD_FRAMES as u64 * 1000 / SAMPLE_RATE_HZ) + 1;
+
+/// The one rate the playback path runs at (the `S16_48K_STEREO` format).
+const SAMPLE_RATE_HZ: u64 = 48_000;
 
 /// What a safe-state pass managed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -122,12 +125,11 @@ pub struct Device<M: Machine> {
     line_checked_ms: u64,
 }
 
-/// LINE MODE IS BOUNDED BY THE STREAM, NOT ONLY BY THE RING WATCHDOG. A running stream completes a period every ~21 ms; if two periods'
+/// Line mode is bounded by the stream, not only by the ring watchdog. A running stream completes a period every ~21 ms; if two periods'
 /// time passes with no period served while the line is believed, the device looks at the link position: a position that moved a whole
-/// period or more is a completion the interrupt never delivered (an IOC that never reached GSI 16 - Atlas 2026-10-29, "amber mountain
-/// marsh": the session came up in line mode and then went silent). That is named (`IRQ-LOST`, with the register snapshot), and the
+/// period or more is a completion the interrupt never delivered (an IOC that never reached GSI 16: the session came up in line mode and then went silent). That is named (`IRQ-LOST`, with the register snapshot), and the
 /// device polls for the rest of its life and keeps feeding the stream. A position that did not move is the DMA's, and the watchdog names it.
-pub const LINE_PERIOD_GRACE_MS: u64 = 2 * (session::PERIOD_FRAMES as u64 * 1000 / 48_000) + 1;
+pub const LINE_PERIOD_GRACE_MS: u64 = 2 * (session::PERIOD_FRAMES as u64 * 1000 / SAMPLE_RATE_HZ) + 1;
 
 /// When, after a session comes up, the device writes what the hardware did: the host stream's link position (did the DMA move: the
 /// DSP is pulling, so its pipeline runs and the SSP drains it), the periods and underruns, the interrupt counters, and on the speaker
@@ -878,7 +880,7 @@ impl<M: Machine> Device<M> {
         let want = self.desired_output();
         let have = self.dsp.as_ref().map(|d| d.out);
         if have.is_some() && have != want {
-            // the headphones are out (mute and take the path down NOW, before anything else is serviced), or the other path is wanted
+            // the headphones are out (mute and take the path down immediately, before anything else is serviced), or the other path is wanted
             self.stop_session(true);
         }
         if self.dsp.is_none() && want.is_some() && self.stream.as_ref().is_some_and(|s| s.want_running) && self.fault.is_none() && self.ensure_ready() {

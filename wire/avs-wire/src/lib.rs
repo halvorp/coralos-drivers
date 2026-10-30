@@ -398,6 +398,8 @@ coded! {
 
 /// `StatusBody::step` is this many bytes of ASCII, NUL padded: the name of the step an init failure stopped at.
 pub const STEP_BYTES: usize = 32;
+/// The encoded status body: eight one-byte state fields, the generation (4), the volume level and its pad (2 + 2), the detail (4), a reserved word (4), then the step name.
+/// The grouping below is `8 + 4` (fields and generation), then volume/pad, detail and the reserved word.
 pub const STATUS_BODY_BYTES: usize = 12 + 4 + 4 + 4 + STEP_BYTES;
 
 /// The STATUS: what the device is, why it cannot play, and the facts a UI shows.
@@ -444,10 +446,13 @@ impl StatusBody {
             step: [0; STEP_BYTES],
         }
     }
-    /// Store a step name, cut at 31 bytes so a NUL always ends it.
+    /// Store a step name, cut at 31 bytes (on a character boundary, so `step_str` never rejects the stored bytes) so a NUL always ends it.
     pub fn set_step(&mut self, name: &str) {
         self.step = [0; STEP_BYTES];
-        let n = name.len().min(STEP_BYTES - 1);
+        let mut n = name.len().min(STEP_BYTES - 1);
+        while !name.is_char_boundary(n) {
+            n -= 1;
+        }
         self.step[..n].copy_from_slice(&name.as_bytes()[..n]);
     }
     pub fn step_str(&self) -> &str {

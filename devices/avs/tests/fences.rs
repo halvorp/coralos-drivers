@@ -224,7 +224,7 @@ fn across_a_whole_life_the_amplifiers_are_never_addressed_and_their_reset_is_hel
     assert_eq!(v & (0xf << 10), 0, "GPIO mode");
     assert!(m.pad_writes.iter().all(|(o, v)| *o == off && v & 1 == 0), "the pad is only ever driven low, and only that pad");
     assert_eq!(m.pad_writes.len(), 1 + dev.stats.sessions as usize, "once at start and once per session start");
-    assert!(m.writes.iter().all(|w| w.space != Space::Dsp || w.off != 0 || true));
+    assert!(m.writes.iter().all(|w| w.space != Space::Dsp || w.off != 0));
     // the first hardware effect of the whole life was the pad write: no register had been written yet
     assert_eq!(dev.st.speaker, Speaker::Refused);
     assert_eq!(dev.st.speaker_hold, SpeakerHold::Held);
