@@ -43,6 +43,12 @@ impl<B: Mmio> Executor<B> {
     /// the marker. No step record: an engine resume runs this inside its own `ENGINE-ENABLE` / `*-RESET` step (steps do not nest).
     /// A write the allow-list refuses stops the program by name; a readback mismatch does not (it is reported, as the PAT's is).
     pub fn run_mocs<L: Log>(&mut self, log: &mut L, s: &MocsSettings, plan: MocsWrites, scope: &'static str) -> Result<MocsReport, ExecError> {
+        // EXPERIMENT (Atlas 2026-10-30, branch atlas12-exp-nomocs, NEVER LANDED): leave the firmware's MOCS / LNCFCMOCS untouched to test
+        // whether programming skl_mocs_table caused the cross-window GPU corruption first seen on "amber mountain marsh".
+        let _ = (s, &plan);
+        crate::log::emit(log, format_args!("[I915-MOCS-PROGRAM table=firmware scope={} skipped EXPERIMENT nomocs]", scope));
+        return Ok(MocsReport { table: "firmware", scope, entries: 0, l3cc: 0, mismatches: 0, first_bad: None });
+        #[allow(unreachable_code)]
         let (entries, l3cc) = (plan.control_entries(), plan.l3cc_words());
         let d = self.domains_for(plan.map(|w| w.reg));
         let (mismatches, first_bad) = self.awake(d, |ex| {
