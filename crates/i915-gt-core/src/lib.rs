@@ -18,6 +18,7 @@
 //! | [`irq`] | intel_gt_irq.c | Gen8 GT IIR decode, reset and postinstall plans |
 //! | [`reset`] | intel_reset.c | RESET_CTL handshake + GDRST reset state machine, bounded |
 //! | [`clock_gating`] | intel_clock_gating.c | `kbl_init_clock_gating` as RMW effects |
+//! | [`rps`] | intel_rps.c | the software frequency request (`intel_rps_set_manual`, `gen6_rps_set`) as effects + a timer-driven waitboost |
 //!
 //! Registers live in `i915-gt-regs-core` (intel_gt_regs.h, intel_engine_regs.h and the i915_reg.h registers GT code uses);
 //! command encodings live in `i915-gpu-commands-core` (intel_gpu_commands.h). Nothing is re-typed here.
@@ -34,6 +35,7 @@ pub mod fixed;
 pub mod irq;
 pub mod mocs;
 pub mod reset;
+pub mod rps;
 pub mod sseu;
 pub mod step;
 pub mod wa;

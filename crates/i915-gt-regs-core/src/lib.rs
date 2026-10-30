@@ -99,6 +99,24 @@ pub const RP0_CAP_MASK: u32 = genmask(7, 0); // intel_mchbar_regs.h:226
 pub const RP1_CAP_MASK: u32 = genmask(15, 8); // intel_mchbar_regs.h:227
 pub const RPN_CAP_MASK: u32 = genmask(23, 16); // intel_mchbar_regs.h:228
 
+// ---- Render P-state: the software frequency request (gt/intel_rps.c gen6_rps_set / intel_rps_set_manual) ---------------
+
+/// `GEN6_RPNSWREQ`: the software frequency request the PCU grants (intel_gt_regs.h:772).
+pub const GEN6_RPNSWREQ: Reg = Reg::new(0xa008); // intel_gt_regs.h:772
+/// `GEN9_FREQUENCY(x)` = `x << 23` (intel_gt_regs.h:776): the Gen9+ request field, in 50/3 MHz units.
+pub const GEN9_FREQUENCY_SHIFT: u32 = 23; // intel_gt_regs.h:776
+/// `GEN6_RPSTAT1`: the current actual GT frequency (CAGF) (intel_gt_regs.h:795).
+pub const GEN6_RPSTAT1: Reg = Reg::new(0xa01c); // intel_gt_regs.h:795
+/// `GEN9_CAGF_MASK` = REG_GENMASK(31, 23) (intel_gt_regs.h:798), read by `intel_rps_get_cagf` for GRAPHICS_VER 9..11 (intel_rps.c:2101-2102).
+pub const GEN9_CAGF_MASK: u32 = genmask(31, 23); // intel_gt_regs.h:798
+/// `GEN6_RP_CONTROL` (intel_gt_regs.h:799).
+pub const GEN6_RP_CONTROL: Reg = Reg::new(0xa024); // intel_gt_regs.h:799
+/// `GEN9_RPSWCTL_ENABLE` = 0x2 << GEN6_RPSWCTL_SHIFT (9) (intel_gt_regs.h:813-814): "Allow punit to process software requests"
+/// (`intel_rps_set_manual`, intel_rps.c:2650-2657).
+pub const GEN9_RPSWCTL_ENABLE: u32 = 0x2 << 9; // intel_gt_regs.h:814
+/// `GEN6_RP_ENABLE` (intel_gt_regs.h:807): the hardware's up/down evaluation (only meaningful with its threshold interrupts serviced).
+pub const GEN6_RP_ENABLE: u32 = bit(7); // intel_gt_regs.h:807
+
 // ---- GGTT flush and the private PAT (moved from i915-memory-core, sentinel audit 2026-10-12) ---------------------------
 
 /// GGTT invalidate: writing `GFX_FLSH_CNTL_EN` flushes the write-combining buffer of GGTT PTE stores and the GT TLB.
@@ -110,7 +128,7 @@ pub const GEN8_PRIVATE_PAT_HI: Reg = Reg::new(0x40e0 + 4); // intel_gt_regs.h:33
 
 /// Every register defined above (not the aliases), by Linux's name - the catalog `tests/catalog.rs` checks for aligned,
 /// unique, in-range offsets.
-pub const CATALOG: [(&str, Reg); 23] = [
+pub const CATALOG: [(&str, Reg); 26] = [
     ("FORCEWAKE_GT_GEN9", FORCEWAKE_GT_GEN9),
     ("FORCEWAKE_MEDIA_GEN9", FORCEWAKE_MEDIA_GEN9),
     ("FORCEWAKE_RENDER_GEN9", FORCEWAKE_RENDER_GEN9),
@@ -129,6 +147,9 @@ pub const CATALOG: [(&str, Reg); 23] = [
     ("CTC_MODE", CTC_MODE),
     ("GEN9_TIMESTAMP_OVERRIDE", GEN9_TIMESTAMP_OVERRIDE),
     ("GEN6_RP_STATE_CAP", GEN6_RP_STATE_CAP),
+    ("GEN6_RPNSWREQ", GEN6_RPNSWREQ),
+    ("GEN6_RPSTAT1", GEN6_RPSTAT1),
+    ("GEN6_RP_CONTROL", GEN6_RP_CONTROL),
     ("GFX_FLSH_CNTL_GEN6", GFX_FLSH_CNTL_GEN6),
     ("GEN8_PRIVATE_PAT_LO", GEN8_PRIVATE_PAT_LO),
     ("GEN8_PRIVATE_PAT_HI", GEN8_PRIVATE_PAT_HI),

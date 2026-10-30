@@ -49,6 +49,8 @@ mod mmap_lease;
 #[cfg(feature = "p3-exec")]
 pub mod pool;
 #[cfg(feature = "p3-exec")]
+mod rps;
+#[cfg(feature = "p3-exec")]
 mod service;
 #[cfg(all(feature = "p3-exec", target_arch = "x86_64"))]
 pub mod rt_lease;

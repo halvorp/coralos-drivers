@@ -71,6 +71,8 @@ fn p3_adds_exactly_the_execlist_and_reset_registers() {
         0x120d0,  // RING_RESET_CTL(VCS0, base 0x12000)
         0x1a0d0,  // RING_RESET_CTL(VECS0, base 0x1a000)
         0x941c,   // GEN6_GDRST, intel_gt_regs.h:663
+        0xa008,   // GEN6_RPNSWREQ, intel_gt_regs.h:772 (the frequency request)
+        0xa024,   // GEN6_RP_CONTROL, intel_gt_regs.h:799 (software request mode)
     ]);
     // the MOCS (intel_mocs.c): GEN9_GFX_MOCS(0..64) of rcs0 from 0xc800 (intel_gt_regs.h:1023-1024), GEN9_LNCFCMOCS(0..32) from 0xb020 (:960)
     want.extend((0..64).map(|i| 0xc800 + 4 * i));
@@ -152,6 +154,21 @@ mod planner_write_sets {
             writes.extend(gt_init_writes(&m).unwrap().map(|w| w.reg));
             writes.extend(engine_init_writes(&m, &rcs).unwrap().map(|w| w.reg));
         }
+        // P3: the GT frequency policy - enable, then a boost and a decay, from the planner
+        {
+            use i915_devinfo_core::rps::RpsLayout;
+            use i915_gt_core::rps::{Waitboost, BOOST_IDLE_MS};
+            let mut wb = Waitboost::new(RpsLayout::for_platform(&d).unwrap(), 0x60615).unwrap();
+            let mut fx: Vec<Effect> = wb.enable_plan(0).to_vec();
+            fx.extend(wb.tick(1, true).map(|(e, _)| e));
+            fx.extend(wb.tick(1 + BOOST_IDLE_MS, false).map(|(e, _)| e));
+            assert_eq!(fx.len(), 4, "enable (2), boost, decay");
+            for e in fx {
+                if let Effect::Write(w) = e {
+                    writes.push(w.reg);
+                }
+            }
+        }
         // P3: the reset planner, both scopes
         writes.extend(reset_writes(ResetScope::Engines, &[rcs]));
         writes.extend(reset_writes(ResetScope::AllEngines, engines.as_slice()));
@@ -219,6 +236,7 @@ fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     want.push(0x101008);
     want.extend([0x40e0, 0x40e4]);
     want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
+    want.extend([0xa008, 0xa024]); // GEN6_RPNSWREQ, GEN6_RP_CONTROL (the P3 frequency request)
     want.extend((0..64).map(|i| 0xc800 + 4 * i)); // GEN9_GFX_MOCS(i) of rcs0
     want.extend((0..32).map(|i| 0xb020 + 4 * i)); // GEN9_LNCFCMOCS(i)
     want.push(0x7019c); // PLANE_SURF(PIPE_A, PLANE_1), skl_universal_plane_regs.h:153

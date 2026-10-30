@@ -96,6 +96,10 @@ pub const P3_MOCS_REGS: [Reg; 96] = {
     out
 };
 
+/// P3: the GT frequency request (`i915_gt_core::rps`, the service's waitboost): `GEN6_RP_CONTROL` once at bring-up
+/// (`intel_rps_set_manual`, gt/intel_rps.c:2650-2657) and `GEN6_RPNSWREQ` on every boost / decay (`gen6_rps_set`, :802-824).
+pub const P3_RPS_REGS: [Reg; 2] = i915_gt_core::rps::RPS_WRITE_SET;
+
 /// P4 (D18): what the scanout pair's flips write. Every flip between images is ONE register - `PLANE_SURF` of the adopted plane, the
 /// adoption planner's write set (`i915_display_modeset_core::adopt::ADOPT_WRITE_ALLOWLIST`, `plan_surface_replacement`). The flip off
 /// the firmware's framebuffer onto a LOGICAL-size image (and the restore) is the fastset's write set
@@ -134,7 +138,7 @@ const fn on(b: bool, n: usize) -> usize {
 }
 
 /// How many registers the compiled-in allow-list holds.
-pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len() + P3_MOCS_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len());
+pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len() + P3_MOCS_REGS.len() + P3_RPS_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len());
 
 const fn compose() -> [Reg; N_ALLOW] {
     let mut out = [Reg::new(0); N_ALLOW];
@@ -163,6 +167,12 @@ const fn compose() -> [Reg; N_ALLOW] {
         let mut i = 0;
         while i < P3_MOCS_REGS.len() {
             out[n] = P3_MOCS_REGS[i];
+            n += 1;
+            i += 1;
+        }
+        let mut i = 0;
+        while i < P3_RPS_REGS.len() {
+            out[n] = P3_RPS_REGS[i];
             n += 1;
             i += 1;
         }

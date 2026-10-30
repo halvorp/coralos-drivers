@@ -65,5 +65,6 @@ pub fn assemble<B: Mmio, D: Dma, M: CpuMem, L: Log>(bar: B, dma: D, mem: M, proo
     svc.set_display(facts.adoption);
     svc.set_firmware_scanout(facts.firmware);
     svc.set_scanout_size(log, &facts.display_caps, facts.geometry.as_ref(), facts.logical);
+    svc.enable_rps(&mut Hw { ex: &mut ex, gm: &mut gm, log, now_ms: 0 }, &proof.desc, proof.rp_state_cap);
     Ok(Assembled { ex, gm, svc })
 }

@@ -202,6 +202,7 @@ impl UapiService {
         self.advance_scanout(hw);
         self.poll_waiters(hw);
         self.trim_pool(hw);
+        self.rps_tick(hw);
     }
 
     fn observe_and_complete<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {

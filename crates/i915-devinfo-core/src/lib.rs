@@ -20,6 +20,7 @@
 pub mod clock;
 mod ids;
 mod rows;
+pub mod rps;
 pub mod sseu;
 
 pub use i915_common_core::I915Error;

@@ -203,6 +203,8 @@ pub struct UapiService {
     pub(crate) authority: Option<u64>,
     /// The firmware's scanout as the readout found it: where the scanout pair's flips start (D18).
     pub(crate) firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
+    /// The GT frequency policy (`uapi/rps.rs`); `None` until `enable_rps`, or after a refusal.
+    pub(crate) rps: Option<i915_gt_core::rps::Waitboost>,
     /// The display authority's scanout pair (D18, feature `p4-present`).
     #[cfg(feature = "p4-present")]
     pub(crate) scanout: Option<super::calls_scanout::PairRec>,
@@ -303,6 +305,7 @@ impl UapiService {
             display: crate::display::Adoption::NoReadout,
             authority: None,
             firmware: None,
+            rps: None,
             #[cfg(feature = "p4-present")]
             scanout: None,
             #[cfg(feature = "p4-present")]
@@ -504,6 +507,10 @@ impl UapiService {
         #[cfg(feature = "p4-present")]
         if self.scanout_wants_time() {
             want(now.saturating_add(1));
+        }
+        // a standing boost decays to RPn at its idle deadline (uapi/rps.rs); at RPn there is none
+        if let Some(d) = self.rps_deadline() {
+            want(d);
         }
         if let Some(stall) = self.rig.next_stall_check(now) {
             want(stall);

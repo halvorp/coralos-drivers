@@ -66,6 +66,14 @@ fn clock_and_pstate_registers_are_linux_literals() {
     assert_eq!(RP0_CAP_MASK, 0xff);
     assert_eq!(RP1_CAP_MASK, 0xff00);
     assert_eq!(RPN_CAP_MASK, 0xff_0000);
+    // the software frequency request (intel_gt_regs.h:772-814)
+    assert_eq!(GEN6_RPNSWREQ.offset(), 0xa008);
+    assert_eq!(GEN9_FREQUENCY_SHIFT, 23);
+    assert_eq!(GEN6_RPSTAT1.offset(), 0xa01c);
+    assert_eq!(GEN9_CAGF_MASK, 0xff80_0000);
+    assert_eq!(GEN6_RP_CONTROL.offset(), 0xa024);
+    assert_eq!(GEN9_RPSWCTL_ENABLE, 0x400);
+    assert_eq!(GEN6_RP_ENABLE, 0x80);
 }
 
 #[test]
@@ -83,5 +91,5 @@ fn aliases_are_the_only_duplicate_offsets() {
             assert_ne!(a, b, "{na} and {nb} share an offset without being a listed alias");
         }
     }
-    assert_eq!(CATALOG.len(), 23);
+    assert_eq!(CATALOG.len(), 26);
 }
