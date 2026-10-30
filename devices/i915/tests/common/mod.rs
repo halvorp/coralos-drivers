@@ -124,7 +124,7 @@ pub fn bar_vector_a() -> Window {
 }
 
 
-/// BAR0 as the Pixelbook Go's firmware really leaves it (the 2026-10-16 Atlas ring): vector A's power, clocks and link, a 3840x2160
+/// BAR0 as the Pixelbook Go's firmware really leaves it (as captured from the Atlas ring): vector A's power, clocks and link, a 3840x2160
 /// eDP raster (4000x2222 total), the pipe source 1920x1080, the primary plane linear XRGB8888 (PLANE_CTL 0x84002000), stride 120 x 64 =
 /// 7680, at GGTT 0, and pipe A's first scaler enabled and bound to the PIPE over the whole panel (the 1920x1080 -> 3840x2160 fit).
 pub fn bar_atlas() -> Window {

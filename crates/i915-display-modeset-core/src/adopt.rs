@@ -155,7 +155,7 @@ pub enum LatchState {
     TimedOut(PollTimeout),
 }
 
-/// Drives the latch confirmation and is the ONLY thing that can authorise releasing the old buffer.
+/// Drives the latch confirmation and is the only thing that can authorise releasing the old buffer.
 #[derive(Clone, Copy, Debug)]
 pub struct AdoptSession {
     poll: PollPlan,

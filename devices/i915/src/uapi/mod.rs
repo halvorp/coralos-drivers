@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The device's uAPI service: the i915 calls of ABI 1.1 ([`i915_wire::msg`]) answered from the port crates.
 //!
-//! PLACEMENT (KBL-I915-PORT-PLAN section 2): this GPL device owns ALL device semantics - GEM handles and their incarnations, CPU
+//! Placement: this GPL device owns all device semantics - GEM handles and their incarnations, CPU
 //! mapping leases, PRIME grants, syncobj state, GGTT/PPGTT, relocation patching and softpin validation. The closed shim only adapts
 //! Mesa's ioctls to the FLATTENED, pointer-free wire (`i915-wire`) and back. Nothing here knows a Mesa pointer, an fd number or a
 //! process address.

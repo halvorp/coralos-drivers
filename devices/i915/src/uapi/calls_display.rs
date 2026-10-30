@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The display AUTHORITY's calls (D18, i915-wire 1.5): `DISPLAY-SET-MODE` and the scanout pair. Every one of them is refused
+//! The display authority's calls (i915-wire 1.5): `DISPLAY-SET-MODE` and the scanout pair. Every one of them is refused
 //! `-EACCES` (`DISPLAY-NOT-AUTHORIZED`) unless the calling session is the one [`UapiService::bind_display_authority`] bound - and that
 //! binding is made by the transport on a capability, never on anything a request says.
 use super::fail::Fail;

@@ -6,7 +6,7 @@
 //! kick the engine. The request gets ONE fence of its own (made before the call); the out-syncobjs and the out sync_file are views of
 //! it, and retirement ([`UapiService::poll`]) signals it.
 //!
-//! GATED REQUESTS (2026-10-29, replacing the engine-wide hold that deadlocked Atlas at seq 490): a request that waits on a fence still
+//! Gated requests: a request that waits on a fence still
 //! pending is built into its ring at once but marked NOT READY in the engine (`Engine::set_gated`). The dequeue skips it and every later
 //! request of the same context (a ring runs in order) and goes on publishing READY requests of other contexts, so the request that will
 //! signal the fence is never held back by its consumer; `RING_TAIL` is published only up to a context's last READY request. When every

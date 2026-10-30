@@ -1,12 +1,12 @@
 //! Display ownership on the wire (ABI 1.5, D18): the display the device ADOPTED from the firmware, the one mode it offers, and the
 //! presentation path - two scanout images the display authority renders into, and the flips between them.
 //!
-//! WHO MAY CALL WHAT. `DISPLAY-QUERY` describes and changes nothing: it is answered to any frame, with or without a session (the
+//! Who may call what. `DISPLAY-QUERY` describes and changes nothing: it is answered to any frame, with or without a session (the
 //! parked device answers it too). Every other call here needs a session the device holds as the DISPLAY AUTHORITY, bound by a
 //! capability the system gave the compositor - never by a flag in a request (a `SESSION-OPEN` with any caps gains no display
 //! privilege). Any other session is answered `-EACCES` (`DISPLAY-NOT-AUTHORIZED` on the device's log).
 //!
-//! THE BUFFER LIFECYCLE the device enforces (SCANOUT-BUFFER-LIFECYCLE): a scanout image is FREE, RENDERING (the authority may draw
+//! The buffer lifecycle the device enforces (SCANOUT-BUFFER-LIFECYCLE): a scanout image is FREE, RENDERING (the authority may draw
 //! into it), COMMITTED (a flip to it is armed and waits for the GPU to finish it and the hardware to latch it) or SCANNING_OUT.
 //! Drawing into a COMMITTED or SCANNING_OUT image is refused (`-EBUSY`, `SCANOUT-REUSE-VIOLATION`); an image becomes FREE again only
 //! after a NEWER one is proven latched. The firmware's own framebuffer is kept until the first replacement is proven latched.

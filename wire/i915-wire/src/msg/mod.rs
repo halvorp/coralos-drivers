@@ -5,7 +5,7 @@
 //! (short = [`WireError::Truncated`], long = [`WireError::TrailingBytes`]) so a decode is TRANSACTIONAL: it returns a whole value
 //! or nothing. No pointers, no fd numbers: a mapping is a lease the reply names, a descriptor is a token the device issued.
 //!
-//! BOUNDS ARE VALIDATION LIMITS, NOT STORAGE: every `MAX_*` here is the number a request may not exceed (Linux's own limit where
+//! Bounds are validation limits, not storage: every `MAX_*` here is the number a request may not exceed (Linux's own limit where
 //! Linux has one, else a named bound that keeps one payload inside [`crate::MAX_PAYLOAD`]). Nothing in this crate sizes a table.
 //!
 //! VERSIONING: [`crate::Opcode::since_minor`] says which ABI minor introduced each opcode; a body is only ever EXTENDED by a new

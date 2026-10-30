@@ -18,7 +18,7 @@ use super::ExecError;
 
 /// A stable step id. Ranges: 0x2xxx P2 memory, 0x3xxx P3 execution, 0x4xxx display plans.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StepId(pub u32);
+pub struct StepId(pub(super) u32);
 
 impl StepId {
     pub const GT_EFFECTS: StepId = StepId(0x3000);

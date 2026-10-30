@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! DISPLAY OWNERSHIP (D18, Astra's Kaby Lake single-owner ruling 2026-10-16): this device owns the whole GPU function - render AND
-//! display - so the display the firmware lit is THIS device's to keep. It keeps it by ADOPTION: the takeover readout is judged by
+//! Display ownership: this device owns the whole GPU function (render and
+//! display), so the display the firmware lit is this device's to keep. It keeps it by adoption: the takeover readout is judged by
 //! `i915_display_modeset_core::initial::adopt`, and an adopted display is (1) never written by bring-up, (2) reserved in the GGTT
 //! before any render allocation (`Gtt::new_ggtt_preserving`, through [`Adoption::keep`]), (3) offered as the ONE mode the device has,
 //! with any other refused by name, and (4) described on the wire (`DISPLAY-QUERY`, i915-wire 1.5) to anyone who asks.

@@ -11,7 +11,7 @@ use i915_device::exec::dma::{ObjKind, PAGE};
 use i915_device::exec::memory::{emit_memory_marker, msi_delivered, stale_access_denied, MemoryProof};
 use i915_device::exec::ExecError;
 use i915_memory_core::probe::GgttGeometry;
-use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, PpgttInit, Target, VmaId};
+use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, PpgttInit, VmaId};
 
 const GMCH_2M: u16 = 1 << 6; // GGMS = 1: a 2 MiB GGTT = 262144 entries = 1 GiB of address space
 const ENTRIES: u64 = 262_144;
@@ -364,9 +364,6 @@ fn the_default_build_executor_has_no_ggtt_window_and_three_registers() {
     assert!(ex.ggtt_store(0x80_0000, 1).is_err());
     assert_eq!(chip.0.borrow().ggtt_writes, 0);
 }
-
-#[allow(dead_code)]
-fn _unused(_: Target) {}
 
 #[test]
 fn the_grant_table_has_no_compile_time_cap_it_grows_with_memory() {

@@ -68,8 +68,7 @@ pub const FLAGS_KNOWN: u32 = FLAG_REPLY | FLAG_PAYLOAD_REGION;
 
 macro_rules! opcodes {
     ($($(#[$m:meta])* $name:ident = $val:expr, $since:expr, $text:expr;)*) => {
-        /// Operations. The first six are the skeleton's (minor 0; everything past `Hello` was `Unsupported` until the increment that
-        /// implements it landed); the rest are the uAPI messages of minor 1 (see [`msg`]).
+        /// Operations. The first six are the skeleton's (minor 0); the rest are the uAPI messages of minor 1 (see [`msg`]).
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         #[repr(u32)]
         pub enum Opcode { $($(#[$m])* $name = $val,)* }

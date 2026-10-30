@@ -1,4 +1,4 @@
-//! Published with the owner's approval, 2026-10-11 ("yes, publish rt/ to the drivers repo"). MIT OR Apache-2.0.
+//! Licensed MIT OR Apache-2.0.
 //!
 //! coralos-rt: the CoralOS x86_64 kernel ABI a ring-3 `.device` driver needs, and nothing else. See Cargo.toml.
 //!

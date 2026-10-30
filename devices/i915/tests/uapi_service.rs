@@ -635,11 +635,6 @@ fn a_timeline_is_refused_by_name_only_when_memory_is_gone() {
     assert!(!refused(&w, "HWSP-TIMELINE-SLOTS-EXHAUSTED"), "the slot-count refusal no longer exists");
 }
 
-#[allow(dead_code)]
-fn refused_by_engine(w: &W) -> bool {
-    w.log.0.iter().any(|l| l.contains("refused") && (l.contains("OUT-OF-MEMORY") || l.contains("CONTEXT") || l.contains("TAG")))
-}
-
 // ---- hang ------------------------------------------------------------------------------------------------------------------------
 
 #[test]

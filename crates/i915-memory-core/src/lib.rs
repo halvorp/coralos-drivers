@@ -9,11 +9,11 @@
 //! gt/intel_ggtt_fencing.c, i915_vma.c and i915_gem_gtt.c (placement and eviction POLICY only), gem/i915_gem_stolen.c and
 //! arch/x86/kernel/early-quirks.c (stolen sizing). Copyright (c) Intel Corporation and the i915 authors.
 //!
-//! WHAT IS CARRIED: Gen9 (SKL/KBL) only - 8-byte gen8 PTEs, full 48-bit PPGTT. Gen6/7/12/MTL encoders, 3-level 32-bit PPGTT,
+//! What is carried: Gen9 (SKL/KBL) only - 8-byte gen8 PTEs, full 48-bit PPGTT. Gen6/7/12/MTL encoders, 3-level 32-bit PPGTT,
 //! 64K/2M huge pages, local memory, vGPU ballooning, GuC GGTT regions and the "bind via a blitter context" GGTT path are CUT
 //! (each is a different platform row or a feature Gen9 lacks); see docs/I915-CONTRACTS.md.
 //!
-//! NO COMPILE-TIME CAP ON A POPULATION CLIENTS DRIVE (owner 2026-10-12, RUNTIME-TABLES-HAVE-NO-CAP; DECISIONS.md D10): the VMA
+//! No compile-time cap on a population clients drive (RUNTIME-TABLES-HAVE-NO-CAP; DECISIONS.md D10): the VMA
 //! table, the page-table table, the spare table-page pool, a plan's op list and its victim list are `alloc` collections that
 //! grow with memory. Every growth is fallible (`try_reserve`) and refuses with the named [`MemError::OutOfMemory`] BEFORE the
 //! space or the plan has changed, so a refused bind leaves no half-created node or table. FIXED, because the hardware defines

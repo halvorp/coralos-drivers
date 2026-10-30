@@ -249,9 +249,9 @@ fn a_failed_step_says_so_by_name_and_steps_cannot_nest() {
 
 #[test]
 fn records_parse_and_a_begun_without_an_end_refuses_the_next_boot() {
-    assert_eq!(parse_record("[I915-STEP begun id=0x3003 name=ELSP-SUBMIT seq=7]"), Some(StepRecord { id: StepId(0x3003), phase: Phase::Begun }));
-    assert_eq!(parse_record("[I915-STEP done id=0x2001 name=GGTT-BIND seq=2]"), Some(StepRecord { id: StepId(0x2001), phase: Phase::Done }));
-    assert_eq!(parse_record("[I915-STEP failed id=0x3004 name=X seq=1 why=ENGINE-HUNG]"), Some(StepRecord { id: StepId(0x3004), phase: Phase::Failed }));
+    assert_eq!(parse_record("[I915-STEP begun id=0x3003 name=ELSP-SUBMIT seq=7]"), Some(StepRecord { id: StepId::ELSP_SUBMIT, phase: Phase::Begun }));
+    assert_eq!(parse_record("[I915-STEP done id=0x2001 name=GGTT-BIND seq=2]"), Some(StepRecord { id: StepId::GGTT_BIND, phase: Phase::Done }));
+    assert_eq!(parse_record("[I915-STEP failed id=0x3004 name=X seq=1 why=ENGINE-HUNG]"), Some(StepRecord { id: StepId::ENGINE_RESET, phase: Phase::Failed }));
     for junk in ["", "[I915-STEP", "[I915-STEP begun id=3003]", "[I915-STEP maybe id=0x3003 ]", "[I915-EXEC seqno=1]", "[I915-STEP begun id=0xzz]"] {
         assert_eq!(parse_record(junk), None, "{junk:?}");
     }
