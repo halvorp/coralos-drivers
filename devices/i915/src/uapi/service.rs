@@ -201,6 +201,8 @@ pub struct UapiService {
     /// The display this device adopted from the firmware (D18), and which session, if any, is its AUTHORITY.
     pub(crate) display: crate::display::Adoption,
     pub(crate) authority: Option<u64>,
+    /// The session holding the MEDIA SEAT: opened over the MEDIA listen endpoint, the one session the video engines are routed to.
+    pub(crate) media_seat: Option<u64>,
     /// The firmware's scanout as the readout found it: where the scanout pair's flips start (D18).
     pub(crate) firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
     /// The display authority's scanout pair (D18, feature `p4-present`).
@@ -302,6 +304,7 @@ impl UapiService {
             quarantined: 0,
             display: crate::display::Adoption::NoReadout,
             authority: None,
+            media_seat: None,
             firmware: None,
             #[cfg(feature = "p4-present")]
             scanout: None,
@@ -368,6 +371,26 @@ impl UapiService {
 
     pub fn display_authority(&self) -> Option<u64> {
         self.authority
+    }
+
+    /// Bind session `inc` as the MEDIA SEAT. The caller is the transport, on the strength of a capability only the media service's
+    /// row (and the maintenance witness row) holds - never anything a request says. A second binding is refused while the first
+    /// session lives; a dead holder's seat is taken by the next.
+    pub fn bind_media_seat<L: Log>(&mut self, log: &mut L, inc: u64) -> Result<(), Fail> {
+        if self.session_idx(inc).is_none() {
+            return Err(Fail::new(errno::ENOENT, "MEDIA-SEAT-NO-SESSION"));
+        }
+        match self.media_seat {
+            Some(cur) if cur != inc && self.session_idx(cur).is_some() => return Err(Fail::new(errno::EBUSY, "MEDIA-SEAT-HELD")),
+            _ => {}
+        }
+        self.media_seat = Some(inc);
+        emit(log, format_args!("[I915-MEDIA seat bound inc={}]", inc));
+        Ok(())
+    }
+
+    pub fn media_seat(&self) -> Option<u64> {
+        self.media_seat
     }
 
     // ---- observation (the tests' and the markers' view) ----------------------------------------------------------------------
@@ -650,6 +673,11 @@ impl UapiService {
             self.scanout_owner_dead(inc);
             self.authority = None;
             emit(hw.log, format_args!("[I915-DISPLAY authority ended inc={}]", inc));
+        }
+        if self.media_seat == Some(inc) {
+            // the video engines are routed to nobody until the next media session binds the seat
+            self.media_seat = None;
+            emit(hw.log, format_args!("[I915-MEDIA seat ended inc={}]", inc));
         }
         self.trim_pool(hw);
         emit(hw.log, format_args!("[I915-UAPI session dead inc={}]", inc));

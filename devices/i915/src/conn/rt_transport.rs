@@ -19,6 +19,8 @@ struct Row {
     held: bool,
     /// Announced on the DISPLAY listen endpoint (D18).
     display: bool,
+    /// Announced on the MEDIA listen endpoint: only the media service's row (and a maintenance witness row) holds SEND on it.
+    media: bool,
 }
 
 pub struct RtTransport {
@@ -28,6 +30,8 @@ pub struct RtTransport {
     listen: u16,
     /// The DISPLAY listen endpoint (D18): only the compositor's row holds SEND on it, so a connection announced here is the compositor's.
     display: Option<u16>,
+    /// The MEDIA listen endpoint: a connection announced here is the media seat's (the one session the video engine is routed to).
+    media: Option<u16>,
     next_id: u64,
     rows: Vec<Row>,
 }
@@ -35,12 +39,18 @@ pub struct RtTransport {
 impl RtTransport {
     /// A transport serving connects on `listen_ep` (the endpoint this task holds RECV on).
     pub fn new(listen_ep: u16, irq: Option<u32>) -> RtTransport {
-        RtTransport { irq, listen: listen_ep, display: None, next_id: 1, rows: Vec::new() }
+        RtTransport { irq, listen: listen_ep, display: None, media: None, next_id: 1, rows: Vec::new() }
     }
 
     /// A transport that also accepts on the DISPLAY listen endpoint `display_ep` (D18).
     pub fn with_display(listen_ep: u16, display_ep: u16, irq: Option<u32>) -> RtTransport {
-        RtTransport { irq, listen: listen_ep, display: Some(display_ep), next_id: 1, rows: Vec::new() }
+        RtTransport { irq, listen: listen_ep, display: Some(display_ep), media: None, next_id: 1, rows: Vec::new() }
+    }
+
+    /// Also accept on the MEDIA listen endpoint `media_ep`.
+    pub fn with_media(mut self, media_ep: u16) -> RtTransport {
+        self.media = Some(media_ep);
+        self
     }
 
     fn row(&self, id: ConnId) -> Option<&Row> {
@@ -61,8 +71,9 @@ impl Transport for RtTransport {
     fn wait(&mut self, deadline_ms: Option<u64>, accept: bool) -> Wake {
         let listen = accept.then_some(self.listen);
         let display = if accept { self.display } else { None };
+        let media = if accept { self.media } else { None };
         // every endpoint was checked to fit the wait set when its announce was accepted, so this cannot name a wrapped endpoint
-        let words = ep_words(listen.into_iter().chain(display).chain(self.rows.iter().filter(|r| !r.held).map(|r| r.req))).unwrap_or([0; EP_WORDS]);
+        let words = ep_words(listen.into_iter().chain(display).chain(media).chain(self.rows.iter().filter(|r| !r.held).map(|r| r.req))).unwrap_or([0; EP_WORDS]);
         let now = coralos_rt::ticks();
         let timeout = deadline_ms.map_or(0, |d| d.saturating_sub(now).max(1)); // 0 = no bound
         match coralos_rt::wait_any_set(&words, timeout, self.irq.unwrap_or(coralos_rt::NO_IRQ)) {
@@ -73,7 +84,7 @@ impl Transport for RtTransport {
                 Wake::Deadline
             }
             PEER_DEAD => Wake::Deadline,
-            ep if listen.map_or(false, |l| l as u64 == ep) || display.map_or(false, |l| l as u64 == ep) => Wake::Accept,
+            ep if [listen, display, media].iter().flatten().any(|&l| l as u64 == ep) => Wake::Accept,
             ep => match self.rows.iter().find(|r| r.req as u64 == ep) {
                 Some(r) => Wake::Request(r.id),
                 None => Wake::Deadline,
@@ -82,12 +93,19 @@ impl Transport for RtTransport {
     }
     fn accept(&mut self) -> Accepted {
         let mut buf = [0u8; ANNOUNCE_LEN + 3];
-        let mut from_display = false;
+        // the client listen first, then the DISPLAY and MEDIA listens: which endpoint an announce arrived on is the authority it carries
+        let (mut from_display, mut from_media) = (false, false);
         let mut n = coralos_rt::try_recv(self.listen as u64, &mut buf);
         if n == 0 {
             if let Some(d) = self.display {
                 n = coralos_rt::try_recv(d as u64, &mut buf);
-                from_display = true;
+                from_display = n != 0;
+            }
+        }
+        if n == 0 {
+            if let Some(m) = self.media {
+                n = coralos_rt::try_recv(m as u64, &mut buf);
+                from_media = n != 0;
             }
         }
         if n == 0 {
@@ -113,7 +131,7 @@ impl Transport for RtTransport {
         }
         let id = ConnId(self.next_id);
         self.next_id += 1;
-        self.rows.push(Row { id, req: a.req, evt: a.evt, client: a.client, held: false, display: from_display });
+        self.rows.push(Row { id, req: a.req, evt: a.evt, client: a.client, held: false, display: from_display, media: from_media });
         Accepted::Conn(id)
     }
     fn hold(&mut self, conn: ConnId, held: bool) {
@@ -146,6 +164,9 @@ impl Transport for RtTransport {
     }
     fn is_display(&self, conn: ConnId) -> bool {
         self.row(conn).map_or(false, |r| r.display)
+    }
+    fn is_media(&self, conn: ConnId) -> bool {
+        self.row(conn).map_or(false, |r| r.media)
     }
     fn release(&mut self, conn: ConnId) -> bool {
         match self.rows.iter().position(|r| r.id == conn) {

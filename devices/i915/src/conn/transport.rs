@@ -103,6 +103,11 @@ pub trait Transport {
     fn is_display(&self, _conn: ConnId) -> bool {
         false
     }
+    /// Did `conn` arrive on the MEDIA listen endpoint (a capability only the media service's row, and the maintenance witness row,
+    /// hold SEND on)? A session such a connection opens holds the media seat: the one session the video engine is routed to.
+    fn is_media(&self, _conn: ConnId) -> bool {
+        false
+    }
     /// The connection is over (its client died or the device closed it): forget it and give its endpoints back. `false` = the kernel
     /// refused the release (the pair stays held until this task exits); the connection is forgotten either way.
     fn release(&mut self, conn: ConnId) -> bool;

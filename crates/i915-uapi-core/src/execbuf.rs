@@ -310,6 +310,7 @@ fn select_engine(dev: &UapiDevice, ctx: &ContextInfo, flags: u64) -> Result<Engi
     };
     match engines.lookup(class, instance) {
         Some(_) => Ok(EngineChoice::Fixed { class, instance }),
+        None if class == engine_class::VIDEO && dev.video_withheld() => Err(invalid("the video engine is routed only to the media seat")),
         None => Err(invalid("this device has no such engine")),
     }
 }

@@ -36,6 +36,8 @@ impl UapiService {
     pub(crate) fn call_exec<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, inc: u64, p: &[u8], out: &mut [u8]) -> Result<Done, Fail> {
         let sid = SessionId(inc);
         let req = decode_execbuf2(p, &ExecLimits::DEFAULT)?;
+        // the video engines are routed to the media seat alone: the engine choice below sees this session's view
+        self.gem.set_media_seat(self.media_seat == Some(inc));
         // D18: a write into a scanout image the display holds (COMMITTED / SCANNING_OUT) or the authority never began is refused before
         // anything is reserved
         #[cfg(feature = "p4-present")]

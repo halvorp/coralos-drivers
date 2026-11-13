@@ -68,6 +68,8 @@ pub struct Net {
     pub released: Vec<ConnId>,
     /// Connections announced on the DISPLAY listen endpoint (D18).
     pub display: Vec<ConnId>,
+    /// Connections announced on the MEDIA listen endpoint (only the media service's row can).
+    pub media: Vec<ConnId>,
 }
 
 impl Default for Net {
@@ -89,6 +91,7 @@ impl Default for Net {
             depth: usize::MAX,
             released: vec![],
             display: vec![],
+            media: vec![],
         }
     }
 }
@@ -102,6 +105,13 @@ impl FakeT {
     pub fn connect_display(&self) -> ConnId {
         let id = self.connect();
         self.0.borrow_mut().display.push(id);
+        id
+    }
+
+    /// A client connects on the MEDIA listen endpoint (only the media service's row can).
+    pub fn connect_media(&self) -> ConnId {
+        let id = self.connect();
+        self.0.borrow_mut().media.push(id);
         id
     }
 
@@ -255,6 +265,9 @@ impl Transport for FakeT {
     }
     fn is_display(&self, conn: ConnId) -> bool {
         self.0.borrow().display.contains(&conn)
+    }
+    fn is_media(&self, conn: ConnId) -> bool {
+        self.0.borrow().media.contains(&conn)
     }
     fn release(&mut self, conn: ConnId) -> bool {
         let mut s = self.0.borrow_mut();

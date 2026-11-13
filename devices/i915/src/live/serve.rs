@@ -331,6 +331,12 @@ impl<T: Transport, R: PayloadRegions, B: Mmio, D: Dma, M: CpuMem, L: Log> Live<T
                         emit(&mut self.log, format_args!("[I915-DISPLAY authority NOT bound inc={} name={}]", rh.session_incarnation, f.name));
                     }
                 }
+                // the same for the MEDIA listen endpoint: a session opened over it holds the media seat (the video engines' one client)
+                if self.t.is_media(self.cur) {
+                    if let Err(f) = self.svc.bind_media_seat(&mut self.log, rh.session_incarnation) {
+                        emit(&mut self.log, format_args!("[I915-MEDIA seat NOT bound inc={} name={}]", rh.session_incarnation, f.name));
+                    }
+                }
             }
             (Opcode::SessionClose, _) => {
                 if let Some(inc) = c.session {

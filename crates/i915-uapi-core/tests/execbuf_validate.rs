@@ -514,3 +514,22 @@ fn a_submit_naming_an_unrouted_engine_is_refused_by_name_never_run_on_render() {
     }
     assert!(check(&d, &Env::basic(), &Exec::new(ef::I915_EXEC_RENDER, vec![bo(10)])).is_ok());
 }
+
+#[test]
+fn a_session_without_the_media_seat_is_never_routed_to_a_video_engine() {
+    // the video engines are routed to the media seat alone: another session's BSD batch is refused by name, its render batch is not
+    let d = no_seat(gt2());
+    let run = |f: u64| check(&d, &Env::basic(), &Exec::new(f, vec![bo(10)])).map(|p| p.engine);
+    assert_eq!(run(ef::I915_EXEC_BSD), Err(("EXEC-ENGINE-INVALID", Errno::EINVAL)));
+    assert_eq!(run(ef::I915_EXEC_RENDER), Ok(EngineChoice::Fixed { class: 0, instance: 0 }));
+    assert!(d.video_withheld());
+    // a device whose video engines are not routed at all withholds nothing from anyone: the refusal is the old one
+    let mut unrouted = no_seat(gt2());
+    unrouted.route_engines(1 << i915_devinfo_core::engine::RCS0);
+    assert!(!unrouted.video_withheld());
+    // the two-VDBOX part: neither the balanced nor a fixed instance reaches a session without the seat
+    let g3 = no_seat(gt3());
+    let run3 = |f: u64| check(&g3, &Env::basic(), &Exec::new(f, vec![bo(10)])).map(|p| p.engine).map_err(|e| e.0);
+    assert_eq!(run3(ef::I915_EXEC_BSD | ef::I915_EXEC_BSD_RING2), Err("EXEC-ENGINE-INVALID"));
+    assert_eq!(run3(ef::I915_EXEC_BSD | ef::I915_EXEC_BSD_DEFAULT), Err("EXEC-ENGINE-INVALID"));
+}

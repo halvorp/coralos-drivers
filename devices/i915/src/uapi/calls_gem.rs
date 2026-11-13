@@ -82,6 +82,7 @@ impl UapiService {
         let caps = self.sessions[idx].as_ref().map_or(0, |s| s.caps);
         let mut dev = *self.gem.device();
         dev.perfmon_capable = caps & CAP_PERFMON != 0;
+        dev.set_media_seat(self.media_seat == Some(inc));
         match op {
             Opcode::GetParam => Ok(Done::Len(i915_uapi_core::handle_getparam(&dev, p, out)?)),
             Opcode::Query => Ok(Done::Len(i915_uapi_core::handle_query(&dev, p, out)?)),

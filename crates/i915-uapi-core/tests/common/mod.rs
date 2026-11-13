@@ -19,7 +19,15 @@ pub fn kbl(devid: u16, fuse2: u32, eu_disable: [u32; 3]) -> UapiDevice {
     let sseu = gen9_sseu_info(fuse2, eu_disable);
     // CTC_MODE: crystal source (bit 0 = 0), shift field (2:1) = 2 -> 24 MHz >> (3 - 2) (intel_gt_clock_utils.c:102).
     let Gen9Clock::Hz(hz) = gen9_clock_from_ctc(2 << 1) else { panic!("crystal source expected") };
-    UapiDevice::new(desc, 0x09, sseu, hz, 8 << 30).unwrap()
+    let mut d = UapiDevice::new(desc, 0x09, sseu, hz, 8 << 30).unwrap();
+    d.set_media_seat(true); // the Linux view these tests port: the asking session reaches every engine (`no_seat` is the other)
+    d
+}
+
+/// The same part as `d`, asked by a session that does NOT hold the media seat.
+pub fn no_seat(mut d: UapiDevice) -> UapiDevice {
+    d.set_media_seat(false);
+    d
 }
 
 /// 0x591C: Kaby Lake AML GT2 (Pixelbook Go), 1 slice x 3 subslices x 8 EUs = 24 EUs.

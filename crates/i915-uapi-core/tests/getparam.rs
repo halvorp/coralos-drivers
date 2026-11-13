@@ -257,3 +257,13 @@ fn engines_not_routed_to_the_session_are_neither_advertised_nor_selectable() {
     d.route_engines(1 << e::VCS0);
     assert_eq!((ok(&d, I915_PARAM_HAS_BSD), ok(&d, I915_PARAM_HAS_BLT)), (1, 0));
 }
+
+#[test]
+fn has_bsd_is_answered_per_session_by_the_media_seat() {
+    // GETPARAM agrees with EXECBUFFER2: a session without the media seat is told there is no BSD ring
+    let d = no_seat(gt2());
+    assert_eq!(ok(&d, I915_PARAM_HAS_BSD), 0);
+    assert_eq!(ok(&d, I915_PARAM_HAS_BLT), 1, "the other engines are not the seat's");
+    assert_eq!(ok(&no_seat(gt3()), I915_PARAM_HAS_BSD2), 0);
+    assert_eq!(ok(&gt2(), I915_PARAM_HAS_BSD), 1, "the seat's session still sees it");
+}

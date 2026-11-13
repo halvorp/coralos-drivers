@@ -93,6 +93,11 @@ impl Gem {
         &self.dev
     }
 
+    /// The session about to call holds the media seat (`true`) or not: the video engines are routed to it alone (`UapiDevice::media_seat`).
+    pub fn set_media_seat(&mut self, held: bool) {
+        self.dev.set_media_seat(held);
+    }
+
     /// Set the budget of NEW table entries this device may still create (a memory quota); `None` removes it. When it is spent every
     /// table-growing call refuses with `GEM-NOMEM` before anything exists. The same refusal is what a failed `try_reserve` produces.
     pub fn set_table_budget(&mut self, entries: Option<usize>) {

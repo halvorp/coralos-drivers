@@ -8,7 +8,7 @@ use crate::startup::bringup;
 use crate::conn::RtTransport;
 use crate::wire::{exit_code, SERVICE_EP};
 #[cfg(feature = "p3-exec")]
-use crate::wire::DISPLAY_EP;
+use crate::wire::{DISPLAY_EP, MEDIA_EP};
 use coralos_rt::mmio::{Kernel, ReadWindow, WriteWindow};
 use coralos_rt::{exit, write};
 
@@ -199,14 +199,14 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>, logical: i915_display_m
     };
     // GEM CPU mappings are kernel DMA leases (revoked after the GPU retires the object, or when the session ends)
     a.svc.set_lease_sys(alloc::boxed::Box::new(RtLeaseSys));
-    let mut live = match Live::new(RtTransport::with_display(SERVICE_EP, DISPLAY_EP, None), SessionRegions::new(RtRegionSys), a.svc, a.ex, a.gm, TaskLog) {
+    let mut live = match Live::new(RtTransport::with_display(SERVICE_EP, DISPLAY_EP, None).with_media(MEDIA_EP), SessionRegions::new(RtRegionSys), a.svc, a.ex, a.gm, TaskLog) {
         Ok(l) => l,
         Err(e) => {
             emit(&mut lg, format_args!("[I915-KBL-DEV FAIL step=LIVE-LOOP why={}]", e.name()));
             exit(exit_code::UAPI_FAILED)
         }
     };
-    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {} and DISPLAY ep {} (one connect() session per client; a DISPLAY session is the display authority); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: session REGION_MAP (request snapshotted, reply written); GEM mmap: DMA leases", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP, DISPLAY_EP));
+    emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE] serving ABI {}.{} on LISTEN ep {}, DISPLAY ep {} and MEDIA ep {} (one connect() session per client; a DISPLAY session is the display authority, a MEDIA session the video engines' one client); blocks on connect|request|deadline only (no engine interrupt armed); payload regions: session REGION_MAP (request snapshotted, reply written); GEM mmap: DMA leases", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR, SERVICE_EP, DISPLAY_EP, MEDIA_EP));
     live.run();
     emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE END waits={}]", live.stats.waits));
     exit(0)

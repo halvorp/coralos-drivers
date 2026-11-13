@@ -80,7 +80,14 @@ pub struct UapiDevice {
     /// Linux advertises); the device MUST narrow it per session with [`UapiDevice::route_engines`] until every engine has
     /// a submit row.
     pub routed_engine_mask: u32,
+    /// POLICY, per asking session: does THIS session hold the media seat? The video-decode engines (VCS0, VCS1) are routed only to
+    /// it - the device sets this before it dispatches each session's call ([`UapiDevice::set_media_seat`]). False = the session
+    /// is never told of a video engine and a BSD batch is refused by name ([`UapiDevice::video_withheld`]).
+    pub media_seat: bool,
 }
+
+/// The `enum intel_engine_id` bits of the video-decode class (VCS0, VCS1): routed only to the media seat.
+pub const VIDEO_ENGINE_BITS: u32 = (1 << i915_devinfo_core::engine::VCS0) | (1 << i915_devinfo_core::engine::VCS1);
 
 impl UapiDevice {
     /// Build the device facts for a Gen9 row. A non-Gen9 row (the Cherryview negative control) is refused by name, exactly as the
@@ -107,8 +114,10 @@ impl UapiDevice {
             enable_hangcheck: true, // i915_params.h:63
             reset_param: 3,         // i915_params.h:57
             routed_engine_mask: desc.info.engine_mask,
+            media_seat: true, // the default-state classes are the hardware's, whoever asks
         };
         d.default_state_classes = d.all_classes_mask();
+        d.media_seat = false;
         Ok(d)
     }
 
@@ -116,6 +125,16 @@ impl UapiDevice {
     /// platform row lacks stays absent, so routing never invents an engine.
     pub fn route_engines(&mut self, mask: u32) {
         self.routed_engine_mask = mask & self.desc.info.engine_mask;
+    }
+
+    /// The asking session holds the media seat (`true`) or does not. Set by the device before each session's call.
+    pub fn set_media_seat(&mut self, held: bool) {
+        self.media_seat = held;
+    }
+
+    /// A video engine is routed on this device but withheld from the asking session (it does not hold the media seat).
+    pub fn video_withheld(&self) -> bool {
+        !self.media_seat && self.desc.info.engine_mask & self.routed_engine_mask & VIDEO_ENGINE_BITS != 0
     }
 
     pub const fn gen(&self) -> u8 {
@@ -133,7 +152,8 @@ impl UapiDevice {
 
     /// The user-visible engines, derived from `PlatformDescriptor::info.engine_mask` (a bit per `enum intel_engine_id`).
     pub fn engines(&self) -> UabiEngines {
-        let mask = self.desc.info.engine_mask & self.routed_engine_mask;
+        let seat = if self.media_seat { u32::MAX } else { !VIDEO_ENGINE_BITS };
+        let mask = self.desc.info.engine_mask & self.routed_engine_mask & seat;
         let mut out = UabiEngines { list: [UabiEngine { class: 0, instance: 0 }; MAX_UABI_ENGINES], len: 0 };
         let mut push = |class: u16, instance: u16| {
             if out.len < MAX_UABI_ENGINES {
