@@ -3,8 +3,8 @@
 //! `WaRsForcewakeAddDelayForAck` fallback toggle, and the per-domain reference count of
 //! `__intel_uncore_forcewake_get` / `__intel_uncore_forcewake_put` (intel_uncore.c:134-354, :663-680, :764-787).
 //! Everything goes through `coralos_hal::Mmio`; the only registers written are [`crate::WRITE_ALLOWLIST`].
-use crate::domain::{Domain, DomainId, GEN9_DOMAINS};
-use crate::ranges::read_fw_domains;
+use crate::domain::{Domain, DomainId, GEN9_DOMAINS, VLV_DOMAINS};
+use crate::ranges::{read_fw_domains_in, FwRange, CHV_FW_RANGES, GEN9_FW_RANGES};
 use coralos_hal::Mmio;
 use i915_common_core::reg::{masked_bit_disable, masked_bit_enable};
 use i915_common_core::{I915Error, Reg};
@@ -34,26 +34,37 @@ pub struct Uncore {
     wake_count: [u32; 3],
     active: u32,
     max_polls: u32,
+    /// The platform's forcewake range table (`uncore->fw_domains_table`): which domains a register's read needs.
+    ranges: &'static [FwRange],
 }
 
 impl Uncore {
     /// The Gen9 domains: RENDER, GT, MEDIA (intel_uncore.c:2210-2219).
     pub const fn gen9() -> Uncore {
-        Uncore { domains: &GEN9_DOMAINS, mask: crate::domain::FORCEWAKE_ALL, wake_count: [0; 3], active: 0, max_polls: MAX_POLLS }
+        Uncore { domains: &GEN9_DOMAINS, mask: crate::domain::FORCEWAKE_ALL, wake_count: [0; 3], active: 0, max_polls: MAX_POLLS, ranges: &GEN9_FW_RANGES }
     }
 
-    /// The uncore for `desc`, or the NAMED refusal if it is not a Gen9 part (a Cherryview id gets `UnsupportedGeneration`, never
-    /// the Gen9 register set).
+    /// The Cherryview domains: RENDER and MEDIA (intel_uncore.c:2220-2225), over `__chv_fw_ranges` (intel_uncore.c:2451-2454).
+    pub const fn chv() -> Uncore {
+        let mask = crate::domain::FORCEWAKE_RENDER | crate::domain::FORCEWAKE_MEDIA;
+        Uncore { domains: &VLV_DOMAINS, mask, wake_count: [0; 3], active: 0, max_polls: MAX_POLLS, ranges: &CHV_FW_RANGES }
+    }
+
+    /// The uncore for `desc`: Gen9 for a Gen9 row, Cherryview's for the Cherryview row, else the NAMED refusal
+    /// (`UnsupportedGeneration`) - a row with no uncore here is never driven with another platform's register set.
     pub fn for_platform(desc: &PlatformDescriptor) -> Result<Uncore, I915Error> {
-        desc.require_gen9()?;
-        Ok(Uncore::gen9())
+        match (desc.info.platform, desc.info.graphics_ver) {
+            (i915_devinfo_core::Platform::Cherryview, _) => Ok(Uncore::chv()),
+            (_, 9) => Ok(Uncore::gen9()),
+            (_, gen) => Err(I915Error::UnsupportedGeneration { devid: desc.devid, gen }),
+        }
     }
 
     /// An uncore over an arbitrary domain table. Exists so a test can drive the Valleyview / Cherryview domains against a Gen9
     /// script (the negative control); a device never calls it.
     pub fn with_domains(domains: &'static [Domain]) -> Uncore {
         let mask = domains.iter().fold(0, |m, d| m | d.mask);
-        Uncore { domains, mask, wake_count: [0; 3], active: 0, max_polls: MAX_POLLS }
+        Uncore { domains, mask, wake_count: [0; 3], active: 0, max_polls: MAX_POLLS, ranges: &GEN9_FW_RANGES }
     }
 
     /// Lower the per-wait iteration cap (for hosts and tests; the deadline is the real bound).
@@ -250,7 +261,7 @@ impl Uncore {
     /// A 32-bit read of `reg` with the forcewake it needs (`fwtable_read32`, intel_uncore.c:1912-1922): the domains the Gen9 table
     /// names for the offset must already be held (DELAYED_PUT: no auto-forcewake timer here), else `ForcewakeNotHeld`.
     pub fn read32<M: Mmio>(&self, m: &mut M, reg: Reg) -> Result<u32, I915Error> {
-        let need = read_fw_domains(reg.offset()) & self.mask;
+        let need = read_fw_domains_in(self.ranges, reg.offset()) & self.mask;
         let held = self.domains.iter().filter(|d| self.wake_count[d.id as usize] > 0).fold(0, |a, d| a | d.mask);
         if need & !held != 0 {
             return Err(I915Error::ForcewakeNotHeld { offset: reg.offset(), domains: need & !held });

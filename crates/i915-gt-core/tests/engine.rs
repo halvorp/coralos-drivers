@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The Kaby Lake engine table against intel_engine_cs.c and the ring bases of i915_reg.h.
-use i915_devinfo_core::{lookup, KBL_GT1, KBL_GT2, KBL_GT3};
+use i915_devinfo_core::{lookup, CHV, KBL_GT1, KBL_GT2, KBL_GT3};
 use i915_gt_core::engine::*;
 use i915_gt_core::GtError;
 
@@ -59,6 +59,11 @@ fn engines_follow_the_platform_engine_mask() {
     assert_eq!(names(&KBL_GT1), ["rcs0", "bcs0", "vcs0", "vecs0"]);
     assert_eq!(names(&KBL_GT2), ["rcs0", "bcs0", "vcs0", "vecs0"]);
     assert_eq!(names(&KBL_GT3), ["rcs0", "bcs0", "vcs0", "vcs1", "vecs0"], "kbl_gt3 adds the second VDBOX");
+    // Cherryview (i915_pci.c:453 `.platform_engine_mask = BIT(RCS0) | BIT(VCS0) | BIT(BCS0) | BIT(VECS0)`), the Z83's 8086:22B0: VCS0
+    // at GEN6_BSD_RING_BASE 0x12000 (intel_engine_cs.c:139), reset by GEN6_GRDOM_MEDIA (:437)
+    assert_eq!(names(&CHV), ["rcs0", "bcs0", "vcs0", "vecs0"]);
+    let vcs = engine_info(8, VCS0).unwrap();
+    assert_eq!((vcs.mmio_base, vcs.reset_domain), (0x12000, 1 << 2));
     // the Pixelbook Go: 8086:591C
     let d = lookup(0x591c).unwrap();
     assert_eq!(names(&d.info), ["rcs0", "bcs0", "vcs0", "vecs0"]);
@@ -76,7 +81,12 @@ fn context_size_constants() {
     assert_eq!(GEN9_LR_CONTEXT_RENDER_SIZE, 0x16000);
     assert_eq!(GEN8_LR_CONTEXT_OTHER_SIZE, 0x2000);
     assert_eq!(PAGE_SIZE, 4096);
-    assert_eq!(engine_info(8, RCS0), Err(GtError::UnsupportedGeneration { gen: 8 }), "Gen8 render context is 20 pages: not ported");
+    // intel_engine_cs.c:46 GEN8_LR_CONTEXT_RENDER_SIZE (20 * PAGE_SIZE), :293-294 `case 8`; the video engine is GEN8_LR_CONTEXT_OTHER_SIZE (:339)
+    assert_eq!(GEN8_LR_CONTEXT_RENDER_SIZE, 0x14000);
+    assert_eq!(engine_info(8, RCS0).unwrap().context_size, 0x14000);
+    assert_eq!(engine_info(8, VCS0).unwrap().context_size, 0x2000);
+    assert_eq!(engine_info(9, VCS0).unwrap().context_size, 0x2000);
+    assert_eq!(engine_info(7, RCS0), Err(GtError::UnsupportedGeneration { gen: 7 }), "Gen7 context sizes are read from CXT_SIZE: not ported");
 }
 
 #[test]

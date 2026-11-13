@@ -20,6 +20,8 @@ pub enum EngineClass {
 
 /// `PAGE_SIZE` for the context-size constants (intel_engine_cs.c:43-50 are multiples of it).
 pub const PAGE_SIZE: u32 = 4096;
+/// `GEN8_LR_CONTEXT_RENDER_SIZE` (intel_engine_cs.c:46).
+pub const GEN8_LR_CONTEXT_RENDER_SIZE: u32 = 20 * PAGE_SIZE; // intel_engine_cs.c:46
 /// `GEN9_LR_CONTEXT_RENDER_SIZE` (intel_engine_cs.c:47).
 pub const GEN9_LR_CONTEXT_RENDER_SIZE: u32 = 22 * PAGE_SIZE; // intel_engine_cs.c:47
 /// `GEN8_LR_CONTEXT_OTHER_SIZE` (intel_engine_cs.c:50).
@@ -116,14 +118,14 @@ fn reset_domain(graphics_ver: u8, id: u32) -> Result<u32, GtError> {
     }
 }
 
-/// `intel_engine_context_size` for Gen9 (intel_engine_cs.c:291-292 `case 9`, and the non-render classes' `GEN8_LR_CONTEXT_OTHER_SIZE`, :339).
+/// `intel_engine_context_size` for Gen9 and Gen8 (intel_engine_cs.c:291-294 `case 9` / `case 8`, and the non-render classes'
+/// `GEN8_LR_CONTEXT_OTHER_SIZE` for every Gen8+ part, :336-339). Another generation is refused by name.
 fn context_size(graphics_ver: u8, class: EngineClass) -> Result<u32, GtError> {
-    if graphics_ver != 9 {
-        return Err(GtError::UnsupportedGeneration { gen: graphics_ver });
-    }
-    Ok(match class {
-        EngineClass::Render => GEN9_LR_CONTEXT_RENDER_SIZE,
-        _ => GEN8_LR_CONTEXT_OTHER_SIZE,
+    Ok(match (graphics_ver, class) {
+        (9, EngineClass::Render) => GEN9_LR_CONTEXT_RENDER_SIZE,
+        (8, EngineClass::Render) => GEN8_LR_CONTEXT_RENDER_SIZE,
+        (8 | 9, _) => GEN8_LR_CONTEXT_OTHER_SIZE,
+        _ => return Err(GtError::UnsupportedGeneration { gen: graphics_ver }),
     })
 }
 

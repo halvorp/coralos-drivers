@@ -134,3 +134,53 @@ fn shadowed_registers_are_written_without_forcewake_but_still_read_with_it() {
     assert_eq!(read_fw_domains(0x2030), R);
     assert_eq!(write_fw_domains(0x2034), R, "a neighbour of a shadowed register is not shadowed");
 }
+
+/// `__chv_fw_ranges` (intel_uncore.c:1255-1272), written out from Linux, not from the table under test.
+#[test]
+fn the_cherryview_table_is_linuxs_row_for_row() {
+    const R: u32 = 1; // FORCEWAKE_RENDER (intel_uncore.h:71)
+    const M: u32 = 4; // FORCEWAKE_MEDIA (intel_uncore.h:73)
+    let want: [(u32, u32, u32); 16] = [
+        (0x2000, 0x3fff, R),       // :1256
+        (0x4000, 0x4fff, R | M),   // :1257
+        (0x5200, 0x7fff, R),       // :1258
+        (0x8000, 0x82ff, R | M),   // :1259
+        (0x8300, 0x84ff, R),       // :1260
+        (0x8500, 0x85ff, R | M),   // :1261
+        (0x8800, 0x88ff, M),       // :1262
+        (0x9000, 0xafff, R | M),   // :1263
+        (0xb000, 0xb47f, R),       // :1264
+        (0xd000, 0xd7ff, M),       // :1265
+        (0xe000, 0xe7ff, R),       // :1266
+        (0xf000, 0xffff, R | M),   // :1267
+        (0x12000, 0x13fff, M),     // :1268
+        (0x1a000, 0x1bfff, M),     // :1269
+        (0x1e800, 0x1e9ff, M),     // :1270
+        (0x30000, 0x37fff, M),     // :1271
+    ];
+    assert_eq!(CHV_FW_RANGES.len(), 16);
+    for (i, &(s, e, d)) in want.iter().enumerate() {
+        assert_eq!(CHV_FW_RANGES[i], FwRange { start: s, end: e, domains: d }, "row {i}");
+    }
+    for w in CHV_FW_RANGES.windows(2) {
+        assert!(w[0].end < w[1].start, "sorted and non-overlapping: {:?} {:?}", w[0], w[1]);
+    }
+}
+
+#[test]
+fn cherryview_lookups_and_its_gaps() {
+    let f = |o| find_fw_domain_in(&CHV_FW_RANGES, o);
+    assert_eq!(f(0x2030), 1, "RCS ring tail: RENDER");
+    assert_eq!(f(0x4400), 5, "RENDER | MEDIA");
+    assert_eq!(f(0x12000), 4, "GEN6_BSD_RING_BASE, VCS0: MEDIA");
+    assert_eq!(f(0x13fff), 4);
+    assert_eq!(f(0x5000), 0, "a gap needs no forcewake");
+    assert_eq!(f(0x1c000), 0, "a gap needs no forcewake");
+    assert_eq!(f(0x38000), 0, "past the last range");
+    // the shadow table is the same as Gen9's (intel_uncore.c:2453): a VCS0 tail write needs nothing, a read needs MEDIA
+    assert_eq!(write_fw_domains_in(&CHV_FW_RANGES, 0x12030), 0);
+    assert_eq!(read_fw_domains_in(&CHV_FW_RANGES, 0x12030), 4);
+    // the Gen9 wrappers are unchanged
+    assert_eq!(find_fw_domain(0x12000), find_fw_domain_in(&GEN9_FW_RANGES, 0x12000));
+}
+

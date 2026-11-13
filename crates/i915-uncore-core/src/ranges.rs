@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! `__gen9_fw_ranges`, `gen8_shadowed_regs`, `NEEDS_FORCE_WAKE` and the lookups that use them (intel_uncore.c:919-982, :1004-1010,
+//! `__gen9_fw_ranges`, `__chv_fw_ranges`, `gen8_shadowed_regs`, `NEEDS_FORCE_WAKE` and the lookups that use them (intel_uncore.c:919-982, :1004-1010,
 //! :1171-1206, :1274-1307). The Gen9 table is "watertight": sorted, no gaps, covering 0x0..=0x3ffff.
 use crate::domain::{FORCEWAKE_GT, FORCEWAKE_MEDIA, FORCEWAKE_RENDER};
 
@@ -57,6 +57,27 @@ pub static GEN9_FW_RANGES: [FwRange; 32] = [
     range(0x30000, 0x3ffff, MEDIA), // intel_uncore.c:1306
 ];
 
+/// `__chv_fw_ranges` (intel_uncore.c:1255-1272), every range, in Linux's order. Selected for `IS_CHERRYVIEW` at intel_uncore.c:2451-2454
+/// with the same `gen8_shadowed_regs`. NOT watertight: an offset in no range needs no forcewake (the search misses: `0`).
+pub static CHV_FW_RANGES: [FwRange; 16] = [
+    range(0x2000, 0x3fff, RENDER), // intel_uncore.c:1256
+    range(0x4000, 0x4fff, RENDER | MEDIA), // intel_uncore.c:1257
+    range(0x5200, 0x7fff, RENDER), // intel_uncore.c:1258
+    range(0x8000, 0x82ff, RENDER | MEDIA), // intel_uncore.c:1259
+    range(0x8300, 0x84ff, RENDER), // intel_uncore.c:1260
+    range(0x8500, 0x85ff, RENDER | MEDIA), // intel_uncore.c:1261
+    range(0x8800, 0x88ff, MEDIA), // intel_uncore.c:1262
+    range(0x9000, 0xafff, RENDER | MEDIA), // intel_uncore.c:1263
+    range(0xb000, 0xb47f, RENDER), // intel_uncore.c:1264
+    range(0xd000, 0xd7ff, MEDIA), // intel_uncore.c:1265
+    range(0xe000, 0xe7ff, RENDER), // intel_uncore.c:1266
+    range(0xf000, 0xffff, RENDER | MEDIA), // intel_uncore.c:1267
+    range(0x12000, 0x13fff, MEDIA), // intel_uncore.c:1268
+    range(0x1a000, 0x1bfff, MEDIA), // intel_uncore.c:1269
+    range(0x1e800, 0x1e9ff, MEDIA), // intel_uncore.c:1270
+    range(0x30000, 0x37fff, MEDIA), // intel_uncore.c:1271
+];
+
 /// `gen8_shadowed_regs` (intel_uncore.c:1004-1010): registers written without forcewake (the hardware shadows the write).
 /// `(start, end)` inclusive. Shadowing applies to WRITES only; a read of these still needs forcewake (intel_uncore.c:985-990).
 pub static GEN8_SHADOWED_REGS: [(u32, u32); 5] = [
@@ -72,13 +93,13 @@ pub const fn needs_force_wake(offset: u32) -> bool {
     offset < 0x40000 || offset >= 0x116000
 }
 
-/// `find_fw_domain` over the Gen9 table (intel_uncore.c:953-982): Linux's `BSEARCH` (intel_uncore.c:933-952), reproduced as a
-/// binary search over the sorted table. An offset in no range (past 0x3ffff) needs nothing: `0`.
-pub fn find_fw_domain(offset: u32) -> u32 {
-    let (mut lo, mut hi) = (0usize, GEN9_FW_RANGES.len());
+/// `find_fw_domain` (intel_uncore.c:953-982) over `table`: Linux's `BSEARCH` (intel_uncore.c:933-952), reproduced as a binary search over
+/// the sorted table. An offset in no range needs nothing: `0`.
+pub fn find_fw_domain_in(table: &[FwRange], offset: u32) -> u32 {
+    let (mut lo, mut hi) = (0usize, table.len());
     while lo < hi {
         let mid = lo + (hi - lo) / 2;
-        let e = &GEN9_FW_RANGES[mid];
+        let e = &table[mid];
         if offset < e.start {
             hi = mid;
         } else if offset > e.end {
@@ -90,25 +111,40 @@ pub fn find_fw_domain(offset: u32) -> u32 {
     0
 }
 
+/// [`find_fw_domain_in`] over the Gen9 table.
+pub fn find_fw_domain(offset: u32) -> u32 {
+    find_fw_domain_in(&GEN9_FW_RANGES, offset)
+}
+
 /// `is_shadowed` (intel_uncore.c:1171-1183).
 pub fn is_shadowed(offset: u32) -> bool {
     GEN8_SHADOWED_REGS.iter().any(|&(s, e)| offset >= s && offset <= e)
 }
 
-/// `__fwtable_reg_read_fw_domains` (intel_uncore.c:1191-1197): the domains a READ of `offset` needs.
-pub fn read_fw_domains(offset: u32) -> u32 {
+/// `__fwtable_reg_read_fw_domains` (intel_uncore.c:1191-1197): the domains a READ of `offset` needs, over `table`.
+pub fn read_fw_domains_in(table: &[FwRange], offset: u32) -> u32 {
     if needs_force_wake(offset) {
-        find_fw_domain(offset)
+        find_fw_domain_in(table, offset)
     } else {
         0
     }
 }
 
-/// `__fwtable_reg_write_fw_domains` (intel_uncore.c:1199-1206): the domains a WRITE of `offset` needs (none if shadowed).
-pub fn write_fw_domains(offset: u32) -> u32 {
+/// `__fwtable_reg_write_fw_domains` (intel_uncore.c:1199-1206): the domains a WRITE of `offset` needs (none if shadowed), over `table`.
+pub fn write_fw_domains_in(table: &[FwRange], offset: u32) -> u32 {
     if needs_force_wake(offset) && !is_shadowed(offset) {
-        find_fw_domain(offset)
+        find_fw_domain_in(table, offset)
     } else {
         0
     }
+}
+
+/// [`read_fw_domains_in`] over the Gen9 table.
+pub fn read_fw_domains(offset: u32) -> u32 {
+    read_fw_domains_in(&GEN9_FW_RANGES, offset)
+}
+
+/// [`write_fw_domains_in`] over the Gen9 table.
+pub fn write_fw_domains(offset: u32) -> u32 {
+    write_fw_domains_in(&GEN9_FW_RANGES, offset)
 }

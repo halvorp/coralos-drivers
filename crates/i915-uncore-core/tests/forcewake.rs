@@ -239,10 +239,12 @@ fn cherryview_domains_time_out_against_a_gen9_script_and_their_writes_are_refuse
 }
 
 #[test]
-fn for_platform_builds_gen9_and_refuses_cherryview_by_generation() {
-    assert!(Uncore::for_platform(&lookup(0x591c).unwrap()).is_ok());
-    assert!(Uncore::for_platform(&lookup(0x1916).unwrap()).is_ok());
-    assert_eq!(Uncore::for_platform(&lookup(0x22b0).unwrap()).unwrap_err(), I915Error::UnsupportedGeneration { devid: 0x22b0, gen: 8 });
+fn for_platform_builds_gen9_and_the_cherryview_uncore() {
+    // intel_uncore.c:2210-2219 (Gen9: RENDER, GT, MEDIA) and :2220-2225 (Valleyview / Cherryview: RENDER, MEDIA)
+    assert_eq!(Uncore::for_platform(&lookup(0x591c).unwrap()).unwrap().domains(), 0b111);
+    assert_eq!(Uncore::for_platform(&lookup(0x1916).unwrap()).unwrap().domains(), 0b111);
+    assert_eq!(Uncore::for_platform(&lookup(0x22b0).unwrap()).unwrap().domains(), 0b101, "FORCEWAKE_RENDER | FORCEWAKE_MEDIA");
+    assert_eq!(Uncore::chv().domains(), 0b101);
 }
 
 #[test]
