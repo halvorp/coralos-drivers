@@ -69,6 +69,24 @@ fn clock_and_pstate_registers_are_linux_literals() {
 }
 
 #[test]
+fn cherryview_gt_power_and_fuse_registers() {
+    // intel_gt_regs.h:11, :1431-1437, :1501-1509, each by its literal
+    assert_eq!(CHV_FUSE_GT.offset(), 0x182168);
+    assert_eq!(
+        (CHV_FGT_EU_DIS_SS1_R1_MASK, CHV_FGT_EU_DIS_SS1_R0_MASK, CHV_FGT_EU_DIS_SS0_R1_MASK, CHV_FGT_EU_DIS_SS0_R0_MASK),
+        (0xf000_0000, 0x0f00_0000, 0x00f0_0000, 0x000f_0000)
+    );
+    assert_eq!((CHV_FGT_DISABLE_SS1, CHV_FGT_DISABLE_SS0), (0x800, 0x400));
+    assert_eq!(VLV_GTLC_WAKE_CTRL.offset(), 0x130090);
+    assert_eq!((VLV_GTLC_RENDER_CTX_EXISTS, VLV_GTLC_MEDIA_CTX_EXISTS, VLV_GTLC_ALLOWWAKEREQ), (0x0200_0000, 0x0100_0000, 0x1));
+    assert_eq!(VLV_GTLC_PW_STATUS.offset(), 0x130094);
+    assert_eq!(
+        (VLV_GTLC_ALLOWWAKEACK, VLV_GTLC_ALLOWWAKEERR, VLV_GTLC_PW_MEDIA_STATUS_MASK, VLV_GTLC_PW_RENDER_STATUS_MASK),
+        (0x1, 0x2, 0x20, 0x80)
+    );
+}
+
+#[test]
 fn aliases_are_the_only_duplicate_offsets() {
     assert_eq!(FORCEWAKE_MT.offset(), 0xa188);
     assert_eq!(FORCEWAKE_ACK_HSW.offset(), 0x130044);
@@ -83,5 +101,5 @@ fn aliases_are_the_only_duplicate_offsets() {
             assert_ne!(a, b, "{na} and {nb} share an offset without being a listed alias");
         }
     }
-    assert_eq!(CATALOG.len(), 23);
+    assert_eq!(CATALOG.len(), 26);
 }

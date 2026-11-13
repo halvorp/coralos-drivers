@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Gen9 slice / subslice / EU topology from the fuse registers: a port of `gen9_sseu_info_init` (gt/intel_sseu.c:377-480) for
 //! the non-LP (Skylake, Kaby Lake) case, over register VALUES the caller read. The Gen9 LP (BXT/GLK) pooled-EU branch is
-//! not ported: no LP row is carried.
+//! not ported: no LP row is carried. Cherryview (DECISIONS.md D8): [`chv_sseu_info`], a port of `cherryview_sseu_info_init`
+//! (gt/intel_sseu.c:329-375), selected for IS_CHERRYVIEW by `intel_sseu_info_init` (:648-649).
 use i915_common_core::reg::field_get;
-use i915_gt_regs_core::{GEN8_F2_S_ENA_MASK, GEN9_F2_SS_DIS_MASK};
+use i915_gt_regs_core::{
+    CHV_FGT_DISABLE_SS0, CHV_FGT_DISABLE_SS1, CHV_FGT_EU_DIS_SS0_R0_MASK, CHV_FGT_EU_DIS_SS0_R1_MASK, CHV_FGT_EU_DIS_SS1_R0_MASK,
+    CHV_FGT_EU_DIS_SS1_R1_MASK, GEN8_F2_S_ENA_MASK, GEN9_F2_SS_DIS_MASK,
+};
 
 /// `GEN_MAX_SLICES` for the hsw-layout mask arrays (3 on Gen9: `intel_sseu_set_info(sseu, 3, 4, 8)`, intel_sseu.c:390-391).
 pub const MAX_SLICES: usize = 3;
@@ -103,5 +107,46 @@ pub fn gen9_sseu_info(fuse2: u32, eu_disable: [u32; MAX_SLICES]) -> SseuInfo {
     info.has_slice_pg = slice_mask.count_ones() > 1;
     info.has_subslice_pg = false;
     info.has_eu_pg = info.eu_per_subslice > 2;
+    info
+}
+
+/// `cherryview_sseu_info_init` (gt/intel_sseu.c:329-375) over `fuse` = `CHV_FUSE_GT` (0x182168, read without forcewake: the GUnit
+/// block). One slice; `intel_sseu_set_info(sseu, 1, 2, 8)` (:337); each subslice whose disable bit is clear gets the EUs its two
+/// 4-bit row fields do not disable (:339-355). `eu_per_subslice` is the TRUNCATING `eu_total / subslice_total` (:363-366), not
+/// Gen9's round-up; slice power gating is never set, subslice gating only with more than one subslice, EU gating with more than
+/// one EU pair (:372-374).
+pub fn chv_sseu_info(fuse: u32) -> SseuInfo {
+    let mut info = SseuInfo {
+        slice_mask: 1, // BIT(0), :336
+        max_slices: 1,
+        max_subslices: 2,
+        max_eus_per_subslice: 8,
+        subslice_mask: [0; MAX_SLICES],
+        eu_mask: [[0; MAX_SUBSLICES]; MAX_SLICES],
+        subslice_7eu: [0; MAX_SLICES],
+        eu_total: 0,
+        eu_per_subslice: 0,
+        has_slice_pg: false,
+        has_subslice_pg: false,
+        has_eu_pg: false,
+    };
+    // (disable bit, row 0 field, row 1 field) per subslice, :339-355; row 1 sits above row 0's hweight32 = 4 bits (:342, :351)
+    let rows = [
+        (CHV_FGT_DISABLE_SS0, CHV_FGT_EU_DIS_SS0_R0_MASK, CHV_FGT_EU_DIS_SS0_R1_MASK),
+        (CHV_FGT_DISABLE_SS1, CHV_FGT_EU_DIS_SS1_R0_MASK, CHV_FGT_EU_DIS_SS1_R1_MASK),
+    ];
+    for (ss, (disable, r0, r1)) in rows.into_iter().enumerate() {
+        if fuse & disable == 0 {
+            let disabled = (field_get(r0, fuse) | field_get(r1, fuse) << r0.count_ones()) as u8;
+            info.subslice_mask[0] |= 1 << ss; // :344, :353
+            info.eu_mask[0][ss] = !disabled; // sseu_set_eus(sseu, 0, ss, ~disabled_mask & 0xFF), :345, :354
+        }
+    }
+    let total: u16 = info.eu_mask[0].iter().map(|m| m.count_ones() as u16).sum(); // compute_eu_total, :357
+    info.eu_total = total;
+    let sst = info.subslice_total();
+    info.eu_per_subslice = if sst != 0 { (total / sst as u16) as u8 } else { 0 }; // :363-366
+    info.has_subslice_pg = sst > 1; // :373
+    info.has_eu_pg = info.eu_per_subslice > 2; // :374
     info
 }

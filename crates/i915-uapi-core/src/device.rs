@@ -90,8 +90,8 @@ pub struct UapiDevice {
 pub const VIDEO_ENGINE_BITS: u32 = (1 << i915_devinfo_core::engine::VCS0) | (1 << i915_devinfo_core::engine::VCS1);
 
 impl UapiDevice {
-    /// Build the device facts for a Gen9 row. A non-Gen9 row (the Cherryview negative control) is refused by name, exactly as the
-    /// rest of the port does (`PlatformDescriptor::require_gen9`).
+    /// Build the device facts for a row whose GT is ported (`PlatformDescriptor::require_gt_port`: Gen9 and Cherryview, DECISIONS.md D8).
+    /// Any other row is refused by name, exactly as the rest of the port does.
     pub fn new(
         desc: PlatformDescriptor,
         pci_revision: u8,
@@ -99,7 +99,7 @@ impl UapiDevice {
         cs_timestamp_hz: u32,
         system_memory_bytes: u64,
     ) -> Result<UapiDevice, I915Error> {
-        desc.require_gen9()?;
+        desc.require_gt_port()?;
         let mut d = UapiDevice {
             desc,
             pci_revision,

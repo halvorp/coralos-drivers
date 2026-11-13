@@ -290,3 +290,34 @@ fn the_poll_cap_is_enforced_with_no_deadline_and_a_silent_ack() {
     let e = u.wait_released(&mut s, FORCEWAKE_GT).unwrap_err();
     assert!(matches!(e, I915Error::AckTimeout { polls: 5, .. }), "{e:?}");
 }
+
+#[test]
+fn each_uncore_names_its_own_set_registers_as_its_write_list() {
+    use i915_uncore_core::{Uncore, VLV_DOMAINS, VLV_WRITE_ALLOWLIST, WRITE_ALLOWLIST};
+    // FORCEWAKE_VLV / FORCEWAKE_MEDIA_VLV (intel_gt_regs.h:1513, :1515); the Gen9 three (:864, :909, :910)
+    let offs = |l: &[i915_common_core::Reg]| l.iter().map(|r| r.offset()).collect::<Vec<_>>();
+    assert_eq!(offs(Uncore::chv().write_allowlist()), [0x1300b0, 0x1300b8]);
+    assert_eq!(offs(Uncore::gen9().write_allowlist()), [0xa188, 0xa270, 0xa278]);
+    assert_eq!(offs(&VLV_WRITE_ALLOWLIST), offs(&VLV_DOMAINS.map(|d| d.set)));
+    assert_eq!(WRITE_ALLOWLIST.len(), 3);
+}
+
+#[test]
+fn each_uncore_answers_from_its_own_range_table() {
+    use i915_uncore_core::{Uncore, FORCEWAKE_MEDIA, FORCEWAKE_RENDER};
+    // VCS0's ring (0x12000): __chv_fw_ranges gives MEDIA (intel_uncore.c:1268 GEN_FW_RANGE(0x12000, 0x13fff, FORCEWAKE_MEDIA));
+    // RCS0's ring (0x2000): RENDER on both tables
+    let chv = Uncore::chv();
+    assert_eq!(chv.read_domains(0x12030), FORCEWAKE_MEDIA);
+    assert_eq!(chv.read_domains(0x2030), FORCEWAKE_RENDER);
+    // a CHV gap (0x5000-0x51ff lies between :1257 and :1258) needs nothing; the same offset is GT on the Gen9 table (:1279)
+    assert_eq!(chv.read_domains(0x5000), 0);
+    assert_eq!(Uncore::gen9().read_domains(0x5000), i915_uncore_core::FORCEWAKE_GT);
+    // 0x9120 (GEN8_FUSE2): RENDER | MEDIA on CHV (:1262, 0x9000-0xafff), GT on Gen9 (:1291, 0x8d00-0x93ff) - the tables disagree
+    assert_eq!(chv.read_domains(0x9120), FORCEWAKE_RENDER | FORCEWAKE_MEDIA);
+    assert_eq!(Uncore::gen9().read_domains(0x9120), i915_uncore_core::FORCEWAKE_GT);
+    // a shadowed write (RING_TAIL of RCS0, 0x2030 - gen8_shadowed_regs) needs no forcewake
+    assert_eq!(chv.write_domains(0x2030), 0);
+    // an unshadowed write (RING_MI_MODE of VCS0, 0x1209c) needs the media domain
+    assert_eq!(chv.write_domains(0x1209c), FORCEWAKE_MEDIA);
+}

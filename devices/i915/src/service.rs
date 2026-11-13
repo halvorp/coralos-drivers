@@ -85,8 +85,9 @@ fn start(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, cra
     (bar, cfg, proof, adoption)
 }
 
-/// What the logical-size planner needs beyond the adoption: the platform's display caps and the adopted pipe's geometry registers.
-type SizeFacts = (i915_kbl_display_core::platform::DisplayCaps, Option<i915_display_modeset_core::resize::FirmwareGeometry>);
+/// What the logical-size planner needs beyond the adoption: the platform's display caps (`None`: this device does not drive the
+/// platform's display - Cherryview) and the adopted pipe's geometry registers.
+type SizeFacts = (Option<i915_kbl_display_core::platform::DisplayCaps>, Option<i915_display_modeset_core::resize::FirmwareGeometry>);
 
 /// [`start`], and the firmware's scanout as the readout found it - the scanout pair's flip planner starts from it (D18).
 fn start_full(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof, crate::display::Adoption, Option<i915_display_modeset_core::adopt::FirmwareScanout>, SizeFacts) {
@@ -108,10 +109,11 @@ fn start_full(lg: &mut TaskLog) -> (BarMmio<Ticks>, ReadWindow, crate::gt::Proof
     };
     match bringup(&mut bar, &mut cfg, lg) {
         Ok((ready, proof)) => {
-            let firmware = ready.adoption.adopted().and_then(|a| i915_display_modeset_core::adopt::FirmwareScanout::from_readout(&ready.state, a.pipe, a.fb.base).ok());
-            let caps = ready.device.caps;
-            let geometry = read_geometry(&mut bar, &caps, &ready, lg);
-            (bar, cfg, proof, ready.adoption, firmware, (caps, geometry))
+            let adoption = crate::startup::adoption_of(ready.as_ref());
+            let firmware = ready.as_ref().and_then(|r| r.adoption.adopted().and_then(|a| i915_display_modeset_core::adopt::FirmwareScanout::from_readout(&r.state, a.pipe, a.fb.base).ok()));
+            let caps = ready.as_ref().map(|r| r.device.caps);
+            let geometry = ready.as_ref().and_then(|r| read_geometry(&mut bar, &r.device.caps, r, lg));
+            (bar, cfg, proof, adoption, firmware, (caps, geometry))
         }
         // the failing stage already printed its named line
         Err(crate::startup::BringupError::Proof(_)) | Err(crate::startup::BringupError::Window(_)) => exit(exit_code::PROOF_FAILED),

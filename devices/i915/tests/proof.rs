@@ -43,6 +43,8 @@ struct Chip {
     armed: u32,
     /// every access in order: ('R' | 'W', register)
     trace: Vec<(char, u32)>,
+    /// Cherryview: does setting VLV_GTLC_WAKE_CTRL.ALLOWWAKEREQ raise PW_STATUS.ALLOWWAKEACK?
+    wake_acks: bool,
 }
 
 const FUSE2: u32 = 0x9120;
@@ -62,7 +64,17 @@ impl Chip {
             deadline_reads: 50,
             armed: 0,
             trace: vec![],
+            wake_acks: true,
         }
+    }
+    /// A Cherryview GT (8086:22B0): the two VLV domains (intel_gt_regs.h:1513-1516), CHV_FUSE_GT (0x182168), and the GUnit's GT wake
+    /// gate / well status (VLV_GTLC_WAKE_CTRL 0x130090, VLV_GTLC_PW_STATUS 0x130094).
+    fn chv(fuse: u32, pw_status: u32) -> Chip {
+        let mut c = Chip::new(bar_vector_a());
+        let d = |set, ack| Dom { set, ack, beh: Ack::Immediate, state: 0, ack_val: 0 };
+        c.doms = vec![d(0x1300b0, 0x1300b4), d(0x1300b8, 0x1300bc)];
+        c.gt = vec![(0x182168, fuse), (0x130090, 0x0300_0000), (0x130094, pw_status)];
+        c
     }
     fn dom(&mut self, set: u32) -> &mut Dom {
         self.doms.iter_mut().find(|d| d.set == set).unwrap()
@@ -83,6 +95,9 @@ impl Mmio for Chip {
             return if d.beh == Ack::AllOnes { u32::MAX } else { d.ack_val };
         }
         if let Some((_, v)) = self.gt.iter().find(|(o, _)| *o == reg) {
+            if reg == 0x130094 {
+                self.armed += 1; // a PW_STATUS poll counts toward the simulated deadline like an ack poll
+            }
             return *v;
         }
         panic!("read of unmodelled register {reg:#x}")
@@ -92,6 +107,14 @@ impl Mmio for Chip {
     fn w32(&mut self, reg: u32, v: u32) {
         self.writes.push((reg, v));
         self.trace.push(('W', reg));
+        if reg == 0x130090 && self.gt.iter().any(|(o, _)| *o == 0x130090) {
+            self.set_gt(0x130090, v);
+            if v & 1 != 0 && self.wake_acks {
+                let pw = self.gt.iter().find(|(o, _)| *o == 0x130094).unwrap().1;
+                self.set_gt(0x130094, pw | 1); // ALLOWWAKEACK follows ALLOWWAKEREQ
+            }
+            return;
+        }
         let Some(d) = self.doms.iter_mut().find(|d| d.set == reg) else { panic!("write to {reg:#x}, which is not a forcewake set register") };
         let m = v >> 16;
         d.state = (d.state & !m) | (v & m & 0xffff);
@@ -173,9 +196,11 @@ fn the_write_allow_list_is_the_three_set_registers_in_both_layers() {
     let mut got: Vec<u32> = WRITE_ALLOWLIST.iter().map(|r| r.offset()).collect();
     got.sort();
     assert_eq!(got, vec![0xa188, 0xa270, 0xa278]);
+    // the window grant is both generations' (one binary): Gen9's three and Cherryview's three (VLV_GTLC_WAKE_CTRL 0x130090,
+    // FORCEWAKE_VLV 0x1300b0, FORCEWAKE_MEDIA_VLV 0x1300b8)
     let mut win: Vec<u64> = BAR0_WRITE_RANGES.iter().map(|r| r.off).collect();
     win.sort();
-    assert_eq!(win, vec![0xa188, 0xa270, 0xa278]);
+    assert_eq!(win, vec![0xa188, 0xa270, 0xa278, 0x130090, 0x1300b0, 0x1300b8]);
     assert!(BAR0_WRITE_RANGES.iter().all(|r| r.len == 4));
 }
 
@@ -210,19 +235,92 @@ fn any_other_write_is_refused_by_the_guard_and_never_reaches_the_device() {
 
 // ---- the gate: CHV and unknown ids are refused before BAR0 is touched --------------------------------------------------------
 
+// ---- Cherryview (DECISIONS.md D8): the GT only, never the display -------------------------------------------------------------------
+
+const CHV_FUSE: u32 = 0x8003_0000; // SS0 EUs 0-1 and SS1 EU 7 fused off: 6 + 7 = 13 EUs (cherryview_sseu_info_init)
+
 #[test]
-fn a_cherry_trail_id_is_refused_by_name_and_bar0_is_never_touched() {
+fn a_cherry_trail_proves_its_gt_and_never_reads_the_display() {
     for id in [0x22b0u16, 0x22b1, 0x22b2, 0x22b3] {
-        let mut chip = Chip::new(bar_vector_a());
+        // the firmware left GT waking allowed (ALLOWWAKEACK) and both wells on (bits 5, 7)
+        let mut chip = Chip::chv(CHV_FUSE, 0xa1);
         let mut cfg = config_page(id, 0x21);
         let mut lg = Lines::default();
-        let e = bringup(&mut chip, &mut cfg, &mut lg).err().unwrap();
-        assert_eq!(e, BringupError::Gate(I915Error::UnsupportedGeneration { devid: id, gen: 8 }), "{id:#x}");
-        assert_eq!(e.name(), "UNSUPPORTED-GENERATION");
-        assert_eq!(lg.0, vec![format!("[I915-PROOF-OF-LIFE REFUSED id={id:04x} why=UNSUPPORTED-GENERATION platform=chv gen=8 writes=0]")]);
-        assert!(chip.reads.is_empty() && chip.writes.is_empty(), "BAR0 untouched");
-        assert!(chip.win.reads.is_empty(), "not even a display register was read");
+        let (ready, proof) = bringup(&mut chip, &mut cfg, &mut lg).expect("a Cherry Trail GT");
+        assert!(ready.is_none(), "no display readout on Cherryview");
+        assert_eq!(i915_device::startup::adoption_of(ready.as_ref()), i915_device::display::Adoption::NoReadout);
+        assert!(chip.win.reads.is_empty(), "not a single display register was read");
+        assert_eq!(lg.0[0], format!("[I915-KBL-DEV PCI command=0x0007 io=1 mem=1 bme=1 intx_disable=0 (pci_set_master: i915_driver.c:533)]"));
+        assert_eq!(lg.0[1], format!("[I915-DEV IDENTIFIED platform=cherryview id={id:04x} rev=21 gen=8 display=not-driven (the GT only, DECISIONS.md D8)]"));
+        assert_eq!(lg.0[2], format!("[I915-PROOF-OF-LIFE id={id:04x} rev=21 platform=chv gen=8 llc=0 display_ver=8 gt=0]"));
+        assert_eq!(lg.0[3], "[I915-GT-WELLS gt_wake=already-allowed render=1 media=1 wells=on pw_status=0xa1 (vlv_suspend.c)]");
+        assert_eq!(lg.0[4], "[I915-GT-FUSE chv_fuse_gt=0x80030000 slices=1 subslices=2 eu=13 eu_per_subslice=6 ts_hz=12500000]");
+        assert_eq!(lg.0[5], "[I915-FORCEWAKE domains=RENDER,MEDIA ack=ok released=1 writes=4 refused=0]");
+        assert_eq!(lg.0.len(), 6);
+        // the only writes: FORCEWAKE_VLV and FORCEWAKE_MEDIA_VLV, get then put, RENDER first (intel_uncore.c:2220-2225)
+        assert_eq!(chip.writes, vec![(0x1300b0, GET), (0x1300b8, GET), (0x1300b0, PUT), (0x1300b8, PUT)]);
+        assert_eq!((proof.sseu.eu_total, proof.ts_hz, proof.fuse2, proof.writes), (13, 12_500_000, CHV_FUSE, 4));
     }
+}
+
+#[test]
+fn a_shut_gt_wake_gate_is_opened_first() {
+    // ALLOWWAKEACK clear: vlv_allow_gt_wake sets ALLOWWAKEREQ (bit 0) over what the firmware left (bits 25:24), then waits for the ack
+    let mut chip = Chip::chv(CHV_FUSE, 0xa0);
+    let mut lg = Lines::default();
+    let p = proof_of_life(&mut chip, &i915_devinfo_core::lookup(0x22b0).unwrap(), &ident(0x22b0), &mut lg).unwrap();
+    assert_eq!(chip.writes[0], (0x130090, 0x0300_0001));
+    assert_eq!(chip.trace.iter().position(|t| *t == ('W', 0x130090)), Some(2), "read PW_STATUS, read WAKE_CTRL, then the write");
+    assert!(chip.writes[1..].iter().all(|w| w.0 == 0x1300b0 || w.0 == 0x1300b8), "{:x?}", chip.writes);
+    assert!(lg.0[1].starts_with("[I915-GT-WELLS gt_wake=allowed "), "{}", lg.0[1]);
+    assert_eq!(p.writes, 5);
+}
+
+#[test]
+fn a_gt_wake_gate_that_never_opens_is_a_named_failure_before_any_forcewake() {
+    let mut chip = Chip::chv(CHV_FUSE, 0xa0);
+    chip.wake_acks = false;
+    let mut lg = Lines::default();
+    let e = proof_of_life(&mut chip, &i915_devinfo_core::lookup(0x22b0).unwrap(), &ident(0x22b0), &mut lg).unwrap_err();
+    assert!(matches!(e, I915Error::AckTimeout { domain: 0, .. }), "{e:?}");
+    assert_eq!(lg.0[1], "[I915-FORCEWAKE FAIL domain=GUNIT why=ACK-TIMEOUT reg=0x130094 got=0xa0 want=0x1 polls=50]");
+    assert_eq!(chip.writes, vec![(0x130090, 0x0300_0001)], "no forcewake was requested");
+}
+
+#[test]
+fn wells_that_do_not_report_on_are_named_not_fatal() {
+    // Bspec: the GT well flags are debug only; Linux logs the timeout (vlv_suspend.c:366-369) and goes on
+    let mut chip = Chip::chv(CHV_FUSE, 0x01);
+    let mut lg = Lines::default();
+    proof_of_life(&mut chip, &i915_devinfo_core::lookup(0x22b0).unwrap(), &ident(0x22b0), &mut lg).unwrap();
+    assert_eq!(lg.0[1], "[I915-GT-WELLS gt_wake=already-allowed render=0 media=0 wells=TIMEOUT pw_status=0x1 (vlv_suspend.c)]");
+}
+
+#[test]
+fn the_media_well_alone_off_is_still_a_timeout() {
+    // VLV_GTLC_PW_RENDER_STATUS_MASK (bit 7) on, VLV_GTLC_PW_MEDIA_STATUS_MASK (bit 5) off: the wait is for BOTH (vlv_suspend.c:356)
+    let mut chip = Chip::chv(CHV_FUSE, 0x81);
+    let mut lg = Lines::default();
+    proof_of_life(&mut chip, &i915_devinfo_core::lookup(0x22b0).unwrap(), &ident(0x22b0), &mut lg).unwrap();
+    assert_eq!(lg.0[1], "[I915-GT-WELLS gt_wake=already-allowed render=1 media=0 wells=TIMEOUT pw_status=0x81 (vlv_suspend.c)]");
+}
+
+#[test]
+fn an_all_ones_well_status_is_a_dead_bar_not_an_open_gate() {
+    // 0xffffffff satisfies every mask: ALLOWWAKEACK "set", both wells "on". It is refused by name before any write.
+    let mut chip = Chip::chv(CHV_FUSE, u32::MAX);
+    let mut lg = Lines::default();
+    let e = proof_of_life(&mut chip, &i915_devinfo_core::lookup(0x22b0).unwrap(), &ident(0x22b0), &mut lg).unwrap_err();
+    assert_eq!(e, I915Error::MmioUnreliable { domain: 0, reg: i915_gt_regs_core::VLV_GTLC_PW_STATUS });
+    assert_eq!(lg.0[1], "[I915-FORCEWAKE FAIL domain=GUNIT why=MMIO-UNRELIABLE reg=0x130094 got=0xffffffff]");
+    assert!(chip.writes.is_empty());
+}
+
+#[test]
+fn a_gen7_row_is_still_refused_at_the_gate() {
+    let mut d = i915_devinfo_core::lookup(0x22b0).unwrap();
+    d.info.graphics_ver = 7;
+    assert_eq!(d.require_gt_port(), Err(I915Error::UnsupportedGeneration { devid: 0x22b0, gen: 7 }));
 }
 
 #[test]
@@ -265,7 +363,7 @@ fn bringup_runs_the_readout_then_the_proof() {
     let mut cfg = config_page(0x591c, 0x02);
     let mut lg = Lines::default();
     let (ready, proof) = bringup(&mut chip, &mut cfg, &mut lg).expect("a Pixelbook Go");
-    assert_eq!(ready.active_pipes, 1);
+    assert_eq!(ready.expect("Gen9: the display readout ran").active_pipes, 1);
     assert_eq!(proof.writes, 6);
     let i_ready = lg.0.iter().position(|l| l.starts_with("[I915-KBL-DEV READY")).unwrap();
     let i_pol = lg.0.iter().position(|l| l.starts_with("[I915-PROOF-OF-LIFE id=")).unwrap();

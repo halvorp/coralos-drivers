@@ -210,8 +210,94 @@ const fn compose() -> [Reg; N_ALLOW] {
     out
 }
 
-/// THE allow-list the executor's `WriteGuard` is built over. Three registers in the default build.
+/// THE Gen9 allow-list the executor's `WriteGuard` is built over. Three registers in the default build.
 pub static ALLOW: [Reg; N_ALLOW] = compose();
+
+// ---- Cherryview (Gen8, DECISIONS.md D8): its own allow-list -------------------------------------------------------------------------
+
+/// Cherryview's increment-1 writes: the two VLV forcewake SET registers (`fw_domain_init` for FORCEWAKE_VLV / FORCEWAKE_MEDIA_VLV,
+/// intel_uncore.c:2220-2225; [`i915_uncore_core::VLV_WRITE_ALLOWLIST`]) and the GT wake gate `VLV_GTLC_WAKE_CTRL`, which
+/// `vlv_allow_gt_wake` sets when the firmware left GT waking disallowed (vlv_suspend.c:328-346; `exec::power_chv`).
+pub const CHV_GT_REGS: [Reg; 3] = [r::FORCEWAKE_VLV, r::FORCEWAKE_MEDIA_VLV, r::VLV_GTLC_WAKE_CTRL];
+
+/// A Gen9-only write of [`ALLOW`] that Cherryview never makes: the Gen9 forcewake SET registers, every MOCS word (Cherryview has no
+/// MOCS table: `get_mocs_settings` gives it none, gt/intel_mocs.c:454-534, so no `GEN9_GFX_MOCS`, `GEN9_LNCFCMOCS` or engine MOCS
+/// block is written), and the P4 display writes (Cherryview's display is not driven by this device).
+const fn gen9_only(reg: Reg) -> bool {
+    let o = reg.offset();
+    let mut i = 0;
+    while i < WRITE_ALLOWLIST.len() {
+        if WRITE_ALLOWLIST[i].offset() == o {
+            return true;
+        }
+        i += 1;
+    }
+    let mut i = 0;
+    while i < P3_MOCS_REGS.len() {
+        if P3_MOCS_REGS[i].offset() == o {
+            return true;
+        }
+        i += 1;
+    }
+    if o >= r::GEN9_VCS0_MOCS0 && o < r::GEN9_VCS0_MOCS0 + 64 * 4 {
+        return true;
+    }
+    let mut i = 0;
+    while P4_ON && i < P4_PRESENT_REGS.len() {
+        if P4_PRESENT_REGS[i].offset() == o {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+const fn count_shared() -> usize {
+    let all = compose();
+    let mut n = 0;
+    let mut i = 0;
+    while i < N_ALLOW {
+        if !gen9_only(all[i]) {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
+
+/// How many registers Cherryview's allow-list holds.
+pub const N_ALLOW_CHV: usize = CHV_GT_REGS.len() + count_shared();
+
+const fn compose_chv() -> [Reg; N_ALLOW_CHV] {
+    let all = compose();
+    let mut out = [Reg::new(0); N_ALLOW_CHV];
+    let mut n = 0;
+    while n < CHV_GT_REGS.len() {
+        out[n] = CHV_GT_REGS[n];
+        n += 1;
+    }
+    let mut i = 0;
+    while i < N_ALLOW {
+        if !gen9_only(all[i]) {
+            out[n] = all[i];
+            n += 1;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Cherryview's allow-list: [`CHV_GT_REGS`] and every register of [`ALLOW`] that is not Gen9-only (the GGTT invalidate and the
+/// private PAT, the execlists and reset registers of the render and video engines; the same planners run on Gen8).
+pub static ALLOW_CHV: [Reg; N_ALLOW_CHV] = compose_chv();
+
+/// The allow-list for `desc`'s row: Cherryview's, or the Gen9 one. (The executor's uncore refuses any other row by name.)
+pub fn allow_for(desc: &i915_devinfo_core::PlatformDescriptor) -> &'static [Reg] {
+    match desc.platform() {
+        i915_devinfo_core::Platform::Cherryview => &ALLOW_CHV,
+        _ => &ALLOW,
+    }
+}
 
 /// The GGTT window the executor may store entries into in THIS build (`None` = closed, every entry store is refused).
 pub const fn compiled_ggtt_window() -> Option<GgttWindow> {
@@ -222,8 +308,9 @@ pub const fn compiled_ggtt_window() -> Option<GgttWindow> {
     }
 }
 
-/// How many ranges the BAR0 window grant holds: one per allow-listed register, plus the GGTT window under P2.
-pub const N_RANGES: usize = N_ALLOW + on(P2_ON, 1);
+/// How many ranges the BAR0 window grant holds: one per register of [`ALLOW`] and of [`CHV_GT_REGS`] (the union of the two
+/// generations' lists: one binary serves both), plus the GGTT window under P2.
+pub const N_RANGES: usize = N_ALLOW + CHV_GT_REGS.len() + on(P2_ON, 1);
 
 const fn ranges() -> [WriteRange; N_RANGES] {
     let mut out = [WriteRange::reg32(0); N_RANGES];
@@ -232,16 +319,23 @@ const fn ranges() -> [WriteRange; N_RANGES] {
         out[i] = WriteRange::reg32(ALLOW[i].offset());
         i += 1;
     }
+    let mut k = 0;
+    while k < CHV_GT_REGS.len() {
+        out[N_ALLOW + k] = WriteRange::reg32(CHV_GT_REGS[k].offset());
+        k += 1;
+    }
     if P2_ON {
-        out[N_ALLOW] = WriteRange { off: GGTT_WINDOW.base as u64, len: GGTT_WINDOW.bytes as u64 };
+        out[N_ALLOW + CHV_GT_REGS.len()] = WriteRange { off: GGTT_WINDOW.base as u64, len: GGTT_WINDOW.bytes as u64 };
     }
     out
 }
 
-/// BAR0's MMIO write grant (the hardware-facing half), built from [`ALLOW`] so the two cannot drift. Default build: the three
-/// forcewake SET registers, each one 32-bit register.
+/// BAR0's MMIO write grant (the hardware-facing half), built from [`ALLOW`] and [`CHV_GT_REGS`] so the two halves cannot drift.
+/// Default build: the three Gen9 forcewake SET registers and Cherryview's three, each one 32-bit register.
 pub static BAR0_WRITE_RANGES: [WriteRange; N_RANGES] = ranges();
 
-/// The part of BAR0 the whole device touches. Default: up to and including `GEN6_RP_STATE_CAP` (0x145998, intel_mchbar_regs.h:225)
-/// and the GT forcewake ack (0x130044). With P2 the whole 16 MiB GTTMMADR (the GGTT is its upper half, gt/intel_ggtt.c:1187).
-pub const BAR0_NEED_BYTES: u64 = if P2_ON { 16 << 20 } else { 0x14_59a0 };
+/// The part of BAR0 the whole device touches. Default: up to and including Cherryview's `CHV_FUSE_GT` (0x182168,
+/// intel_gt_regs.h:1431), the highest register the proof of life reads - above Gen9's `GEN6_RP_STATE_CAP` (0x145998,
+/// intel_mchbar_regs.h:225) and the forcewake acks (0x130044, 0x1300bc). With P2 the whole 16 MiB GTTMMADR (the GGTT is its upper
+/// half, gt/intel_ggtt.c:1187).
+pub const BAR0_NEED_BYTES: u64 = if P2_ON { 16 << 20 } else { r::CHV_FUSE_GT.offset() as u64 + 4 };

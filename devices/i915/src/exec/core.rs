@@ -20,7 +20,7 @@ use crate::log::{emit, Log};
 use coralos_hal::Mmio;
 use i915_common_core::{I915Error, Reg, RegIo, WriteGuard, WriteRefusal};
 use i915_devinfo_core::PlatformDescriptor;
-use i915_uncore_core::{read_fw_domains, write_fw_domains, Uncore, WRITE_ALLOWLIST};
+use i915_uncore_core::Uncore;
 
 /// What the executor has done to the device, for markers and for the tests' "refused by name and counted".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -56,20 +56,22 @@ pub const DEFAULT_MAX_POLLS: u32 = 100_000;
 impl<B: Mmio> Executor<B> {
     /// An executor with THIS build's allow-list (three forcewake registers unless `p2-memory` / `p3-exec` are compiled in).
     pub fn new(bar: B, desc: &PlatformDescriptor) -> Result<Self, I915Error> {
-        Self::with_grant(bar, desc, &allow::ALLOW, allow::compiled_ggtt_window())
+        Self::with_grant(bar, desc, allow::allow_for(desc), allow::compiled_ggtt_window())
     }
 
     /// An executor with an explicit grant, for a build that wants a NARROWER one than it compiled in (never wider: the BAR0 window
     /// grant is `allow::BAR0_WRITE_RANGES`, and the loader refuses what it does not cover) and for the tests that prove the default
     /// build's refusals inside a feature-ON test run.
     ///
-    /// The forcewake SET registers must be on `allow`: a grant without them cannot wake the GT (the protocol would write, be refused
-    /// and wait for an ack that never comes), so it is refused here by name (`BAD-VALUE`).
+    /// The forcewake SET registers of this row's uncore (`Uncore::write_allowlist`: Gen9's three, Cherryview's two) must be on
+    /// `allow`: a grant without them cannot wake the GT (the protocol would write, be refused and wait for an ack that never comes), so
+    /// it is refused here by name (`BAD-VALUE`).
     pub fn with_grant(bar: B, desc: &PlatformDescriptor, allow: &'static [Reg], ggtt: Option<GgttWindow>) -> Result<Self, I915Error> {
-        if WRITE_ALLOWLIST.iter().any(|fw| !allow.contains(fw)) {
+        let uncore = Uncore::for_platform(desc)?;
+        if uncore.write_allowlist().iter().any(|fw| !allow.contains(fw)) {
             return Err(I915Error::BadValue { what: "allow-list lacks a forcewake set register", value: allow.len() as u32 });
         }
-        Ok(Executor { bar, uncore: Uncore::for_platform(desc)?, allow, ggtt, stats: Stats::default(), seq: 0, open: None })
+        Ok(Executor { bar, uncore, allow, ggtt, stats: Stats::default(), seq: 0, open: None })
     }
 
     pub fn stats(&self) -> Stats {
@@ -100,7 +102,7 @@ impl<B: Mmio> Executor<B> {
 
     /// The forcewake domains a plan touching `regs` needs: for each register the domains of its read AND its write.
     pub fn domains_for(&self, regs: impl IntoIterator<Item = Reg>) -> u32 {
-        regs.into_iter().fold(0, |m, r| m | read_fw_domains(r.offset()) | write_fw_domains(r.offset())) & self.uncore.domains()
+        regs.into_iter().fold(0, |m, r| m | self.uncore.read_domains(r.offset()) | self.uncore.write_domains(r.offset()))
     }
 
     /// Hold `domains` for the duration of `f`, then release them and OBSERVE the release (the ack clears). The body's error wins over a
@@ -140,7 +142,7 @@ impl<B: Mmio> Executor<B> {
 
     fn need_awake(&self, reg: Reg, write: bool) -> Result<(), ExecError> {
         let off = reg.offset();
-        let need = (if write { write_fw_domains(off) } else { read_fw_domains(off) }) & self.uncore.domains();
+        let need = if write { self.uncore.write_domains(off) } else { self.uncore.read_domains(off) };
         if need & !self.uncore.active() != 0 {
             return Err(ExecError::Hw(I915Error::ForcewakeNotHeld { offset: off, domains: need & !self.uncore.active() }));
         }

@@ -38,8 +38,8 @@ pub static GEN9_DOMAINS: [Domain; 3] = [
     Domain { id: DomainId::Media, mask: FORCEWAKE_MEDIA, set: r::FORCEWAKE_MEDIA_GEN9, ack: r::FORCEWAKE_ACK_MEDIA_GEN9, name: "MEDIA" },       // intel_uncore.c:2218-2219
 ];
 
-/// Valleyview / Cherryview domains (intel_uncore.c:2220-2225): the NEGATIVE CONTROL. A Gen9 part must never be driven with
-/// these; tests prove they time out against a Gen9 register script. Not reachable through [`crate::Uncore::gen9`].
+/// Valleyview / Cherryview domains (intel_uncore.c:2220-2225): the Z83's (DECISIONS.md D8, [`crate::Uncore::chv`]). A Gen9 part must never
+/// be driven with these; tests prove they time out against a Gen9 register script. Not reachable through [`crate::Uncore::gen9`].
 pub static VLV_DOMAINS: [Domain; 2] = [
     Domain { id: DomainId::Render, mask: FORCEWAKE_RENDER, set: r::FORCEWAKE_VLV, ack: r::FORCEWAKE_ACK_VLV, name: "RENDER" },       // intel_uncore.c:2222-2223
     Domain { id: DomainId::Media, mask: FORCEWAKE_MEDIA, set: r::FORCEWAKE_MEDIA_VLV, ack: r::FORCEWAKE_ACK_MEDIA_VLV, name: "MEDIA" }, // intel_uncore.c:2224-2225
@@ -48,3 +48,6 @@ pub static VLV_DOMAINS: [Domain; 2] = [
 /// The ONLY registers the Gen9 forcewake protocol writes: the three SET registers. This is the device's MMIO write allow-list for
 /// increment 1 (the ack registers are read-only).
 pub const WRITE_ALLOWLIST: [Reg; 3] = [r::FORCEWAKE_GT_GEN9, r::FORCEWAKE_MEDIA_GEN9, r::FORCEWAKE_RENDER_GEN9];
+
+/// The ONLY registers the Cherryview forcewake protocol writes: the two VLV SET registers (the [`VLV_DOMAINS`] `set`s).
+pub const VLV_WRITE_ALLOWLIST: [Reg; 2] = [r::FORCEWAKE_VLV, r::FORCEWAKE_MEDIA_VLV];

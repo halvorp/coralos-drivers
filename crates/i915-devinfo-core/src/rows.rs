@@ -49,7 +49,7 @@ const GEN9_BASE: DeviceInfo = DeviceInfo {
 /// `SKL_GT3_PLUS_PLATFORM`'s engine mask adds the second VDBOX (i915_pci.c:495-498); `kbl_gt3_info` does the same (:556-561).
 const GT3_ENGINES: u32 = bit(RCS0) | bit(VCS0) | bit(BCS0) | bit(VECS0) | bit(VCS1);
 
-/// `chv_info` (i915_pci.c:450-469): Cherryview, Gen8 - the NEGATIVE CONTROL row. Written out field by field as Linux does (it
+/// `chv_info` (i915_pci.c:450-469): Cherryview, Gen8 - the Z83's GT (DECISIONS.md D8; its display is not ported). Written out field by field as Linux does (it
 /// does not use GEN8_FEATURES): no LLC, snooping, non-coherent GGTT, a 32-bit PPGTT, display version 8 (intel_display_device.c:653).
 pub static CHV: DeviceInfo = DeviceInfo {
     platform: Platform::Cherryview,

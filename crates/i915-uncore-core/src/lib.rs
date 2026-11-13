@@ -27,6 +27,6 @@ pub mod domain;
 pub mod forcewake;
 pub mod ranges;
 
-pub use domain::{Domain, DomainId, FORCEWAKE_ALL, FORCEWAKE_GT, FORCEWAKE_MEDIA, FORCEWAKE_RENDER, GEN9_DOMAINS, VLV_DOMAINS, WRITE_ALLOWLIST};
+pub use domain::{Domain, DomainId, FORCEWAKE_ALL, FORCEWAKE_GT, FORCEWAKE_MEDIA, FORCEWAKE_RENDER, GEN9_DOMAINS, VLV_DOMAINS, VLV_WRITE_ALLOWLIST, WRITE_ALLOWLIST};
 pub use forcewake::{Uncore, MAX_POLLS, FORCEWAKE_ACK_TIMEOUT_MS};
 pub use ranges::{find_fw_domain, find_fw_domain_in, is_shadowed, needs_force_wake, read_fw_domains, read_fw_domains_in, write_fw_domains, write_fw_domains_in, FwRange, CHV_FW_RANGES, GEN9_FW_RANGES};

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! The Gen9 command-stream timestamp frequency: `gen9_read_clock_frequency` and `read_reference_ts_freq`
-//! (gt/intel_gt_clock_utils.c:14-29, :87-106), over register VALUES.
+//! The command-stream timestamp frequency: `gen9_read_clock_frequency` and `read_reference_ts_freq`
+//! (gt/intel_gt_clock_utils.c:14-29, :87-106), over register VALUES; and Gen6-Gen8's fixed `gen6_read_clock_frequency` (:108-118),
+//! which `read_clock_frequency` picks for GRAPHICS_VER 6..=8 (:160-161) - Cherryview included.
 use i915_common_core::reg::field_get;
 use i915_gt_regs_core::{
     CTC_SHIFT_PARAMETER_MASK, CTC_SOURCE_DIVIDE_LOGIC, CTC_SOURCE_PARAMETER_MASK, GEN9_TIMESTAMP_OVERRIDE_US_COUNTER_DENOMINATOR_MASK,
@@ -9,6 +10,10 @@ use i915_gt_regs_core::{
 
 /// The crystal Gen9 BC parts count from: 24 MHz (`IS_GEN9_LP ? 19200000 : 24000000`, intel_gt_clock_utils.c:95).
 pub const GEN9_BC_CRYSTAL_HZ: u32 = 24_000_000; // intel_gt_clock_utils.c:95
+
+/// `gen6_read_clock_frequency` (intel_gt_clock_utils.c:108-118): "The PCU TSC counts 10ns increments; this timestamp reflects bits
+/// 38:3 of the TSC (i.e. 80ns granularity)" - 12.5 MHz, no register read.
+pub const GEN6_TS_HZ: u32 = 12_500_000; // intel_gt_clock_utils.c:117
 
 /// What `CTC_MODE` says.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

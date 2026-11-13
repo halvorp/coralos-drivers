@@ -5,8 +5,9 @@
 //! `kbl_gt1..3_info` rows, i915_pci.c:412-562), the id lists in include/drm/intel/pciids.h, and the display version / sub-platform
 //! lists of display/intel_display_device.c, at v7.0-rc6. Copyright (c) Intel Corporation and the i915 authors.
 //!
-//! WHAT IS CARRIED: Skylake and Kaby Lake (Gen9, the target) and Cherryview (Gen8) - the last ONLY as the negative control that
-//! proves a Gen8 part is recognised BY NAME and refused ([`PlatformDescriptor::require_gen9`]), never aliased to a Gen9 row.
+//! WHAT IS CARRIED: Skylake and Kaby Lake (Gen9, the target) and Cherryview (Gen8, the Z83). Cherryview's GT is ported (DECISIONS.md D8:
+//! [`PlatformDescriptor::require_gt_port`] admits it); its DISPLAY is not (the Gen9 display code still asks
+//! [`PlatformDescriptor::require_gen9`], which refuses it by generation), so a Gen8 part is never aliased to a Gen9 row.
 //! Every other id, including ids Linux binds (Broadwell, Coffee Lake, ...), is `I915Error::UnknownDevice { devid }` - the port
 //! does not carry those rows, and says so rather than guessing a neighbour (Astra's ruling, 2026-10-12).
 //!
@@ -135,7 +136,16 @@ impl PlatformDescriptor {
             _ => "unknown",
         }
     }
-    /// The Gen9 gate: the i915 device drives Gen9 only; a Gen8 (Cherryview) id is a KNOWN row that is refused by generation.
+    /// The GT gate (DECISIONS.md D8): the rows whose GT this port drives - every Gen9 row and Cherryview (Gen8). Any other row is refused
+    /// by generation. A row admitted here may still have no display port (Cherryview: see [`PlatformDescriptor::require_gen9`]).
+    pub fn require_gt_port(&self) -> Result<(), I915Error> {
+        match (self.info.graphics_ver, self.info.platform) {
+            (9, _) | (8, Platform::Cherryview) => Ok(()),
+            (gen, _) => Err(I915Error::UnsupportedGeneration { devid: self.devid, gen }),
+        }
+    }
+
+    /// The Gen9 gate, for what is ported for Gen9 only (the display): a Gen8 (Cherryview) id is a KNOWN row refused by generation.
     pub fn require_gen9(&self) -> Result<(), I915Error> {
         if self.info.graphics_ver == 9 {
             Ok(())

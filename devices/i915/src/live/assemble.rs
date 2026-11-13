@@ -39,7 +39,8 @@ pub struct UapiFacts {
     /// scanout pair's flip planner starts from it. `None` when nothing was adopted.
     pub firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
     /// The platform's display capabilities (the devinfo row's: display version, scalers per pipe).
-    pub display_caps: i915_kbl_display_core::platform::DisplayCaps,
+    /// `None`: this device does not drive the platform's display (Cherryview, DECISIONS.md D8), so no logical size is planned.
+    pub display_caps: Option<i915_kbl_display_core::platform::DisplayCaps>,
     /// The adopted pipe's geometry registers as startup read them (`None`: nothing adopted, or a read was refused).
     pub geometry: Option<i915_display_modeset_core::resize::FirmwareGeometry>,
     /// The host's LOGICAL scanout size policy (a config value).
@@ -70,6 +71,8 @@ pub fn assemble<B: Mmio, D: Dma, M: CpuMem, L: Log>(bar: B, dma: D, mem: M, proo
     }
     svc.set_display(facts.adoption);
     svc.set_firmware_scanout(facts.firmware);
-    svc.set_scanout_size(log, &facts.display_caps, facts.geometry.as_ref(), facts.logical);
+    if let Some(caps) = &facts.display_caps {
+        svc.set_scanout_size(log, caps, facts.geometry.as_ref(), facts.logical);
+    }
     Ok(Assembled { ex, gm, svc })
 }

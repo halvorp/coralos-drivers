@@ -81,3 +81,36 @@ fn reference_ts_freq_is_divider_plus_one_mhz_plus_fraction() {
     // divider 0x3ff -> 1024 MHz; denominator 0xf -> 1 MHz / 16 = 62500
     assert_eq!(reference_ts_freq(0x3ff | (0xf << 12)), 1_024_062_500);
 }
+
+// ---- Cherryview (cherryview_sseu_info_init, gt/intel_sseu.c:329-375; gen6_read_clock_frequency, intel_gt_clock_utils.c:108-118) ----
+
+#[test]
+fn chv_sseu_from_chv_fuse_gt() {
+    use i915_devinfo_core::sseu::chv_sseu_info;
+    // a clean fuse: both subslices, 8 EUs each (intel_sseu_set_info(sseu, 1, 2, 8), :337)
+    let s = chv_sseu_info(0);
+    assert_eq!((s.slice_mask, s.max_slices, s.max_subslices, s.max_eus_per_subslice), (1, 1, 2, 8));
+    assert_eq!((s.subslice_mask[0], s.eu_mask[0][0], s.eu_mask[0][1], s.eu_total, s.eu_per_subslice), (0b11, 0xff, 0xff, 16, 8));
+    assert_eq!((s.has_slice_pg, s.has_subslice_pg, s.has_eu_pg), (false, true, true));
+    // CHV_FGT_DISABLE_SS1 (bit 11): one subslice, no subslice power gating (:373)
+    let s = chv_sseu_info(0x800);
+    assert_eq!((s.subslice_mask[0], s.eu_total, s.eu_per_subslice, s.has_subslice_pg), (0b01, 8, 8, false));
+    // CHV_FGT_DISABLE_SS0 (bit 10)
+    let s = chv_sseu_info(0x400);
+    assert_eq!((s.subslice_mask[0], s.eu_mask[0][0], s.eu_total), (0b10, 0, 8));
+    // SS0 row 0 disables EUs 0,1 (bits 17:16); SS1 row 1 disables EU 7 (bit 31 = row-1 bit 3, above row 0's 4 bits): 6 + 7 = 13
+    // EUs, and eu_per_subslice is the TRUNCATING 13 / 2 = 6 (:363-366)
+    let s = chv_sseu_info(0x8003_0000);
+    assert_eq!((s.eu_mask[0][0], s.eu_mask[0][1], s.eu_total, s.eu_per_subslice), (0xfc, 0x7f, 13, 6));
+    // the other two fields: SS0 row 1 (23:20) disables EUs 4..7, SS1 row 0 (27:24) disables EUs 0..3
+    let s = chv_sseu_info(0x0ff0_0000);
+    assert_eq!((s.eu_mask[0][0], s.eu_mask[0][1], s.eu_total, s.eu_per_subslice, s.has_eu_pg), (0x0f, 0xf0, 8, 4, true));
+    // both subslices off: nothing (the disable bits win over the EU fields)
+    let s = chv_sseu_info(0x0000_0c00 | 0xffff_0000);
+    assert_eq!((s.subslice_mask[0], s.eu_total, s.eu_per_subslice, s.has_eu_pg), (0, 0, 0, false));
+}
+
+#[test]
+fn gen6_to_gen8_timestamp_is_12_5_mhz() {
+    assert_eq!(i915_devinfo_core::clock::GEN6_TS_HZ, 12_500_000); // intel_gt_clock_utils.c:117
+}

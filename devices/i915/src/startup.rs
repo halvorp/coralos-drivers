@@ -139,10 +139,14 @@ impl BringupError {
     }
 }
 
-/// Everything increment 1 does, in order: read the identity, GATE it through the devinfo table (a Cherry Trail id is refused here,
-/// before any BAR0 access), run the read-only display readout, then the forcewake proof of life. Writes happen only inside
-/// [`gt::proof_of_life`], through its write guard.
-pub fn bringup<B: Bar, C: RegRead, L: Log>(bar: &mut B, cfg: &mut C, log: &mut L) -> Result<(Ready, Proof), BringupError> {
+/// Everything increment 1 does, in order: read the identity, GATE it through the devinfo table (an id whose GT is not ported is
+/// refused here, before any BAR0 access), run the read-only display readout, then the forcewake proof of life. Writes happen only
+/// inside [`gt::proof_of_life`], through its write guard.
+///
+/// By row (DECISIONS.md D8): a part whose display this device drives (Gen9: `require_gen9`) gets the readout and `Some(Ready)`; Cherryview
+/// gets NO display readout and no display access at all - its display is coral-drm's - and `None` (its adoption is
+/// `Adoption::NoReadout`). Its identity line is `[I915-DEV IDENTIFIED platform=cherryview ...]`.
+pub fn bringup<B: Bar, C: RegRead, L: Log>(bar: &mut B, cfg: &mut C, log: &mut L) -> Result<(Option<Ready>, Proof), BringupError> {
     let identity = match read_identity(cfg) {
         Ok(i) => i,
         Err(r) => {
@@ -152,17 +156,31 @@ pub fn bringup<B: Bar, C: RegRead, L: Log>(bar: &mut B, cfg: &mut C, log: &mut L
     };
     let desc = gt::gate(&identity, log).map_err(BringupError::Gate)?;
     report_command(cfg, log);
-    let ready = startup(bar, cfg, log).map_err(BringupError::Startup)?;
-    if let Some(f) = bar.take_fault() {
-        emit(log, format_args!("[I915-KBL-DEV FAIL step=WINDOW why={}]", f.name()));
-        return Err(BringupError::Window(f));
-    }
+    let ready = if desc.require_gen9().is_ok() {
+        let r = startup(bar, cfg, log).map_err(BringupError::Startup)?;
+        if let Some(f) = bar.take_fault() {
+            emit(log, format_args!("[I915-KBL-DEV FAIL step=WINDOW why={}]", f.name()));
+            return Err(BringupError::Window(f));
+        }
+        Some(r)
+    } else {
+        emit(log, format_args!(
+            "[I915-DEV IDENTIFIED platform=cherryview id={:04x} rev={:02x} gen={} display=not-driven (the GT only, DECISIONS.md D8)]",
+            identity.device, identity.revision, desc.gen()));
+        None
+    };
     let proof = gt::proof_of_life(bar, &desc, &identity, log).map_err(BringupError::Proof)?;
     if let Some(f) = bar.take_fault() {
         emit(log, format_args!("[I915-FORCEWAKE FAIL why={}]", f.name()));
         return Err(BringupError::Window(f));
     }
     Ok((ready, proof))
+}
+
+/// What the firmware's display is to this device after [`bringup`]: the readout's judgement, or `NoReadout` when the platform's
+/// display is not driven here (Cherryview).
+pub fn adoption_of(ready: Option<&Ready>) -> crate::display::Adoption {
+    ready.map_or(crate::display::Adoption::NoReadout, |r| r.adoption)
 }
 
 /// Say what the firmware left in PCI COMMAND. Linux sets bus mastering itself (`pci_set_master`, i915_driver.c:533) before the

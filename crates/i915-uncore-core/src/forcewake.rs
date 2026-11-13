@@ -67,6 +67,27 @@ impl Uncore {
         Uncore { domains, mask, wake_count: [0; 3], active: 0, max_polls: MAX_POLLS, ranges: &GEN9_FW_RANGES }
     }
 
+    /// The registers this uncore's forcewake protocol writes (its domains' SET registers): [`crate::WRITE_ALLOWLIST`] for Gen9,
+    /// [`crate::VLV_WRITE_ALLOWLIST`] for Cherryview. A device's write grant must hold them, or it cannot wake the GT.
+    pub fn write_allowlist(&self) -> &'static [Reg] {
+        if core::ptr::eq(self.domains, &crate::domain::VLV_DOMAINS) {
+            &crate::domain::VLV_WRITE_ALLOWLIST
+        } else {
+            &crate::domain::WRITE_ALLOWLIST
+        }
+    }
+
+    /// The domains a READ of `offset` needs on this platform: [`crate::read_fw_domains_in`] over its own range table (Gen9's or
+    /// `__chv_fw_ranges`), masked to the domains it has.
+    pub fn read_domains(&self, offset: u32) -> u32 {
+        read_fw_domains_in(self.ranges, offset) & self.mask
+    }
+
+    /// The domains a WRITE of `offset` needs on this platform ([`crate::write_fw_domains_in`] over its own table), masked.
+    pub fn write_domains(&self, offset: u32) -> u32 {
+        crate::ranges::write_fw_domains_in(self.ranges, offset) & self.mask
+    }
+
     /// Lower the per-wait iteration cap (for hosts and tests; the deadline is the real bound).
     pub fn set_poll_limit(&mut self, polls: u32) {
         self.max_polls = polls.max(1);

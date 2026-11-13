@@ -33,6 +33,7 @@ pub mod memory;
 pub mod mocs;
 pub mod plans;
 pub mod plans_link;
+pub mod power_chv;
 
 pub use self::core::{Executor, Stats};
 pub use journal::{StepId, StepRecord};

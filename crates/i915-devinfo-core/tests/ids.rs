@@ -161,13 +161,23 @@ fn the_skl_row_differs_from_kbl_only_in_platform() {
 // ---- the negative control ---------------------------------------------------------------------------------------------
 
 #[test]
-fn chv_is_recognised_by_name_and_refused_by_generation() {
+fn chv_gt_is_admitted_and_its_display_refused_by_generation() {
     let d = lookup(0x22b0).unwrap();
     assert_eq!(d.name(), "chv");
     assert_eq!(d.gen(), 8);
     assert_eq!(d.info.display_ver, 8); // intel_display_device.c:653
+    // DECISIONS.md D8: the GT is ported, the display is not
+    assert_eq!(d.require_gt_port(), Ok(()));
     assert_eq!(d.require_gen9(), Err(I915Error::UnsupportedGeneration { devid: 0x22b0, gen: 8 }));
     assert_eq!(d.require_gen9().unwrap_err().name(), "UNSUPPORTED-GENERATION");
+    // any other row stays refused by the GT gate: a Gen8 row that is not Cherryview, and a Gen7 row
+    let mut bdw = lookup(0x591c).unwrap();
+    bdw.info.graphics_ver = 8;
+    assert_eq!(bdw.require_gt_port(), Err(I915Error::UnsupportedGeneration { devid: 0x591c, gen: 8 }));
+    let mut gen7 = d;
+    gen7.info.graphics_ver = 7;
+    assert_eq!(gen7.require_gt_port(), Err(I915Error::UnsupportedGeneration { devid: 0x22b0, gen: 7 }));
+    assert_eq!(lookup(0x591c).unwrap().require_gt_port(), Ok(()));
     // chv_info's own fields (i915_pci.c:450-469): not the Gen9 row
     assert!(!d.info.has_llc);
     assert!(d.info.has_snoop);
@@ -177,6 +187,7 @@ fn chv_is_recognised_by_name_and_refused_by_generation() {
     assert!(!d.info.has_gt_uc);
     for id in CHV_IDS {
         assert!(lookup(id).unwrap().require_gen9().is_err(), "{id:#x}");
+        assert!(lookup(id).unwrap().require_gt_port().is_ok(), "{id:#x}");
     }
 }
 

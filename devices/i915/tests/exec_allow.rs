@@ -33,8 +33,9 @@ fn the_default_build_writes_only_forcewake_and_has_no_ggtt_window() {
     assert_eq!(offsets(&ALLOW), FORCEWAKE_SET);
     assert_eq!(N_ALLOW, 3);
     assert_eq!(compiled_ggtt_window(), None);
-    assert_eq!(BAR0_WRITE_RANGES.len(), 3, "the window grant is the three registers, no GGTT range");
-    assert_eq!(BAR0_NEED_BYTES, 0x14_59a0);
+    assert_eq!(BAR0_WRITE_RANGES.len(), 6, "the window grant is the three Gen9 registers and Cherryview's three, no GGTT range");
+    // CHV_FUSE_GT (0x182168, intel_gt_regs.h:1431) is the highest register the proof of life reads
+    assert_eq!(BAR0_NEED_BYTES, 0x18_216c);
     assert!(!P2_ON && !P3_ON);
 }
 
@@ -47,8 +48,8 @@ fn p2_adds_exactly_the_ggtt_invalidate_register_and_the_ggtt_window() {
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(compiled_ggtt_window(), Some(GgttWindow { base: 0x80_0000, bytes: 0x80_0000 }));
-    assert_eq!(BAR0_WRITE_RANGES.len(), 7);
-    let last = BAR0_WRITE_RANGES[6];
+    assert_eq!(BAR0_WRITE_RANGES.len(), 10);
+    let last = BAR0_WRITE_RANGES[9];
     assert_eq!((last.off, last.len), (0x80_0000, 0x80_0000), "the GGTT window is the upper half of the 16 MiB BAR0 (intel_ggtt.c:1187-1192)");
     assert_eq!(i915_device::regio::BAR0_NEED_BYTES, 16 << 20);
 }
@@ -77,7 +78,39 @@ fn p3_adds_exactly_the_execlist_and_reset_registers() {
     want.extend((0..32).map(|i| 0xb020 + 4 * i));
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
-    assert_eq!(BAR0_WRITE_RANGES.len(), want.len() + 1);
+    assert_eq!(BAR0_WRITE_RANGES.len(), want.len() + 3 + 1, "Gen9's list, Cherryview's three, the GGTT window");
+}
+
+// ---- Cherryview's own list (DECISIONS.md D8) -----------------------------------------------------------------------------------------
+
+/// Cherryview's list in THIS build, by hand: the VLV forcewake SET registers (intel_gt_regs.h:1513, :1515) and the GT wake gate
+/// `VLV_GTLC_WAKE_CTRL` (:1501); under P2 the GGTT invalidate and the PAT; under P3 the render engine's execlists and the reset
+/// registers; under P5 the video engine's execlists. Never a Gen9 forcewake register, never a MOCS word (Cherryview has no MOCS
+/// table, gt/intel_mocs.c:454-534), never a P4 display write.
+#[test]
+fn cherryview_has_its_own_list() {
+    let mut want: Vec<u32> = vec![0x130090, 0x1300b0, 0x1300b8];
+    if P2_ON {
+        want.extend([0x101008, 0x40e0, 0x40e4]);
+    }
+    if P3_ON {
+        want.extend([0x2230, 0x2098, 0x229c, 0x209c, 0x2080, 0x23a0, 0x20d0, 0x220d0, 0x120d0, 0x1a0d0, 0x941c]);
+    }
+    if P5_ON {
+        // GEN6_BSD_RING_BASE 0x12000: ELSP, HWSTAM, MODE, MI_MODE, HWS_PGA, CONTEXT_STATUS_PTR
+        want.extend([0x12230, 0x12098, 0x1229c, 0x1209c, 0x12080, 0x123a0]);
+    }
+    want.sort();
+    assert_eq!(offsets(&ALLOW_CHV), want);
+    assert_eq!(N_ALLOW_CHV, want.len());
+    let chv = i915_devinfo_core::lookup(0x22b0).unwrap();
+    let kbl = i915_devinfo_core::lookup(0x591c).unwrap();
+    assert_eq!(offsets(allow_for(&chv)), want);
+    assert_eq!(offsets(allow_for(&kbl)), offsets(&ALLOW));
+    // and every register of Cherryview's list is in the BAR0 grant
+    for r in ALLOW_CHV.iter() {
+        assert!(BAR0_WRITE_RANGES.iter().any(|w| w.off == r.offset() as u64 && w.len == 4), "{:#x} not granted", r.offset());
+    }
 }
 
 /// The registers the planners WRITE, found by running them.
@@ -258,7 +291,7 @@ fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     want.sort();
     assert_eq!(offsets(&ALLOW), want);
     assert_eq!(p4_flip_writes().iter().map(|r| r.offset()).collect::<Vec<_>>(), [0x7019c], "the flip writes that one register and no other");
-    assert_eq!(BAR0_WRITE_RANGES.len(), want.len() + 1, "the window grant is the allow-list plus the GGTT window");
+    assert_eq!(BAR0_WRITE_RANGES.len(), want.len() + 3 + 1, "the window grant is the allow-list, Cherryview's three and the GGTT window");
     assert!(P4_ON && P3_ON && P2_ON);
 }
 

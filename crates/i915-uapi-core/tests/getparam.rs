@@ -214,9 +214,14 @@ fn zero_sseu_answers_enodev_as_linux_does() {
 }
 
 #[test]
-fn cherryview_is_refused_not_aliased() {
+fn cherryview_is_admitted_and_other_rows_refused() {
+    // DECISIONS.md D8: the Cherryview GT is ported (require_gt_port); its facts are its own row's, never a Gen9 alias
     let desc = i915_devinfo_core::lookup(0x22b0).unwrap();
-    let r = UapiDevice::new(desc, 0, gen9_sseu_info(0, [0; 3]), 0, 0);
+    let d = UapiDevice::new(desc, 0, i915_devinfo_core::sseu::chv_sseu_info(0), 12_500_000, 0).expect("the Z83's GT");
+    assert_eq!((d.desc.gen(), d.desc.name()), (8, "chv"));
+    let mut gen7 = desc;
+    gen7.info.graphics_ver = 7;
+    let r = UapiDevice::new(gen7, 0, gen9_sseu_info(0, [0; 3]), 0, 0);
     assert_eq!(r.unwrap_err().name(), "UNSUPPORTED-GENERATION");
 }
 

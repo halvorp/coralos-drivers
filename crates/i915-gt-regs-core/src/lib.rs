@@ -40,7 +40,7 @@ pub const FORCEWAKE_KERNEL: u32 = bit(0); // intel_gt_regs.h:1497
 pub const FORCEWAKE_USER: u32 = bit(1); // intel_gt_regs.h:1498
 pub const FORCEWAKE_KERNEL_FALLBACK: u32 = bit(15); // intel_gt_regs.h:1499
 
-// ---- Forcewake: Valleyview / Cherryview (Gen8 CHV) - the NEGATIVE CONTROL: never programmed on a Gen9 part -------------
+// ---- Forcewake: Valleyview / Cherryview (Gen8 CHV): the Z83's domains (DECISIONS.md D8); never programmed on a Gen9 part ------
 
 pub const FORCEWAKE_VLV: Reg = Reg::new(0x1300b0); // intel_gt_regs.h:1513
 pub const FORCEWAKE_ACK_VLV: Reg = Reg::new(0x1300b4); // intel_gt_regs.h:1514
@@ -99,6 +99,29 @@ pub const RP0_CAP_MASK: u32 = genmask(7, 0); // intel_mchbar_regs.h:226
 pub const RP1_CAP_MASK: u32 = genmask(15, 8); // intel_mchbar_regs.h:227
 pub const RPN_CAP_MASK: u32 = genmask(23, 16); // intel_mchbar_regs.h:228
 
+// ---- Cherryview GT power wells and fuses (the GUnit block: no forcewake) -----------------------------------------------
+
+/// `CHV_FUSE_GT` = `_MMIO(VLV_GUNIT_BASE + 0x2168)`, `VLV_GUNIT_BASE` being 0x180000 (intel_gt_regs.h:11): a BAR0 offset in the GUnit
+/// block. Its fields are read by `cherryview_sseu_info_init` (gt/intel_sseu.c:329-375).
+pub const CHV_FUSE_GT: Reg = Reg::new(0x180000 + 0x2168); // intel_gt_regs.h:1431
+pub const CHV_FGT_EU_DIS_SS1_R1_MASK: u32 = genmask(31, 28); // intel_gt_regs.h:1432
+pub const CHV_FGT_EU_DIS_SS1_R0_MASK: u32 = genmask(27, 24); // intel_gt_regs.h:1433
+pub const CHV_FGT_EU_DIS_SS0_R1_MASK: u32 = genmask(23, 20); // intel_gt_regs.h:1434
+pub const CHV_FGT_EU_DIS_SS0_R0_MASK: u32 = genmask(19, 16); // intel_gt_regs.h:1435
+pub const CHV_FGT_DISABLE_SS1: u32 = bit(11); // intel_gt_regs.h:1436
+pub const CHV_FGT_DISABLE_SS0: u32 = bit(10); // intel_gt_regs.h:1437
+/// The GT wake gate and the well status (vlv_suspend.c `vlv_allow_gt_wake` / `vlv_wait_for_gt_wells`). `VLV_GTLC_WAKE_CTRL` shares its
+/// offset with Linux's `FORCEWAKE_ACK` (intel_gt_regs.h:1500), a pre-Gen7 name this port does not carry.
+pub const VLV_GTLC_WAKE_CTRL: Reg = Reg::new(0x130090); // intel_gt_regs.h:1501
+pub const VLV_GTLC_RENDER_CTX_EXISTS: u32 = 1 << 25; // intel_gt_regs.h:1502
+pub const VLV_GTLC_MEDIA_CTX_EXISTS: u32 = 1 << 24; // intel_gt_regs.h:1503
+pub const VLV_GTLC_ALLOWWAKEREQ: u32 = 1 << 0; // intel_gt_regs.h:1504
+pub const VLV_GTLC_PW_STATUS: Reg = Reg::new(0x130094); // intel_gt_regs.h:1505
+pub const VLV_GTLC_ALLOWWAKEACK: u32 = 1 << 0; // intel_gt_regs.h:1506
+pub const VLV_GTLC_ALLOWWAKEERR: u32 = 1 << 1; // intel_gt_regs.h:1507
+pub const VLV_GTLC_PW_MEDIA_STATUS_MASK: u32 = 1 << 5; // intel_gt_regs.h:1508
+pub const VLV_GTLC_PW_RENDER_STATUS_MASK: u32 = 1 << 7; // intel_gt_regs.h:1509
+
 // ---- GGTT flush and the private PAT (moved from i915-memory-core, sentinel audit 2026-10-12) ---------------------------
 
 /// GGTT invalidate: writing `GFX_FLSH_CNTL_EN` flushes the write-combining buffer of GGTT PTE stores and the GT TLB.
@@ -110,7 +133,7 @@ pub const GEN8_PRIVATE_PAT_HI: Reg = Reg::new(0x40e0 + 4); // intel_gt_regs.h:33
 
 /// Every register defined above (not the aliases), by Linux's name - the catalog `tests/catalog.rs` checks for aligned,
 /// unique, in-range offsets.
-pub const CATALOG: [(&str, Reg); 23] = [
+pub const CATALOG: [(&str, Reg); 26] = [
     ("FORCEWAKE_GT_GEN9", FORCEWAKE_GT_GEN9),
     ("FORCEWAKE_MEDIA_GEN9", FORCEWAKE_MEDIA_GEN9),
     ("FORCEWAKE_RENDER_GEN9", FORCEWAKE_RENDER_GEN9),
@@ -134,4 +157,7 @@ pub const CATALOG: [(&str, Reg); 23] = [
     ("GEN8_PRIVATE_PAT_HI", GEN8_PRIVATE_PAT_HI),
     ("GEN6_STOLEN_RESERVED", GEN6_STOLEN_RESERVED),
     ("GEN8_GTCR", GEN8_GTCR),
+    ("CHV_FUSE_GT", CHV_FUSE_GT),
+    ("VLV_GTLC_WAKE_CTRL", VLV_GTLC_WAKE_CTRL),
+    ("VLV_GTLC_PW_STATUS", VLV_GTLC_PW_STATUS),
 ];
