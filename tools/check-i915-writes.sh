@@ -16,11 +16,13 @@
 #                                                    compile-time list; GGTT entry stores are window-checked there. The reviewed writer
 #                                                    for the p2-memory / p3-exec increments; the default build's list is the 3 forcewake regs.)
 #       rt/src/mmio.rs                              (the WriteWindow itself)
+#       devices/i915/src/exec/power_chv.rs          (Cherryview's GT wake gate: one rmw of VLV_GTLC_WAKE_CTRL, only when the firmware
+#                                                    left GT waking shut, through the proof of life's WriteGuard over CHV_GT_REGS)
 #   * a `WriteWindow::open(` may appear only in devices/i915/src/service.rs, and must be handed `&BAR0_WRITE_RANGES`.
 set -uo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 fail=0
-allowed_writers='^(crates/i915-uncore-core/src/forcewake\.rs|crates/i915-common-core/src/guard\.rs|crates/i915-common-core/src/reg\.rs|devices/i915/src/regio\.rs|devices/i915/src/gt\.rs|devices/i915/src/exec/core\.rs|rt/src/mmio\.rs)$'
+allowed_writers='^(crates/i915-uncore-core/src/forcewake\.rs|crates/i915-common-core/src/guard\.rs|crates/i915-common-core/src/reg\.rs|devices/i915/src/regio\.rs|devices/i915/src/gt\.rs|devices/i915/src/exec/core\.rs|devices/i915/src/exec/power_chv\.rs|rt/src/mmio\.rs)$'
 cd "$root" || exit 2
 while IFS= read -r f; do
   rel="${f#./}"

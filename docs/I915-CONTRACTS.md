@@ -51,14 +51,20 @@ refusal. *Exposing an operation is not granting it*: the allow-list is the in-co
 the hardware half. **Planners never widen the allow-list.** A write-bearing plan (`BindPlan`, fence plan) stays unexecuted until an
 owner-attended silicon increment extends the list.
 
+The reviewed WRITERS (tools/check-i915-writes.sh) are the code paths that may issue a register write at all, each through a guard:
+the uncore forcewake protocol, the guard and `RegIo` forwarders, the device's `BarMmio` / `gt.rs` `ByRef` forwarders, the executor
+(`exec/core.rs`), the `WriteWindow` - and Cherryview's GT wake gate (`devices/i915/src/exec/power_chv.rs` `allow_gt_wake`,
+vlv_suspend.c:329-348): ONE read-modify-write of `VLV_GTLC_WAKE_CTRL`, made only when the firmware left GT waking disallowed, through
+the proof of life's `WriteGuard` over `exec::allow::CHV_GT_REGS`.
+
 ## 4. `PlatformDescriptor` (`i915-devinfo-core`)
 
 `lookup(devid: u16) -> Result<PlatformDescriptor, I915Error>`; unknown ids are `UnknownDevice`, never aliased to a neighbour.
 `PlatformDescriptor { devid, sub: SubPlatform, info: DeviceInfo }` with `DeviceInfo { platform, graphics_ver, display_ver, gt,
 engine_mask, ppgtt_type, ppgtt_size (log2), dma_mask_size, page_sizes, max_pat_index, has_llc, has_snoop, has_coherent_ggtt,
 has_logical_ring_contexts, has_64bit_reloc, has_reset_engine, has_rc6, has_rps, has_runtime_pm, has_gt_uc }`.
-Carried rows: SKL GT1-4, KBL GT1-3 (Gen9, the target) and CHV (Gen8, the negative control: recognised by name and refused by
-`require_gen9()`). Every other generation-dependent fact a planner needs comes from this table, never from a constant typed for one
+Carried rows: SKL GT1-4, KBL GT1-3 (Gen9) and CHV (Gen8, the Z83: its GT is admitted by `require_gt_port()` - DECISIONS.md D8 - and
+its display refused by `require_gen9()`). Every other generation-dependent fact a planner needs comes from this table, never from a constant typed for one
 board (`ppgtt_size`, `dma_mask_size`, `has_llc`, ...). KBL: `dma_mask_size` 39, `ppgtt_size` 48, `ppgtt_type` Full.
 
 ## 5. `i915-wire` (permissive: MIT OR Apache-2.0, because the closed shim compiles against it)

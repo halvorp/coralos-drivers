@@ -55,6 +55,7 @@ devices/i915/src/exec/plans.rs:pcode             # pcode mailbox: polls GEN6_PCO
 devices/i915/src/exec/core.rs:poll               # Executor::poll: an MMIO PollPlan, bounded by its own deadline
 devices/i915/src/exec/engine.rs:wait_idle        # calls EngineRig::service (CSB + seqno + retire) every pass
 crates/i915-uncore-core/src/forcewake.rs:poll    # forcewake ACK register, set by the hardware
+devices/i915/src/exec/power_chv.rs:wait_for_pw_status # Cherryview VLV_GTLC_PW_STATUS: the GUnit sets ALLOWWAKEACK / the well bits; 3 ms deadline (vlv_suspend.c:295)
 '
 allowed_list=$(printf '%s\n' "$allowed_relax" | sed 's/#.*$//; s/[[:space:]]*$//' | command grep -v '^$')
 while IFS= read -r f; do
