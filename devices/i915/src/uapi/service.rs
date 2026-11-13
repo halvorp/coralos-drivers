@@ -22,7 +22,7 @@ use i915_gem_core::{Gem, GemConfig, ObjId, RequestId, SessionCaps, SessionId, Vm
 use i915_gt_core::emit::FlushQuirks;
 use i915_gt_core::engine::{engines_for, EngineClass};
 use i915_memory_core::probe::GgttGeometry;
-use i915_memory_core::{Gtt, VmaId};
+use i915_memory_core::{Gtt, PpgttLayout, VmaId};
 use i915_submit_core::EngineConfig;
 use i915_syncobj_core::{FenceId, Sync};
 use i915_uapi_core::UapiDevice;
@@ -226,11 +226,10 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
         emit(hw.log, format_args!("[I915-GGTT kept={} start={:#x} size={:#x} - not written, never bound over]", k.what, k.start, k.size));
     }
     hw.ex.run_bind_step(hw.log, hw.gm, &create, true, &mut |_| true)?;
-    // the private PAT every PTE selects from is programmed as Linux's bdw_setup_private_ppat does, before any object is bound (the firmware leaves
-    // every entry write-back; an UNCACHED scanout PTE would then be cached and the non-snooping display would scan out stale lines)
-    if dev.gen() >= 9 {
-        let _ = hw.ex.program_private_ppat(hw.log);
-    }
+    // the private PAT every PTE selects from is programmed as Linux's setup_private_pat does (by row: bdw's table on Gen9, chv's snoop table on
+    // Cherryview), before any object is bound (the firmware leaves every entry write-back; an UNCACHED scanout PTE would then be cached and the
+    // non-snooping display would scan out stale lines)
+    let _ = hw.ex.program_private_ppat(&dev.desc, hw.log);
     // intel_gt_init_hw -> intel_mocs_init (gt/intel_gt.c:219): on Gen9 the L3CC words (no global MOCS); the render engine's own control
     // table follows in rig.bring_up (execlists_resume -> intel_mocs_init_engine), before the first request
     if let Some(m) = i915_gt_core::mocs::mocs_settings(&dev.desc).map_err(|e| Fail::new(errno::ENODEV, e.name()))? {
@@ -593,8 +592,9 @@ impl UapiService {
         // room for the session record BEFORE the session exists
         self.sessions.try_reserve(1).map_err(|_| Fail::oom("sessions"))?;
         self.vms.try_reserve(1).map_err(|_| Fail::oom("vm-records"))?;
-        let base = self.pool.alloc(hw.gm, VM_BASE_PAGES)?;
-        let init = vm_init(&base);
+        let layout = self.vm_layout()?;
+        let base = self.pool.alloc(hw.gm, layout.base_pages())?;
+        let init = vm_init(layout, &base);
         let caps = SessionCaps { sys_admin: req.caps & CAP_SYS_ADMIN != 0, sys_nice: req.caps & CAP_SYS_NICE != 0 };
         let (r, err) = self.with_sink(hw, 0, |gem, sink| gem.open_session(caps, init, sink));
         let id = match (r, err) {
@@ -701,11 +701,21 @@ impl UapiService {
     }
 }
 
-/// Pages of one address space's base: the PML4 and the four scratch pages (`PpgttInit`).
-pub(crate) const VM_BASE_PAGES: usize = 5;
+/// One address space's base from its run of `layout.base_pages()` pages: the top table, the four scratch pages and (Cherryview's
+/// 3-level layout) the four page directories (`PpgttInit`).
+pub(crate) fn vm_init(layout: PpgttLayout, base: &Run) -> i915_memory_core::PpgttInit {
+    let pd = match layout {
+        PpgttLayout::Legacy32 => [base.page(5), base.page(6), base.page(7), base.page(8)],
+        PpgttLayout::Full48 => [0; 4],
+    };
+    i915_memory_core::PpgttInit { pml4: base.page(0), scratch: [base.page(1), base.page(2), base.page(3), base.page(4)], pd }
+}
 
-pub(crate) fn vm_init(base: &Run) -> i915_memory_core::PpgttInit {
-    i915_memory_core::PpgttInit { pml4: base.page(0), scratch: [base.page(1), base.page(2), base.page(3), base.page(4)] }
+impl UapiService {
+    /// The device's PPGTT layout (`PpgttLayout::of`): how many base pages a new address space takes.
+    pub(crate) fn vm_layout(&self) -> Result<PpgttLayout, Fail> {
+        PpgttLayout::of(&self.gem.device().desc).map_err(|e| Fail::new(errno::ENODEV, e.name()))
+    }
 }
 
 pub(crate) enum Done {

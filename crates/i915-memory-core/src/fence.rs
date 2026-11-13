@@ -35,7 +35,13 @@ pub struct FencePlan {
 /// Plan programming fence `id` for the GGTT range `[start, start + size)` with `tiling` and `stride` bytes (`Tiling::None`
 /// clears the fence, as Linux does with `val = 0`).
 pub fn plan_fence(id: u32, start: u64, size: u64, tiling: Tiling, stride: u32) -> Result<FencePlan, MemError> {
-    if id >= GEN7_NUM_FENCES {
+    plan_fence_of(GEN7_NUM_FENCES, id, start, size, tiling, stride)
+}
+
+/// [`plan_fence`] on a part with `num_fences` registers (`GgttGeometry::fences`: 32 on Gen9, 16 on Cherryview); an id at or past it
+/// is refused by name.
+pub fn plan_fence_of(num_fences: u32, id: u32, start: u64, size: u64, tiling: Tiling, stride: u32) -> Result<FencePlan, MemError> {
+    if id >= num_fences {
         return Err(MemError::BadFence { what: "fence id", value: id as u64 });
     }
     let (lo, hi) = (fence_lo(id), fence_hi(id));

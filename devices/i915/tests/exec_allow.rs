@@ -130,7 +130,7 @@ mod planner_write_sets {
         {
             let (chip, _mem, mut ex, _gm) = super::exec_common::built();
             let mut log = super::exec_common::Lines::default();
-            ex.program_private_ppat(&mut log).unwrap();
+            ex.program_private_ppat(&d, &mut log).unwrap();
             writes.extend(chip.all_writes().iter().map(|(r, _)| Reg::new(*r)));
         }
         // P3: submit-core

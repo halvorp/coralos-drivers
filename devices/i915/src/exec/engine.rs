@@ -29,6 +29,7 @@ use crate::log::{emit, Log};
 use coralos_hal::{Dma, Mmio};
 use i915_common_core::Reg;
 use i915_devinfo_core::PlatformDescriptor;
+use i915_memory_core::PpgttRoots;
 use i915_gt_core::engine::EngineInfo;
 use i915_gt_core::mocs::{engine_init_writes, gt_init_writes, mocs_settings, MocsSettings};
 use i915_gt_core::reset::{ResetPlanner, ResetScope};
@@ -200,20 +201,20 @@ impl EngineRig {
 
     /// Create a context over `objs` (its image and ring already bound in the GGTT). The register state the engine builds is copied
     /// into page 1 of the image (`LRC_STATE_OFFSET`); page 0 (the per-process HWSP) stays zero.
-    pub fn add_context<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, objs: CtxObjects, pml4: u64, timeline_ggtt: u32, rpcs: u32, initial_breadcrumb: bool) -> Result<u32, ExecError> {
-        self.add_context_in(gm, objs, pml4, timeline_ggtt, rpcs, initial_breadcrumb, None)
+    pub fn add_context<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, objs: CtxObjects, ppgtt: PpgttRoots, timeline_ggtt: u32, rpcs: u32, initial_breadcrumb: bool) -> Result<u32, ExecError> {
+        self.add_context_in(gm, objs, ppgtt, timeline_ggtt, rpcs, initial_breadcrumb, None)
     }
 
     /// [`EngineRig::add_context`] with the timeline's seqno dword in `own`, the context's own timeline page (`None`: the engine's
     /// status page, as `add_context`). `timeline_ggtt` must lie inside whichever page it is.
     #[allow(clippy::too_many_arguments)]
-    pub fn add_context_in<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, objs: CtxObjects, pml4: u64, timeline_ggtt: u32, rpcs: u32, initial_breadcrumb: bool, own: Option<TimelinePage>) -> Result<u32, ExecError> {
+    pub fn add_context_in<D: Dma, M: CpuMem>(&mut self, gm: &mut GpuMem<D, M>, objs: CtxObjects, ppgtt: PpgttRoots, timeline_ggtt: u32, rpcs: u32, initial_breadcrumb: bool, own: Option<TimelinePage>) -> Result<u32, ExecError> {
         if objs.ring.len as u32 != RING_BYTES || (objs.image.len as u32) < LRC_STATE_OFFSET + 4096 {
             return Err(ExecError::Layout { what: "context image / ring object size" });
         }
         self.seqno_dword(own, timeline_ggtt)?; // the slot must be in its status page
         self.tls.try_reserve(1).map_err(|_| i915_submit_core::SubmitError::OutOfMemory { what: "timeline pages" })?;
-        let spec = ContextSpec { lrca: objs.image_ggtt, ring_size: RING_BYTES, ring_ggtt: objs.ring_ggtt, pml4, rpcs, hwsp_ggtt: timeline_ggtt, initial_breadcrumb, default_state: None };
+        let spec = ContextSpec { lrca: objs.image_ggtt, ring_size: RING_BYTES, ring_ggtt: objs.ring_ggtt, ppgtt, rpcs, hwsp_ggtt: timeline_ggtt, initial_breadcrumb, default_state: None };
         // room for this context's record BEFORE the engine creates it (a context with no record would be unreachable)
         self.objs.try_reserve(1).map_err(|_| i915_submit_core::SubmitError::OutOfMemory { what: "context objects" })?;
         let id = self.engine.create_context(&spec)?;

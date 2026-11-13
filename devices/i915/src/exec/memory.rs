@@ -76,14 +76,15 @@ impl<B: Mmio> Executor<B> {
         Ok(rep)
     }
 
-    /// `bdw_setup_private_ppat` (gt/intel_gtt.c:611-631, called from `intel_gt_init_hw`): write the private PAT - the eight memory types every PTE's
-    /// PWT/PCD/PAT bits select from - as [`i915_memory_core::private_ppat`], then read it back. The firmware leaves every entry 0x03 (write-back), so
+    /// `setup_private_pat` (gt/intel_gtt.c:668-692, called from `intel_gt_init_hw`): write the private PAT - the eight memory types every PTE's
+    /// PWT/PCD/PAT bits select from - as [`i915_memory_core::pte::private_ppat_for`] the row (`bdw_setup_private_ppat` on Gen9,
+    /// `chv_setup_private_ppat` on Cherryview), then read it back. The firmware leaves every entry 0x03 (write-back), so
     /// without this a PTE that asks for UNCACHED (the scanout pair, `CacheLevel::None`: index 3) is write-back in the LLC and the display, which does not
     /// snoop, scans out stale lines (Atlas 2026-10-27: horizontal cacheline-sized garbage on every GPU-drawn window). The two writes are on the allow-list
     /// under `p2-memory`; nothing here runs without a bound GGTT because no PTE exists to select an entry yet.
-    pub fn program_private_ppat<L: Log>(&mut self, log: &mut L) -> Result<PpatReport, ExecError> {
+    pub fn program_private_ppat<L: Log>(&mut self, desc: &i915_devinfo_core::PlatformDescriptor, log: &mut L) -> Result<PpatReport, ExecError> {
         use i915_gt_regs_core::{GEN8_PRIVATE_PAT_HI, GEN8_PRIVATE_PAT_LO};
-        let want = i915_memory_core::pte::private_ppat();
+        let want = i915_memory_core::pte::private_ppat_for(desc)?;
         let (lo, hi) = (want as u32, (want >> 32) as u32);
         let d = self.domains_for([GEN8_PRIVATE_PAT_LO, GEN8_PRIVATE_PAT_HI]);
         let before = self.read_ppat(d)?;

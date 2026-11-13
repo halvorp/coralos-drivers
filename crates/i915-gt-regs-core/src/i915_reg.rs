@@ -94,6 +94,12 @@ pub const fn fence_hi(i: u32) -> Reg {
 pub const GEN6_STOLEN_RESERVED: Reg = Reg::new(0x1082C0); // i915_reg.h:128
 pub const GEN6_STOLEN_RESERVED_ADDR_MASK: u32 = 0xFFF << 20; // i915_reg.h:129
 pub const GEN6_STOLEN_RESERVED_ENABLE: u32 = bit(0); // i915_reg.h:144
+/// The reserved-size field Cherryview reads (`chv_get_stolen_reserved`, i915_gem_stolen.c:352-383).
+pub const GEN8_STOLEN_RESERVED_SIZE_MASK: u32 = 3 << 7; // i915_reg.h:139
+pub const GEN8_STOLEN_RESERVED_1M: u32 = 0 << 7; // i915_reg.h:140
+pub const GEN8_STOLEN_RESERVED_2M: u32 = 1 << 7; // i915_reg.h:141
+pub const GEN8_STOLEN_RESERVED_4M: u32 = 2 << 7; // i915_reg.h:142
+pub const GEN8_STOLEN_RESERVED_8M: u32 = 3 << 7; // i915_reg.h:143
 
 // ---- the PCU mailbox (moved from i915-display-clock-core, sentinel audit 2026-10-12) ----------------------------------------
 // Plain u32 offsets, as the PCU-mailbox transaction code in i915-display-clock-core consumes them.

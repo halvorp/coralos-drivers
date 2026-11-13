@@ -78,7 +78,7 @@ fn bind(pages: &[u64], at: u64, evict: bool) -> BindRequest<'_> {
 
 #[test]
 fn a_ppgtt_bind_refuses_by_name_at_every_allocation_and_changes_nothing() {
-    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap();
+    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).unwrap();
     let mut src = Pool::new(POOL0);
     // well past every old cap: 1100+ page tables, 1100 VMAs
     for i in 0..1100u64 {
@@ -165,7 +165,7 @@ fn an_unconstrained_placement_scan_refuses_by_name_when_its_scratch_lists_cannot
 fn creating_a_ppgtt_refuses_by_name_at_every_allocation() {
     let mut refused = 0;
     for n in 1..50 {
-        match failing_at(n, || Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S })) {
+        match failing_at(n, || Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] })) {
             Ok(_) => break,
             Err(e) => {
                 e_what(&e);

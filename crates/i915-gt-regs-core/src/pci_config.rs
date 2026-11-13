@@ -11,6 +11,12 @@ pub const BDW_GMCH_GGMS_SHIFT: u32 = 6; // include/drm/intel/i915_drm.h:54
 pub const BDW_GMCH_GGMS_MASK: u16 = 0x3; // include/drm/intel/i915_drm.h:55
 pub const BDW_GMCH_GMS_SHIFT: u32 = 8; // include/drm/intel/i915_drm.h:56
 pub const BDW_GMCH_GMS_MASK: u16 = 0xff; // include/drm/intel/i915_drm.h:57
+/// The SNB field layout of the same word, which Cherryview keeps (`chv_get_total_gtt_size`, intel_ggtt.c:1169; `chv_stolen_size`,
+/// arch/x86/kernel/early-quirks.c:426).
+pub const SNB_GMCH_GGMS_SHIFT: u32 = 8; // include/drm/intel/i915_drm.h:50
+pub const SNB_GMCH_GGMS_MASK: u16 = 0x3; // include/drm/intel/i915_drm.h:51
+pub const SNB_GMCH_GMS_SHIFT: u32 = 3; // include/drm/intel/i915_drm.h:52
+pub const SNB_GMCH_GMS_MASK: u16 = 0x1f; // include/drm/intel/i915_drm.h:53
 pub const INTEL_BSM: u16 = 0x5c; // include/drm/intel/i915_drm.h:97
 pub const INTEL_BSM_MASK: u32 = genmask(31, 20); // include/drm/intel/i915_drm.h:100 (-(1u << 20))
 

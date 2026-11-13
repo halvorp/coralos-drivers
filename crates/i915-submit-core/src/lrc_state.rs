@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! The logical ring context's register state page and descriptor: `__lrc_init_regs`, `init_common_regs`, `init_ppgtt_regs`,
 //! `init_wa_bb_regs`, `__reset_stop_ring`, `lrc_update_regs`, `lrc_descriptor`, `lrc_setup_indirect_ctx`, `lrc_init_state`
-//! (gt/intel_lrc.c:772-1042, :1521-1574), Gen8/Gen9 and 4-level (48-bit) PPGTT only. The context image is
+//! (gt/intel_lrc.c:772-1042, :1521-1574), Gen8/Gen9, with the 4-level (48-bit) PPGTT and the 3-level (32-bit, Cherryview) one. The context image is
 //! `EngineInfo::context_size` bytes (22 pages for a Gen9 render engine, 2 for the others): page 0 is the per-process HWSP, page 1
 //! (this module's [`RegState`]) holds the registers the hardware reloads at a context switch, the rest is the engine's
 //! default state which the caller copies in from the golden context.
@@ -12,6 +12,7 @@ use crate::ring::Ring;
 use crate::wa_bb::WaCtx;
 use i915_common_core::reg::{masked_bit_disable, masked_bit_enable};
 use i915_gt_regs_core as r;
+use i915_memory_core::PpgttRoots;
 
 /// Dwords in the state page.
 // KEPT FIXED (D10): the context register-state image is one 4 KiB page - hardware layout.
@@ -58,8 +59,9 @@ pub struct CtxParams {
     pub render: bool,
     /// `engine->mmio_base`.
     pub mmio_base: u32,
-    /// The PML4's device address (`px_dma(ppgtt->pd)`), from `i915_memory_core::PpgttInit::pml4`.
-    pub pml4: u64,
+    /// What the context loads to reach its address space (`i915_memory_core::Gtt::ppgtt_roots`): the PML4 of a 4-level space, or
+    /// the four page directories of a 3-level one.
+    pub ppgtt: PpgttRoots,
     /// `i915_ggtt_offset(ring->vma)`.
     pub ring_ggtt: u32,
     /// `intel_sseu_make_rpcs(...)` for a render engine; ignored otherwise.
@@ -137,10 +139,25 @@ fn init_wa_bb_regs(regs: &mut RegState, p: &CtxParams) -> Result<(), SubmitError
     Ok(())
 }
 
-/// `init_ppgtt_regs` for a 4-level address space (intel_lrc.c:889-903): PDP0 carries the PML4's address.
-fn init_ppgtt_regs(regs: &mut RegState, pml4: u64) -> Result<(), SubmitError> {
-    slot(regs, CTX_PDP0_UDW, (pml4 >> 32) as u32)?;
-    slot(regs, CTX_PDP0_LDW, pml4 as u32)
+/// `init_ppgtt_regs` (intel_lrc.c:889-903). A 4-level space: `ASSIGN_CTX_PML4`, PDP0 carries the PML4's address and the other
+/// PDPs are ignored. A 3-level space: `ASSIGN_CTX_PDP(3..0)`, PDPn carries page directory n (`i915_page_dir_dma_addr`). Each is
+/// the upper then the lower dword (intel_lrc_reg.h:33-45).
+fn init_ppgtt_regs(regs: &mut RegState, roots: PpgttRoots) -> Result<(), SubmitError> {
+    match roots {
+        PpgttRoots::Pml4(pml4) => {
+            slot(regs, CTX_PDP0_UDW, (pml4 >> 32) as u32)?;
+            slot(regs, CTX_PDP0_LDW, pml4 as u32)
+        }
+        PpgttRoots::Pdp(pd) => {
+            // intel_lrc.c:898-901, in Linux's order: 3, 2, 1, 0
+            const SLOTS: [(usize, usize); 4] = [(CTX_PDP0_UDW, CTX_PDP0_LDW), (CTX_PDP1_UDW, CTX_PDP1_LDW), (CTX_PDP2_UDW, CTX_PDP2_LDW), (CTX_PDP3_UDW, CTX_PDP3_LDW)];
+            for n in (0..4).rev() {
+                slot(regs, SLOTS[n].0, (pd[n] >> 32) as u32)?;
+                slot(regs, SLOTS[n].1, pd[n] as u32)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 /// `__reset_stop_ring` (intel_lrc.c:913-922): clear `STOP_RING` in the saved MI_MODE (masked write: the high half selects it).
@@ -162,19 +179,24 @@ pub fn init_regs(regs: &mut RegState, p: &CtxParams, inhibit: bool) -> Result<()
     let table = lrc_offsets::reg_offsets(p.gen, p.render)?;
     lrc_offsets::set_offsets(&mut regs.dw, table.items, table.name, p.mmio_base, p.gen, inhibit)?;
     init_common_regs(regs, p, inhibit)?;
-    init_ppgtt_regs(regs, p.pml4)?;
+    init_ppgtt_regs(regs, p.ppgtt)?;
     init_wa_bb_regs(regs, p)?;
     reset_stop_ring(regs, p)
 }
 
-/// `lrc_descriptor` (intel_lrc.c:1521-1535) for a 4-level context: the low dword of the ELSP descriptor.
+/// `lrc_descriptor` (intel_lrc.c:1521-1535): the low dword of the ELSP descriptor. The addressing mode is
+/// `INTEL_LEGACY_64B_CONTEXT` for a 4-level space and `INTEL_LEGACY_32B_CONTEXT` otherwise (:1525-1527, `i915_vm_is_4lvl`).
 /// `lrca` is `i915_ggtt_offset(ce->state)` and must be page aligned.
-pub fn descriptor(gen: u8, lrca: u32) -> Result<u32, SubmitError> {
+pub fn descriptor(gen: u8, lrca: u32, roots: PpgttRoots) -> Result<u32, SubmitError> {
     require_gen(gen)?;
     if lrca & !CTX_GTT_ADDRESS_MASK != 0 {
         return Err(SubmitError::LrcaUnaligned { lrca });
     }
-    let mut desc = INTEL_LEGACY_64B_CONTEXT << GEN8_CTX_ADDRESSING_MODE_SHIFT;
+    let mode = match roots {
+        PpgttRoots::Pml4(_) => INTEL_LEGACY_64B_CONTEXT,
+        PpgttRoots::Pdp(_) => INTEL_LEGACY_32B_CONTEXT,
+    };
+    let mut desc = mode << GEN8_CTX_ADDRESSING_MODE_SHIFT;
     desc |= GEN8_CTX_VALID | GEN8_CTX_PRIVILEGE;
     if gen == 8 {
         desc |= GEN8_CTX_L3LLC_COHERENT;
@@ -195,7 +217,7 @@ pub fn update_regs(regs: &mut RegState, p: &CtxParams, lrca: u32, ring: &Ring, h
     if p.ring_ggtt & 0xfff != 0 {
         return Err(SubmitError::GgttUnaligned { what: "ring", addr: p.ring_ggtt });
     }
-    let desc = descriptor(p.gen, lrca)?;
+    let desc = descriptor(p.gen, lrca, p.ppgtt)?;
     slot(regs, CTX_RING_START, p.ring_ggtt)?;
     slot(regs, CTX_RING_HEAD, head)?;
     slot(regs, CTX_RING_TAIL, ring.tail())?;

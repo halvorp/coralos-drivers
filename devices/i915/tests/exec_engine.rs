@@ -16,7 +16,7 @@ use i915_gt_core::emit::FlushQuirks;
 use i915_gt_core::engine::{engines_for, EngineClass, EngineInfo};
 use i915_gt_core::reset::ResetScope;
 use i915_memory_core::probe::GgttGeometry;
-use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, PpgttInit};
+use i915_memory_core::{BindRequest, CacheLevel, Gtt, Mode, NoTablePages, Placement, PpgttInit, PpgttRoots};
 use i915_submit_core::lrc_reg::{CTX_RING_TAIL, LRC_STATE_OFFSET};
 use i915_submit_core::{BatchSpec, EngineConfig};
 
@@ -127,7 +127,7 @@ fn world(contexts: usize) -> World {
         // this context's address space
         let pml4 = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
         let sc = [(); 4].map(|_| gm.alloc.alloc(ObjKind::Data, PAGE).unwrap());
-        let (mut ppgtt, init) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: sc.map(|g| g.device_addr) }).unwrap();
+        let (mut ppgtt, init) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: sc.map(|g| g.device_addr), pd: [0; 4] }).unwrap();
         ex.run_bind_step(&mut log, &mut gm, &init, false, &mut |_| true).unwrap();
         let batch = gm.alloc.alloc(ObjKind::Batch, PAGE).unwrap();
         let result = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
@@ -143,7 +143,7 @@ fn world(contexts: usize) -> World {
             gm.store32(batch.device_addr + 4 * i as u64, *d).unwrap();
         }
         let timeline_ggtt = hwsp_ggtt + 0x100 + 0x40 * n as u32;
-        let id = rig.add_context(&mut gm, CtxObjects { image, image_ggtt, ring, ring_ggtt }, pml4.device_addr, timeline_ggtt, 0, true).unwrap();
+        let id = rig.add_context(&mut gm, CtxObjects { image, image_ggtt, ring, ring_ggtt }, PpgttRoots::Pml4(pml4.device_addr), timeline_ggtt, 0, true).unwrap();
         ctxs.push(Ctx { id, objs: CtxObjects { image, image_ggtt, ring, ring_ggtt }, gtt: ppgtt, timeline_ggtt, result_va: va });
     }
     World { chip, mem, ex, gm, log, ggtt, rig, hwsp_ggtt, ctxs }
@@ -489,7 +489,7 @@ fn refused_without_the_feature_an_elsp_submission_never_reaches_the_chip() {
     let (chip, mut ex, mut gm, mut log, mut rig, ..) = shipped_world();
     let image = *gm.alloc.grants().find(|g| g.kind == ObjKind::ContextImage).unwrap();
     let ring = *gm.alloc.grants().find(|g| g.kind == ObjKind::Ring).unwrap();
-    let id = rig.add_context(&mut gm, CtxObjects { image, image_ggtt: 0x10_0000, ring, ring_ggtt: 0x20_0000 }, 0x5000, 0x1000 + 0x100, 0, true).unwrap();
+    let id = rig.add_context(&mut gm, CtxObjects { image, image_ggtt: 0x10_0000, ring, ring_ggtt: 0x20_0000 }, PpgttRoots::Pml4(0x5000), 0x1000 + 0x100, 0, true).unwrap();
     let e = rig.submit_batch(&mut ex, &mut gm, &mut log, id, &batch(), 0).unwrap_err();
     assert_eq!(e.name(), "WRITE-NOT-ALLOWED");
     assert!(chip.writes_to(0x2230).is_empty(), "no ELSP write");

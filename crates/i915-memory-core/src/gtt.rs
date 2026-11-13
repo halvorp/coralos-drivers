@@ -2,7 +2,7 @@
 //! [`Gtt`]: one address space (the GGTT or one full PPGTT) as a planner. It owns the VMA node table, the table-page tree (PPGTT)
 //! and the scratch entries, and turns [`BindRequest`]s into [`BindPlan`]s.
 //!
-//! Ported from gt/gen8_ppgtt.c (`gen8_ppgtt_create`, `gen8_init_scratch`, `gen8_alloc_top_pd`, `__gen8_ppgtt_alloc`,
+//! Ported from gt/gen8_ppgtt.c (`gen8_ppgtt_create`, `gen8_init_scratch`, `gen8_alloc_top_pd`, `gen8_preallocate_top_level_pdp`, `__gen8_ppgtt_alloc`,
 //! `__gen8_ppgtt_clear`, `gen8_ppgtt_insert_entry`), gt/intel_ppgtt.c (`__set_pd_entry`), gt/intel_ggtt.c (`init_ggtt`,
 //! `gen8_ggtt_insert_entries`, `gen8_ggtt_clear_range`), and i915_vma.c `i915_vma_insert` (size, alignment, guard, range and
 //! bias rules). Deliberate deviations from Linux, each stated where it happens: empty table pages are KEPT after an unbind (the
@@ -15,7 +15,65 @@ use crate::probe::GgttGeometry;
 use crate::pte::{gen8_ggtt_pte_encode, gen8_pde_encode, gen8_pte_encode, CacheLevel, PTE_LM, PTE_READ_ONLY};
 use crate::{MemError, ENTRIES_PER_TABLE, GTT_PAGE, PPGTT_BITS};
 use alloc::vec::Vec;
-use i915_devinfo_core::{PlatformDescriptor, PpgttType};
+use i915_devinfo_core::{Platform, PlatformDescriptor, PpgttType};
+
+/// Address bits of the legacy 32-bit PPGTT: `chv_info.__runtime.ppgtt_size = 32` (i915_pci.c:462).
+pub const PPGTT_LEGACY_BITS: u32 = 32;
+/// `GEN8_3LVL_PDPES` (intel_gtt.h:133): the four page directories a 3-level tree preallocates, one per PDP register.
+pub const GEN8_3LVL_PDPES: usize = 4;
+
+/// The shape of a platform's full PPGTT, chosen from its devinfo row (`ppgtt_init`: `vm.total = BIT_ULL(ppgtt_size)`,
+/// intel_ppgtt.c:315; `i915_vm_is_4lvl` = `(vm->total - 1) >> 32`, intel_gtt.h:428-431).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PpgttLayout {
+    /// 48 bits, 4 levels, `vm->top = 3`: the context names the PML4 (Gen9: Skylake, Kaby Lake).
+    Full48,
+    /// 32 bits, 3 levels, `vm->top = 2`: the context names the four preallocated page directories through `PDP3..0`
+    /// (Cherryview). Linux: "GEN8 legacy ppgtt programming is accomplished through a max 4 PDP registers" (gen8_ppgtt.c:991-996).
+    Legacy32,
+}
+
+impl PpgttLayout {
+    /// The row's layout, or the named refusal: a row with no full PPGTT, or one whose size is neither 48 nor 32 bits.
+    pub fn of(desc: &PlatformDescriptor) -> Result<PpgttLayout, MemError> {
+        match (desc.info.ppgtt_type, desc.info.ppgtt_size as u32) {
+            (PpgttType::Full, PPGTT_BITS) => Ok(PpgttLayout::Full48),
+            (PpgttType::Full, PPGTT_LEGACY_BITS) => Ok(PpgttLayout::Legacy32),
+            _ => Err(MemError::NotFullPpgtt { size_bits: desc.info.ppgtt_size }),
+        }
+    }
+    /// `vm->top` (gen8_ppgtt.c:1014): the level of the top table page.
+    pub const fn top(self) -> u8 {
+        match self {
+            PpgttLayout::Full48 => 3,
+            PpgttLayout::Legacy32 => 2,
+        }
+    }
+    /// Address bits of the space.
+    pub const fn bits(self) -> u32 {
+        match self {
+            PpgttLayout::Full48 => PPGTT_BITS,
+            PpgttLayout::Legacy32 => PPGTT_LEGACY_BITS,
+        }
+    }
+    /// How many pages the caller supplies for one space of this layout: the top table and the four scratch pages, then
+    /// (3-level only) the four page directories ([`PpgttInit::pd`]).
+    pub const fn base_pages(self) -> usize {
+        match self {
+            PpgttLayout::Full48 => 5,
+            PpgttLayout::Legacy32 => 5 + GEN8_3LVL_PDPES,
+        }
+    }
+}
+
+/// What a logical-ring context loads to reach a PPGTT (`init_ppgtt_regs`, gt/intel_lrc.c:889-903).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PpgttRoots {
+    /// `ASSIGN_CTX_PML4`: the PML4's device address into PDP0.
+    Pml4(u64),
+    /// `ASSIGN_CTX_PDP(3..0)`: `i915_page_dir_dma_addr(ppgtt, n)` (intel_gtt.h:579-584) for n = 0..3, index n = PDPn.
+    Pdp([u64; GEN8_3LVL_PDPES]),
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GttKind {
@@ -23,7 +81,7 @@ pub enum GttKind {
     Ppgtt,
 }
 
-/// A request for one page-table page, made to the caller. `level` is the table's level (0 = PT, 1 = PD, 2 = PDP; the PML4 is
+/// A request for one page-table page, made to the caller. `level` is the table's level (0 = PT, 1 = PD, 2 = PDP; the top table is
 /// supplied at construction) and `base_va` the first address the table covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TablePageRequest {
@@ -56,12 +114,16 @@ impl TablePageSource for NoTablePages {
     }
 }
 
-/// The five pages a PPGTT needs at creation: the PML4 and the scratch chain (`gen8_init_scratch`: data page, scratch PT,
-/// scratch PD, scratch PDP).
+/// The five pages a PPGTT needs at creation: the top table and the scratch chain (`gen8_init_scratch`: data page, scratch PT,
+/// scratch PD, scratch PDP). `pml4` is the TOP table of either layout (`ppgtt->pd`): the PML4 of a 4-level space, the 4-entry PDP of
+/// a 3-level one. A 3-level space (`vm->top = 2`) makes only `scratch[0..=2]` (gen8_ppgtt.c:862, `i <= vm->top`); `scratch[3]` is
+/// still validated (it is the caller's page) but nothing is written to it or links it. `pd` are the four page directories a
+/// 3-level space preallocates (`gen8_preallocate_top_level_pdp`); a 4-level space ignores them (they may be 0).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PpgttInit {
     pub pml4: u64,
     pub scratch: [u64; 4],
+    pub pd: [u64; GEN8_3LVL_PDPES],
 }
 
 /// A GGTT range that is live before the driver starts and that [`Gtt::new_ggtt_preserving`] must keep exactly as found: its entries
@@ -103,9 +165,10 @@ struct Table {
 /// The result of [`Gtt::walk`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Walk {
-    /// Entry index at each level: `[PML4, PDP, PD, PT]` (bits 47:39, 38:30, 29:21, 20:12).
+    /// Entry index at each level: `[PML4, PDP, PD, PT]` (bits 47:39, 38:30, 29:21, 20:12). A 3-level space has no PML4: index 0 is 0.
     pub index: [u16; 4],
-    /// Device address of the table page at each level, `[PML4, PDP, PD, PT]`, `None` where the tree has no page yet.
+    /// Device address of the table page at each level, `[PML4, PDP, PD, PT]`, `None` where the tree has no page yet (always `None` for
+    /// the PML4 of a 3-level space, whose top is the PDP).
     pub table: [Option<u64>; 4],
 }
 
@@ -125,9 +188,11 @@ pub struct Gtt {
     /// Table pages parked by a rolled-back plan, reused before the source is asked again. Its capacity is kept at or above
     /// `spare.len() + tables.len()` (see [`Gtt::reserve_table_slot`]) so a rollback can never fail to park a page.
     spare: Vec<u64>,
-    /// The PML4 and scratch-chain pages (PPGTT): a table page may never alias them. FIXED by hardware: a 4-level tree has one
-    /// PML4 and `gen8_init_scratch` makes exactly 4 scratch pages (gen8_ppgtt.c:826).
+    /// The top table and scratch-chain pages (PPGTT): a table page may never alias them. FIXED by hardware: a tree has one top
+    /// table and `gen8_init_scratch` makes at most 4 scratch pages (gen8_ppgtt.c:826).
     fixed: [u64; 5],
+    /// The PPGTT's layout (`Full48` for the GGTT, where it is unused).
+    layout: PpgttLayout,
 }
 
 const fn align_up(v: u64, a: u64) -> u64 {
@@ -147,6 +212,7 @@ impl Gtt {
             tables: Vec::new(),
             spare: Vec::new(),
             fixed: [u64::MAX; 5],
+            layout: PpgttLayout::Full48,
         }
     }
 
@@ -160,11 +226,13 @@ impl Gtt {
         Ok(())
     }
 
-    fn require_gen9(desc: &PlatformDescriptor) -> Result<u8, MemError> {
-        if desc.info.graphics_ver != 9 {
-            return Err(MemError::UnsupportedGeneration { gen: desc.info.graphics_ver });
+    /// The platform gate, by row: the Gen9 rows and Cherryview (Gen8, ruling D8) are ported; any other row is refused by name.
+    /// Returns the row's `dma_mask_size`.
+    fn require_ported(desc: &PlatformDescriptor) -> Result<u8, MemError> {
+        match (desc.info.graphics_ver, desc.platform()) {
+            (9, _) | (8, Platform::Cherryview) => Ok(desc.info.dma_mask_size),
+            (gen, _) => Err(MemError::UnsupportedGeneration { gen }),
         }
-        Ok(desc.info.dma_mask_size)
     }
 
     /// The Global GTT (`gen8_gmch_probe` + `ggtt_probe_common` + `init_ggtt`) with nothing preallocated: every entry is pointed at
@@ -185,7 +253,7 @@ impl Gtt {
     ///     ("Clear any non-preallocated blocks", :943-949) and the guard page (:952). A kept range's entries are never written.
     /// A `keep` range must be page-aligned, non-empty, below the guard page and disjoint from the others; each refusal is named.
     pub fn new_ggtt_preserving(desc: &PlatformDescriptor, geom: &GgttGeometry, scratch_page: u64, keep: &[Preallocated]) -> Result<(Self, UnbindPlan), MemError> {
-        let bits = Self::require_gen9(desc)?;
+        let bits = Self::require_ported(desc)?;
         let mut g = Self::blank(GttKind::Ggtt, geom.total, geom.total - GTT_PAGE, geom.mappable_end, bits);
         g.check_page(scratch_page)?;
         // ggtt->vm.scratch[0]->encode = pte_encode(scratch dma, I915_CACHE_NONE, 0), intel_ggtt.c:1236
@@ -239,13 +307,17 @@ impl Gtt {
         self.nodes.get(i).reserved
     }
 
-    /// A full 48-bit PPGTT (`gen8_ppgtt_create`, gen8_ppgtt.c:1002): scratch chain + PML4, all as fills.
+    /// A full PPGTT (`gen8_ppgtt_create`, gen8_ppgtt.c:997-1077) in the platform's layout ([`PpgttLayout::of`]): the scratch chain
+    /// (`gen8_init_scratch`), the top table filled with `scratch[top]` (`gen8_alloc_top_pd`), and for the 3-level layout the four
+    /// page directories `init.pd` (base `n << 30`), each filled with `scratch[1]` and linked into the top PDP
+    /// (`gen8_preallocate_top_level_pdp`, gen8_ppgtt.c:892-920). Those four are kept for the life of the space ("keep pinned",
+    /// :915): the context's `PDP3..0` name them ([`Gtt::ppgtt_roots`]). Every page is validated and none may alias another.
     pub fn new_ppgtt(desc: &PlatformDescriptor, init: &PpgttInit) -> Result<(Self, UnbindPlan), MemError> {
-        let bits = Self::require_gen9(desc)?;
-        if desc.info.ppgtt_type != PpgttType::Full || desc.info.ppgtt_size as u32 != PPGTT_BITS {
-            return Err(MemError::NotFullPpgtt { size_bits: desc.info.ppgtt_size });
-        }
-        let mut g = Self::blank(GttKind::Ppgtt, 1u64 << PPGTT_BITS, 1u64 << PPGTT_BITS, 0, bits);
+        let bits = Self::require_ported(desc)?;
+        let layout = PpgttLayout::of(desc)?;
+        let total = 1u64 << layout.bits();
+        let mut g = Self::blank(GttKind::Ppgtt, total, total, 0, bits);
+        g.layout = layout;
         let all = [init.pml4, init.scratch[0], init.scratch[1], init.scratch[2], init.scratch[3]];
         for (i, a) in all.iter().enumerate() {
             g.check_page(*a)?;
@@ -253,21 +325,63 @@ impl Gtt {
                 return Err(MemError::DuplicatePage { addr: *a });
             }
         }
-        // gen8_init_scratch (gen8_ppgtt.c:826): has_read_only is true on Gen9 (:1025), so the scratch PTE is read-only.
+        let top = layout.top() as usize;
+        // gen8_init_scratch (gen8_ppgtt.c:826): has_read_only is true off Gen11/12 (:1025), so the scratch PTE is read-only.
         g.enc[0] = gen8_pte_encode(init.scratch[0], CacheLevel::None, PTE_READ_ONLY); // :856
-        for i in 1..4 {
+        for i in 1..=top {
             g.enc[i] = gen8_pde_encode(init.scratch[i], CacheLevel::None); // :878
         }
         let mut ops = Ops::new();
-        for i in 1..4 {
+        for i in 1..=top {
             ops.push(Op::FillTable { table: init.scratch[i], entry: g.enc[i - 1] })?; // fill_px(obj, scratch[i-1]->encode), :877
         }
-        ops.push(Op::FillTable { table: init.pml4, entry: g.enc[3] })?; // gen8_alloc_top_pd: fill_page_dma(.., scratch[top]->encode), :948
+        // gen8_alloc_top_pd: fill_page_dma(.., scratch[top]->encode, count), :948. Linux fills the first gen8_pd_top_count entries (4 on
+        // a 3-level top); the whole page is filled here, which differs only in entries no address below 2^32 can index.
+        ops.push(Op::FillTable { table: init.pml4, entry: g.enc[top] })?;
         g.fixed = all;
         g.reserve_table_slot()?;
-        g.tables.push(Table { level: 3, base: 0, addr: init.pml4 });
+        g.tables.push(Table { level: top as u8, base: 0, addr: init.pml4 });
+        if layout == PpgttLayout::Legacy32 {
+            for (idx, &addr) in init.pd.iter().enumerate() {
+                let idx = idx as u64;
+                let base = idx << 30;
+                g.check_page(addr)?;
+                if all.contains(&addr) || init.pd[..idx as usize].contains(&addr) {
+                    return Err(MemError::DuplicatePage { addr });
+                }
+                g.reserve_table_slot()?; // alloc_pd, :906: the page is the caller's
+                g.tables.push(Table { level: 1, base, addr });
+                ops.push(Op::FillTable { table: addr, entry: g.enc[1] })?; // fill_px(pde, scratch[1]->encode), :914
+                // set_pd_entry(pd, idx, pde): encode(px_dma(to), I915_CACHE_LLC), intel_ppgtt.c:109
+                ops.push(Op::TableEntry { table: init.pml4, index: idx as u16, value: gen8_pde_encode(addr, CacheLevel::Llc) })?;
+            }
+        }
         let p = g.plan(ops, VmaId(0), 0, 0, 0, &[], CacheLevel::None, 0, Vec::new(), 0);
         Ok((g, p))
+    }
+
+    /// The layout of this PPGTT (`None` for the GGTT).
+    pub fn ppgtt_layout(&self) -> Option<PpgttLayout> {
+        (self.kind == GttKind::Ppgtt).then_some(self.layout)
+    }
+
+    /// What a context loads to reach this space (`init_ppgtt_regs`, gt/intel_lrc.c:889-903): the PML4 of a 4-level space, or the
+    /// four page directories of a 3-level one (`i915_page_dir_dma_addr`, intel_gtt.h:579-584; they are preallocated, so never the
+    /// scratch fallback). `None` for the GGTT.
+    pub fn ppgtt_roots(&self) -> Option<PpgttRoots> {
+        if self.kind != GttKind::Ppgtt {
+            return None;
+        }
+        Some(match self.layout {
+            PpgttLayout::Full48 => PpgttRoots::Pml4(self.tables[0].addr),
+            PpgttLayout::Legacy32 => {
+                let mut pd = [0u64; GEN8_3LVL_PDPES];
+                for (n, slot) in pd.iter_mut().enumerate() {
+                    *slot = self.find(1, (n as u64) << 30).map(|i| self.tables[i].addr)?;
+                }
+                PpgttRoots::Pdp(pd)
+            }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -333,18 +447,28 @@ impl Gtt {
         Some((n.data_start(), n.bound_pages * GTT_PAGE, n.guard))
     }
 
+    /// The refusal for an address at or past the PPGTT's limit, named for the layout's width.
+    fn beyond(&self, va: u64) -> MemError {
+        match self.layout {
+            PpgttLayout::Full48 => MemError::Beyond48Bit { va },
+            PpgttLayout::Legacy32 => MemError::Beyond32Bit { va },
+        }
+    }
+
     fn check_va(&self, va: u64) -> Result<(), MemError> {
-        if self.kind == GttKind::Ppgtt && va >> PPGTT_BITS != 0 {
-            return Err(MemError::Beyond48Bit { va });
+        if self.kind == GttKind::Ppgtt && va >> self.layout.bits() != 0 {
+            return Err(self.beyond(va));
         }
         Ok(())
     }
 
-    /// The 48-bit rule for a range: it must start below 2^48 and end at or below it. The refusal names the FIRST offending address.
+    /// The width rule for a range (48 or 32 bits): it must start below the limit and end at or below it. The refusal names the FIRST
+    /// offending address.
     fn check_range48(&self, va: u64, len: u64) -> Result<(), MemError> {
         self.check_va(va)?;
-        if self.kind == GttKind::Ppgtt && va.checked_add(len).map_or(true, |e| e > 1u64 << PPGTT_BITS) {
-            return Err(MemError::Beyond48Bit { va: 1u64 << PPGTT_BITS });
+        let limit = 1u64 << self.layout.bits();
+        if self.kind == GttKind::Ppgtt && va.checked_add(len).map_or(true, |e| e > limit) {
+            return Err(self.beyond(limit));
         }
         Ok(())
     }
@@ -357,9 +481,10 @@ impl Gtt {
         self.check_va(va)?;
         let mut index = [0u16; 4];
         let mut table = [None; 4];
-        for l in (0..4u8).rev() {
+        let top = self.layout.top();
+        for l in (0..=top).rev() {
             index[3 - l as usize] = ((va >> (12 + 9 * l as u32)) & (ENTRIES_PER_TABLE - 1)) as u16;
-            let base = if l == 3 { 0 } else { va & !((1u64 << (12 + 9 * (l as u32 + 1))) - 1) };
+            let base = if l == top { 0 } else { va & !((1u64 << (12 + 9 * (l as u32 + 1))) - 1) };
             table[3 - l as usize] = self.find(l, base).map(|i| self.tables[i].addr);
         }
         Ok(Walk { index, table })
@@ -412,8 +537,8 @@ impl Gtt {
 
     /// Make sure PDP, PD and PT pages exist for `va`, emitting fill + link ops for each new one (`__gen8_ppgtt_alloc`).
     fn ensure_tables<S: TablePageSource>(&mut self, src: &mut S, ops: &mut Ops, va: u64, made: &mut u32) -> Result<u64, MemError> {
-        let mut parent = self.tables[0].addr; // the PML4
-        for l in (0..3u8).rev() {
+        let mut parent = self.tables[0].addr; // the top table: the PML4, or the 3-level PDP whose four PDs always exist
+        for l in (0..self.layout.top()).rev() {
             let base = va & !((1u64 << (12 + 9 * (l as u32 + 1))) - 1);
             let at = match self.find(l, base) {
                 Some(i) => i,

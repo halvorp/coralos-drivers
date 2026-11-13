@@ -69,7 +69,7 @@ fn spec(n: u32) -> ContextSpec<'static> {
         lrca: 0x0100_0000 + n * 0x0001_0000,
         ring_size: 4096,
         ring_ggtt: 0x0200_0000 + n * 0x1000,
-        pml4: 0x1_0000_0000 + n as u64 * 0x1000,
+        ppgtt: i915_memory_core::PpgttRoots::Pml4(0x1_0000_0000 + n as u64 * 0x1000),
         rpcs: 0,
         hwsp_ggtt: 0x0003_0000 + n * 0x40,
         initial_breadcrumb: true,

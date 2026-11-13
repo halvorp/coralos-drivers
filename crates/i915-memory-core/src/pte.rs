@@ -2,7 +2,7 @@
 //! Page-table-entry and page-directory-entry encoding for Gen8/Gen9, and the private PAT the entries select.
 //!
 //! Ported from gt/gen8_ppgtt.c (`gen8_pde_encode`, `gen8_pte_encode`), gt/intel_ggtt.c (`gen8_ggtt_pte_encode`/`decode`),
-//! gt/intel_gtt.h (the bit and PPAT names) and gt/intel_gtt.c (`bdw_setup_private_ppat`), v7.0-rc6. Only the Gen8/Gen9 encoders
+//! gt/intel_gtt.h (the bit and PPAT names) and gt/intel_gtt.c (`bdw_setup_private_ppat`, `chv_setup_private_ppat`, `setup_private_pat`), v7.0-rc6. Only the Gen8/Gen9 encoders
 //! are carried: `gen12_pte_encode` / `mtl_ggtt_pte_encode` / the Gen6-7 PTEs are other generations and are not ported.
 
 /// x86 `_PAGE_PWT` / `_PAGE_PCD` / `_PAT` (arch/x86/include/asm/pgtable_types.h:13-18,54-63): the three bits that pick the PAT index.
@@ -96,13 +96,45 @@ pub const KBL_PPAT: [u8; 8] = [
     GEN8_PPAT_WB | GEN8_PPAT_LLCELLC | age(3),                 // 7, :620
 ];
 
-/// `GEN8_PPAT(i, x)` or-ed together: the 64-bit value Linux splits into `GEN8_PRIVATE_PAT_LO/HI`.
+/// `GEN8_PPAT(i, x)` or-ed together: the 64-bit value Linux splits into `GEN8_PRIVATE_PAT_LO/HI`. The Gen9 (non-LP) table.
 pub const fn private_ppat() -> u64 {
+    pack_ppat(&KBL_PPAT)
+}
+
+const fn pack_ppat(t: &[u8; 8]) -> u64 {
     let mut v = 0u64;
     let mut i = 0;
     while i < 8 {
-        v |= (KBL_PPAT[i] as u64) << (i * 8); // GEN8_PPAT(i, x), intel_gtt.h:150
+        v |= (t[i] as u64) << (i * 8); // GEN8_PPAT(i, x), intel_gtt.h:150
         i += 1;
     }
     v
+}
+
+// ---- the Cherryview private PAT (chv_setup_private_ppat, intel_gtt.c:632-666) -------------------------------------------
+/// "Only the snoop bit has meaning for CHV, the rest is ignored" (intel_gtt.c:637-638).
+pub const CHV_PPAT_SNOOP: u8 = 1 << 6; // intel_gtt.h:140
+
+/// "Map WB on BDW to snooped on CHV" (intel_gtt.c:636): entry 0 must snoop because the GGTT always uses pat_sel 000 (:648-653).
+pub const CHV_PPAT: [u8; 8] = [
+    CHV_PPAT_SNOOP, // 0, intel_gtt.c:655
+    0,              // 1, :656
+    0,              // 2, :657
+    0,              // 3, :658
+    CHV_PPAT_SNOOP, // 4, :659
+    CHV_PPAT_SNOOP, // 5, :660
+    CHV_PPAT_SNOOP, // 6, :661
+    CHV_PPAT_SNOOP, // 7, :662
+];
+
+/// `setup_private_pat` (intel_gtt.c:668-692) for the carried rows: Cherryview (and GEN9_LP, none carried) takes
+/// `chv_setup_private_ppat` (:688-689), every other Gen8/Gen9 row `bdw_setup_private_ppat` (:690-691). Any row this crate does
+/// not drive is refused by name.
+pub fn private_ppat_for(desc: &i915_devinfo_core::PlatformDescriptor) -> Result<u64, crate::MemError> {
+    match (desc.gen(), desc.platform()) {
+        (8, i915_devinfo_core::Platform::Cherryview) => Ok(pack_ppat(&CHV_PPAT)),
+        (9, _) if desc.is_gen9_lp() => Ok(pack_ppat(&CHV_PPAT)),
+        (9, _) => Ok(private_ppat()),
+        (gen, _) => Err(crate::MemError::UnsupportedGeneration { gen }),
+    }
 }

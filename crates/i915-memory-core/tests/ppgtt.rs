@@ -8,7 +8,7 @@ use i915_memory_core::*;
 type P = Gtt;
 
 fn init() -> (P, UnbindPlan) {
-    P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap()
+    P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).unwrap()
 }
 
 fn fixed(pages: &[u64], at: u64) -> BindRequest<'_> {
@@ -59,13 +59,14 @@ fn creation_builds_the_scratch_chain_gen8_init_scratch_style() {
 #[test]
 fn creation_refuses_wrong_hardware_and_aliased_pages() {
     let mut d = kbl();
-    d.info.ppgtt_size = 32;
-    assert_eq!(P::new_ppgtt(&d, &PpgttInit { pml4: PML4, scratch: S }).err(), Some(MemError::NotFullPpgtt { size_bits: 32 }));
+    d.info.ppgtt_size = 36;
+    assert_eq!(P::new_ppgtt(&d, &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).err(), Some(MemError::NotFullPpgtt { size_bits: 36 }));
+    // Cherryview's 3-level space takes its four page directories from `pd`: four zeros are one page named four times (see tests/chv.rs)
     let chv = i915_devinfo_core::lookup(0x22b0).unwrap();
-    assert_eq!(P::new_ppgtt(&chv, &PpgttInit { pml4: PML4, scratch: S }).err(), Some(MemError::UnsupportedGeneration { gen: 8 }));
-    assert_eq!(P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: [S[0], S[1], S[2], PML4] }).err(), Some(MemError::DuplicatePage { addr: PML4 }));
-    assert_eq!(P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4 + 8, scratch: S }).err().map(|e| e.name()), Some("MISALIGNED"));
-    assert_eq!(P::new_ppgtt(&kbl(), &PpgttInit { pml4: 1 << 39, scratch: S }).err(), Some(MemError::DeviceAddrBeyondMask { addr: 1 << 39, bits: 39 }));
+    assert_eq!(P::new_ppgtt(&chv, &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).err(), Some(MemError::DuplicatePage { addr: 0 }));
+    assert_eq!(P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: [S[0], S[1], S[2], PML4], pd: [0; 4] }).err(), Some(MemError::DuplicatePage { addr: PML4 }));
+    assert_eq!(P::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4 + 8, scratch: S, pd: [0; 4] }).err().map(|e| e.name()), Some("MISALIGNED"));
+    assert_eq!(P::new_ppgtt(&kbl(), &PpgttInit { pml4: 1 << 39, scratch: S, pd: [0; 4] }).err(), Some(MemError::DeviceAddrBeyondMask { addr: 1 << 39, bits: 39 }));
 }
 
 #[test]

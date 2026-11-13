@@ -39,7 +39,7 @@ fn spec(n: u32) -> ContextSpec<'static> {
         lrca: 0x0100_0000 + n * 0x0001_0000,
         ring_size: 4096,
         ring_ggtt: 0x0200_0000 + n * 0x1000,
-        pml4: 0x1_0000_0000 + n as u64 * 0x1000,
+        ppgtt: i915_memory_core::PpgttRoots::Pml4(0x1_0000_0000 + n as u64 * 0x1000),
         rpcs: 0,
         hwsp_ggtt: 0x0003_0000 + n * 0x40,
         initial_breadcrumb: true,
@@ -352,7 +352,7 @@ fn a_new_context_image_points_at_its_ring_and_address_space() {
     assert_eq!(e.context_lrca(c).unwrap(), 0x0101_0000);
     // the descriptor still carries FORCE_RESTORE (lrc_update_regs), and no ccid before the first submission
     assert_eq!(e.context_descriptor(c).unwrap(), 0x0101_0000 | 0x119 | 0x4);
-    let _ = PpgttInit { pml4: 0, scratch: [0; 4] }; // the type the executor takes the PML4 from
+    let _ = PpgttInit { pml4: 0, scratch: [0; 4], pd: [0; 4] }; // the type the executor takes the PML4 from (through Gtt::ppgtt_roots)
 }
 
 #[test]

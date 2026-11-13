@@ -13,6 +13,12 @@ fn registers_have_linux_values() {
     assert_eq!(GEN6_STOLEN_RESERVED.offset(), 0x1082C0); // i915_reg.h:128
     assert_eq!(GEN6_STOLEN_RESERVED_ADDR_MASK, 0xFFF00000);
     assert_eq!(GEN6_STOLEN_RESERVED_ENABLE, 1);
+    // i915_reg.h:139-143, each value by its literal (a zero-valued member pinned by behaviour in i915-memory-core's chv stolen test)
+    assert_eq!(GEN8_STOLEN_RESERVED_SIZE_MASK, 0x180);
+    assert_eq!(GEN8_STOLEN_RESERVED_1M, 0x000);
+    assert_eq!(GEN8_STOLEN_RESERVED_2M, 0x080);
+    assert_eq!(GEN8_STOLEN_RESERVED_4M, 0x100);
+    assert_eq!(GEN8_STOLEN_RESERVED_8M, 0x180);
 }
 
 #[test]
@@ -35,6 +41,10 @@ fn config_space_words() {
     assert_eq!(BDW_GMCH_GGMS_MASK, 0x3);
     assert_eq!(BDW_GMCH_GMS_SHIFT, 8);
     assert_eq!(BDW_GMCH_GMS_MASK, 0xff);
+    assert_eq!(SNB_GMCH_GGMS_SHIFT, 8); // include/drm/intel/i915_drm.h:50
+    assert_eq!(SNB_GMCH_GGMS_MASK, 0x3); // :51
+    assert_eq!(SNB_GMCH_GMS_SHIFT, 3); // :52
+    assert_eq!(SNB_GMCH_GMS_MASK, 0x1f); // :53
     assert_eq!(INTEL_BSM, 0x5c);
     assert_eq!(INTEL_BSM_MASK, 0xfff0_0000);
     assert_eq!((GEN4_GTTMMADR_BAR, GEN4_GMADR_BAR), (0, 2));

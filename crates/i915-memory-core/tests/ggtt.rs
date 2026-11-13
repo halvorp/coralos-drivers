@@ -41,8 +41,15 @@ fn creation_clears_every_entry_to_scratch_and_reserves_the_error_capture_slot() 
 
 #[test]
 fn creation_refuses_other_generations_and_bad_scratch() {
+    // ported rows: Gen9 and Cherryview. A Gen8 row that is not Cherryview (Broadwell is not carried) and a Gen7 row are refused.
     let chv = i915_devinfo_core::lookup(0x22b0).unwrap();
-    assert_eq!(G::new_ggtt(&chv, &geom_4g(), SCRATCH).err(), Some(MemError::UnsupportedGeneration { gen: 8 }));
+    assert!(G::new_ggtt(&chv, &geom_4g(), SCRATCH).is_ok(), "Cherryview is ported (ruling D8)");
+    let mut bdw = kbl();
+    bdw.info.graphics_ver = 8;
+    assert_eq!(G::new_ggtt(&bdw, &geom_4g(), SCRATCH).err(), Some(MemError::UnsupportedGeneration { gen: 8 }));
+    let mut gen7 = chv;
+    gen7.info.graphics_ver = 7;
+    assert_eq!(G::new_ggtt(&gen7, &geom_4g(), SCRATCH).err(), Some(MemError::UnsupportedGeneration { gen: 7 }));
     assert_eq!(G::new_ggtt(&kbl(), &geom_4g(), SCRATCH + 8).err().map(|e| e.name()), Some("MISALIGNED"));
     assert_eq!(G::new_ggtt(&kbl(), &geom_4g(), 1 << 39).err(), Some(MemError::DeviceAddrBeyondMask { addr: 1 << 39, bits: 39 }));
 }

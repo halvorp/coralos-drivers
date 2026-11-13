@@ -166,9 +166,14 @@ impl Gem {
         self.vms.get(vm.0 as usize).and_then(|v| v.as_ref()).map_or(0, |v| v.vmas.iter().flatten().count())
     }
 
-    /// The PML4 device address of a VM, for `ContextSpec::pml4` (`px_dma(ppgtt->pd)`).
+    /// The top table's device address of a VM (`px_dma(ppgtt->pd)`: the PML4, or Cherryview's 4-entry PDP): the VM's identity.
     pub fn vm_pml4(&self, vm: VmId) -> Option<u64> {
         self.vms.get(vm.0 as usize)?.as_ref().map(|v| v.init.pml4)
+    }
+
+    /// What a context on this VM loads (`ContextSpec::ppgtt`, `init_ppgtt_regs`): the PML4 or Cherryview's four page directories.
+    pub fn vm_roots(&self, vm: VmId) -> Option<i915_memory_core::PpgttRoots> {
+        self.vms.get(vm.0 as usize)?.as_ref().and_then(|v| v.gtt.ppgtt_roots())
     }
 
     /// `vm->total` (`I915_CONTEXT_PARAM_GTT_SIZE`).

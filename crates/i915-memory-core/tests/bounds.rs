@@ -20,7 +20,7 @@ fn bind(pages: &[u64], at: u64) -> BindRequest<'_> {
 #[test]
 fn the_page_table_table_grows_past_the_old_cap() {
     // RUNTIME-TABLES-HAVE-NO-CAP: the old T was 1024. One page per fresh 2 MiB needs one PT each; 3000 of them is ~3x the old cap.
-    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap();
+    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).unwrap();
     let mut src = Pool::new(POOL0);
     for i in 0..3000u64 {
         g.plan_bind(&mut src, &bind(&[0x1000], i * 0x20_0000)).unwrap();
@@ -35,7 +35,7 @@ fn the_page_table_table_grows_past_the_old_cap() {
 
 #[test]
 fn a_plan_grows_past_the_old_op_buffer_and_every_rolled_back_table_is_parked() {
-    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap();
+    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).unwrap();
     let mut src = Pool::new(POOL0);
     // ~3 ops per fresh 2 MiB (fill, link, run): the old MAX_OPS was 512, so 200 PTs (~600 ops) was refused
     let big: Vec<u64> = (0..200 * 512).map(|i| 0x1_0000_0000 + i * 4096).collect();
@@ -60,7 +60,7 @@ fn a_plan_grows_past_the_old_op_buffer_and_every_rolled_back_table_is_parked() {
 
 #[test]
 fn the_vma_table_grows_past_the_old_cap_for_ppgtt_too() {
-    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S }).unwrap();
+    let (mut g, _) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: PML4, scratch: S, pd: [0; 4] }).unwrap();
     let mut src = Pool::new(POOL0);
     let p = Placement::best();
     for _ in 0..500 {

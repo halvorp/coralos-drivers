@@ -74,7 +74,7 @@ mod p2 {
         chip.0.borrow_mut().on_write = Some(Box::new(|regs, r, v| {
             regs.insert(r, v);
         }));
-        let rep = ex.program_private_ppat(&mut log).unwrap();
+        let rep = ex.program_private_ppat(&kbl(), &mut log).unwrap();
         assert_eq!(chip.writes_to(0x40e0), [0x0003_0907], "entries 0..3 = WB|LLC, WC|LLC+eLLC, WB, UC (entry 3 = UC, the index PPAT_UNCACHED selects)");
         assert_eq!(chip.writes_to(0x40e4), [0x3b2b_1b0b], "entries 4..7 = WB|LLC+eLLC with ages 0..3");
         assert_eq!(rep.pat, (0x0003_0907, 0x3b2b_1b0b));
@@ -91,7 +91,7 @@ mod p2 {
             regs.insert(r, 0x0303_0303);
         }));
         let mut log = Lines::default();
-        let rep = ex.program_private_ppat(&mut log).unwrap();
+        let rep = ex.program_private_ppat(&kbl(), &mut log).unwrap();
         assert_eq!(rep.pat, (0x0303_0303, 0x0303_0303));
         assert!(log.has("MISMATCH]"), "{:?}", log.0);
     }
@@ -117,7 +117,7 @@ mod p2 {
         let mut log = Lines::default();
         let pml4 = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
         let scratch = [(); 4].map(|_| gm.alloc.alloc(ObjKind::Data, PAGE).unwrap());
-        let (mut gtt, create) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: scratch.map(|g| g.device_addr) }).unwrap();
+        let (mut gtt, create) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: pml4.device_addr, scratch: scratch.map(|g| g.device_addr), pd: [0; 4] }).unwrap();
         let rep = ex.run_bind_step(&mut log, &mut gm, &create, false, &mut |_| true).unwrap();
         assert_eq!(rep.table_entries, 4 * 512);
         assert_eq!(rep.ggtt_entries, 0, "a PPGTT plan never touches BAR0");
@@ -156,7 +156,7 @@ mod p2 {
         let pml4 = gm.alloc.alloc(ObjKind::Data, PAGE).unwrap();
         let s = [(); 4].map(|_| gm.alloc.alloc(ObjKind::Data, PAGE).unwrap());
         // a PPGTT planned over pages this device never was granted
-        let (_g, plan) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: 0x5000_0000, scratch: [0x5000_1000, 0x5000_2000, 0x5000_3000, 0x5000_4000] }).unwrap();
+        let (_g, plan) = Gtt::new_ppgtt(&kbl(), &PpgttInit { pml4: 0x5000_0000, scratch: [0x5000_1000, 0x5000_2000, 0x5000_3000, 0x5000_4000], pd: [0; 4] }).unwrap();
         let e = ex.run_bind(&mut gm, &plan, &mut |_| true).unwrap_err();
         assert_eq!(e, ExecError::OutsideGrant { device_addr: 0x5000_2000, len: 8 });
         assert_eq!(e.name(), "OUTSIDE-DMA-GRANT");
@@ -223,7 +223,7 @@ mod p2 {
 
 #[test]
 fn stale_access_is_denied_by_the_planner_model_after_an_unbind() {
-    let init = PpgttInit { pml4: 0x10000, scratch: [0x11000, 0x12000, 0x13000, 0x14000] };
+    let init = PpgttInit { pml4: 0x10000, scratch: [0x11000, 0x12000, 0x13000, 0x14000], pd: [0; 4] };
     let (mut g, _) = Gtt::new_ppgtt(&kbl(), &init).unwrap();
     let mut next = 0x100000u64;
     let mut src = |_r: i915_memory_core::TablePageRequest| {

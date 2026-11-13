@@ -242,7 +242,7 @@ impl UapiService {
             return Ok(());
         }
         let vm = self.gem.context_vm(sid, ctx_id)?;
-        let pml4 = self.gem.vm_pml4(vm).ok_or(Fail::new(errno::EIO, "VM-GONE"))?;
+        let roots = self.gem.vm_roots(vm).ok_or(Fail::new(errno::EIO, "VM-GONE"))?;
         self.hwctx.try_reserve(1).map_err(|_| Fail::oom("hw-contexts"))?;
         let image_pages = (self.rig.engine.info().context_size as usize).div_ceil(4096);
         // image, ring and the context's OWN timeline page (Linux hwsp_alloc, gt/intel_timeline.c:20-35): each from the pool, each bound in
@@ -270,7 +270,7 @@ impl UapiService {
         let rg = Grant { kind: ObjKind::Ring, cpu_mapping: ring.cpu, device_addr: ring.dev, len: ring.bytes() };
         let objs = CtxObjects { image: ig, image_ggtt: ggtt_at[0], ring: rg, ring_ggtt: ggtt_at[1] };
         let own = TimelinePage { ggtt: ggtt_at[2], dev: tl.dev };
-        let ectx = match self.rig.add_context_in(hw.gm, objs, pml4, own.ggtt, 0, true, Some(own)) {
+        let ectx = match self.rig.add_context_in(hw.gm, objs, roots, own.ggtt, 0, true, Some(own)) {
             Ok(id) => id,
             Err(e) => {
                 self.undo_hw_ctx(hw, &runs, &vmas);

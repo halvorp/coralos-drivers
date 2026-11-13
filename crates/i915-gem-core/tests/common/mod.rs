@@ -135,7 +135,7 @@ impl Pool {
         a
     }
     pub fn init(&mut self) -> PpgttInit {
-        PpgttInit { pml4: self.page(), scratch: [self.page(), self.page(), self.page(), self.page()] }
+        PpgttInit { pml4: self.page(), scratch: [self.page(), self.page(), self.page(), self.page()], pd: [0; 4] }
     }
 }
 
@@ -204,7 +204,7 @@ impl Engines {
             lrca: 0x0100_0000 + n * 0x0001_0000,
             ring_size: 4096,
             ring_ggtt: 0x0200_0000 + n * 0x1000,
-            pml4: gem.vm_pml4(vm).unwrap(),
+            ppgtt: gem.vm_roots(vm).unwrap(),
             rpcs: 0,
             hwsp_ggtt: 0x0003_0000 + n * 0x40,
             initial_breadcrumb: true,

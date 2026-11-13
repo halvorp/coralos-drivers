@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-//! i915-memory-core: the Gen9 (KBL) Global GTT, the 4-level 48-bit PPGTT, PTE/PAT encoding, VMA placement and eviction, and
+//! i915-memory-core: the Gen8/Gen9 (CHV, SKL/KBL) Global GTT, the 4-level 48-bit and 3-level 32-bit PPGTT, PTE/PAT encoding, VMA placement and eviction, and
 //! fence registers - as PURE PLANNERS. Nothing here touches MMIO, config space or memory: [`Gtt::plan_bind`] and
 //! [`Gtt::plan_unbind`] return a [`BindPlan`]/[`UnbindPlan`] - an ordered list of [`Op`]s (table-entry writes, PTE runs,
 //! scratch fills, GPU-retire waits) with the [`Flush`]es that must follow - and `devices/i915` is the only thing that executes them.
@@ -9,15 +9,16 @@
 //! gt/intel_ggtt_fencing.c, i915_vma.c and i915_gem_gtt.c (placement and eviction POLICY only), gem/i915_gem_stolen.c and
 //! arch/x86/kernel/early-quirks.c (stolen sizing). Copyright (c) Intel Corporation and the i915 authors.
 //!
-//! What is carried: Gen9 (SKL/KBL) only - 8-byte gen8 PTEs, full 48-bit PPGTT. Gen6/7/12/MTL encoders, 3-level 32-bit PPGTT,
-//! 64K/2M huge pages, local memory, vGPU ballooning, GuC GGTT regions and the "bind via a blitter context" GGTT path are CUT
+//! What is carried: Gen9 (SKL/KBL) and Cherryview (Gen8, ruling D8) - 8-byte gen8 PTEs, the full 48-bit 4-level PPGTT (Gen9) and
+//! the 3-level 32-bit PPGTT with its four preallocated page directories (Cherryview, `ppgtt_size = 32`), dispatched by the devinfo
+//! row ([`PpgttLayout::of`]). Gen6/7/12/MTL encoders, 64K/2M huge pages, local memory, vGPU ballooning, GuC GGTT regions and the "bind via a blitter context" GGTT path are CUT
 //! (each is a different platform row or a feature Gen9 lacks); see docs/I915-CONTRACTS.md.
 //!
 //! No compile-time cap on a population clients drive (RUNTIME-TABLES-HAVE-NO-CAP; DECISIONS.md D10): the VMA
 //! table, the page-table table, the spare table-page pool, a plan's op list and its victim list are `alloc` collections that
 //! grow with memory. Every growth is fallible (`try_reserve`) and refuses with the named [`MemError::OutOfMemory`] BEFORE the
 //! space or the plan has changed, so a refused bind leaves no half-created node or table. FIXED, because the hardware defines
-//! it: 32 fence registers ([`fence`]), the 5-step fence sequence, the 4 PPGTT levels and 512 entries per table page.
+//! it: 32 fence registers ([`fence`]) (16 on Cherryview), the 5-step fence sequence, the 4 (or 3) PPGTT levels and 512 entries per table page.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -32,7 +33,10 @@ pub mod probe;
 pub mod pte;
 pub mod regs;
 
-pub use gtt::{BindRequest, Gtt, GttKind, Preallocated, ERROR_CAPTURE, NoTablePages, PpgttInit, TablePage, TablePageRequest, TablePageSource, Walk};
+pub use gtt::{
+    BindRequest, Gtt, GttKind, NoTablePages, PpgttInit, PpgttLayout, PpgttRoots, Preallocated, TablePage, TablePageRequest, TablePageSource, Walk,
+    ERROR_CAPTURE, GEN8_3LVL_PDPES, PPGTT_LEGACY_BITS,
+};
 pub use nodes::{Mode, Placement, VmaId};
 pub use plan::{BindPlan, Flush, Op, RegWrite, Target, UnbindPlan, Write};
 pub use pte::CacheLevel;
@@ -49,7 +53,7 @@ pub const ENTRIES_PER_TABLE: u64 = 512;
 /// Why a memory operation refused. Every variant carries the values; [`MemError::name`] is the stable marker token.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemError {
-    /// The platform is not Gen9 (devinfo knows it, this crate does not drive it).
+    /// The platform row is not one this crate drives: Gen9 and Cherryview (Gen8) are ported, any other row is refused.
     UnsupportedGeneration { gen: u8 },
     /// `GMCH_CTRL.GGMS` = 0: the platform reports no GTT.
     GgttAbsent { gmch_ctl: u16 },
@@ -61,6 +65,8 @@ pub enum MemError {
     StolenReservedOutside { reserved_base: u64, base: u64, top: u64 },
     /// A PPGTT address with a bit at or above bit 48 (the 48-bit limit).
     Beyond48Bit { va: u64 },
+    /// A legacy 32-bit PPGTT address with a bit at or above bit 32 (Cherryview, `ppgtt_size = 32`).
+    Beyond32Bit { va: u64 },
     /// A range that ends past the space (or wraps).
     BeyondSpace { va: u64, len: u64, total: u64 },
     /// A value that must be a multiple of `align` is not.
@@ -94,7 +100,7 @@ pub enum MemError {
     TablePageRefused { level: u8 },
     /// A fence parameter outside what the registers can encode.
     BadFence { what: &'static str, value: u64 },
-    /// Devinfo says this part has no full 48-bit PPGTT.
+    /// Devinfo says this part has no full PPGTT of a carried width (48-bit 4-level or 32-bit 3-level).
     NotFullPpgtt { size_bits: u8 },
     /// Two table pages (or a table page and a scratch page) share one device address.
     DuplicatePage { addr: u64 },
@@ -112,6 +118,7 @@ impl MemError {
             MemError::GgttOverflowsBar { .. } => "GGTT-OVERFLOWS-BAR",
             MemError::StolenReservedOutside { .. } => "STOLEN-RESERVED-OUTSIDE",
             MemError::Beyond48Bit { .. } => "VA-BEYOND-48BIT",
+            MemError::Beyond32Bit { .. } => "VA-BEYOND-32BIT",
             MemError::BeyondSpace { .. } => "RANGE-BEYOND-SPACE",
             MemError::Misaligned { .. } => "MISALIGNED",
             MemError::BadAlignment { .. } => "BAD-ALIGNMENT",

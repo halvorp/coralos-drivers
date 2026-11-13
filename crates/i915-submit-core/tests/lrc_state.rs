@@ -9,6 +9,9 @@ use i915_submit_core::lrc_state::*;
 use i915_submit_core::ring::Ring;
 use i915_submit_core::wa_bb::{WaBb, WaCtx};
 use i915_submit_core::SubmitError;
+use i915_memory_core::PpgttRoots;
+
+const P4: PpgttRoots = PpgttRoots::Pml4(0);
 
 /// kbl_rcs_inhibit gen=9 render=1 base=0x2000 inhibit=1 pml4=0x1234567000 wa=(0,0xc0,ggtt 0x7000)
 const KBL_RCS_INHIBIT: &[(usize, u32)] = &[
@@ -88,7 +91,7 @@ fn expect(base: u32, list: &[(usize, u32)]) -> Vec<u32> {
 }
 
 fn params(render: bool, mmio_base: u32, pml4: u64, wa: Option<(u32, WaCtx)>, runtime_last: u32) -> CtxParams {
-    CtxParams { gen: 9, render, mmio_base, pml4, ring_ggtt: 0x0010_0000, rpcs: 0, runtime_last, wa_ctx: wa }
+    CtxParams { gen: 9, render, mmio_base, ppgtt: PpgttRoots::Pml4(pml4), ring_ggtt: 0x0010_0000, rpcs: 0, runtime_last, wa_ctx: wa }
 }
 
 fn wa_192() -> Option<(u32, WaCtx)> {
@@ -142,6 +145,39 @@ fn the_pml4_lands_in_pdp0_split_upper_and_lower() {
 }
 
 #[test]
+fn a_3_level_context_carries_its_four_page_directories() {
+    // init_ppgtt_regs, !i915_vm_is_4lvl (intel_lrc.c:897-902): ASSIGN_CTX_PDP(3..0), PDPn = page directory n, upper then lower
+    // dword (intel_lrc_reg.h:33-38); CTX_PDP3_UDW..CTX_PDP0_LDW = 0x25, 0x27, 0x29, 0x2b, 0x2d, 0x2f, 0x31, 0x33 (intel_lrc_reg.h:21-28)
+    let pd = [0x1_2340_0000u64, 0x2_5670_1000, 0x0_89a0_2000, 0x7f_bcd0_3000];
+    let mut p = params(false, 0x12000, 0, None, 0);
+    p.gen = 8;
+    p.ppgtt = PpgttRoots::Pdp(pd);
+    let mut regs = RegState::zeroed();
+    init_regs(&mut regs, &p, true).unwrap();
+    let want: [(usize, u32); 8] = [
+        (0x25, 0x7f), (0x27, 0xbcd0_3000), // PDP3
+        (0x29, 0x0), (0x2b, 0x89a0_2000),   // PDP2
+        (0x2d, 0x2), (0x2f, 0x5670_1000),   // PDP1
+        (0x31, 0x1), (0x33, 0x2340_0000),   // PDP0
+    ];
+    for (idx, v) in want {
+        assert_eq!(regs.get(idx), v, "dword {idx:#x}");
+    }
+}
+
+/// (gen, lrca, lrc_descriptor() of a 3-level context): INTEL_LEGACY_32B_CONTEXT = 1 (intel_lrc.h:78) << 3 | VALID (bit 0) |
+/// PRIVILEGE (bit 8) | L3LLC_COHERENT on Gen8 (bit 5) (intel_lrc.c:1521-1535).
+const DESCRIPTORS_32B: [(u8, u32, u32); 3] = [(8, 0, 0x129), (8, 0x12345000, 0x12345129), (9, 0x1000, 0x1109)];
+
+#[test]
+fn a_3_level_context_uses_the_legacy_32b_addressing_mode() {
+    let pdp = PpgttRoots::Pdp([0x1000, 0x2000, 0x3000, 0x4000]);
+    for (gen, lrca, desc) in DESCRIPTORS_32B {
+        assert_eq!(descriptor(gen, lrca, pdp).unwrap(), desc, "gen{gen} lrca {lrca:#x}");
+    }
+}
+
+#[test]
 fn the_indirect_context_pointer_and_offset_follow_the_batch() {
     let p = params(true, 0x2000, 0, wa_192(), 0);
     let mut regs = RegState::zeroed();
@@ -177,7 +213,7 @@ fn only_gen8_and_gen9_are_carried() {
     for gen in [7u8, 10, 11, 12] {
         p.gen = gen;
         assert_eq!(init_regs(&mut regs, &p, true).unwrap_err(), SubmitError::UnsupportedGeneration { gen });
-        assert_eq!(descriptor(gen, 0x1000).unwrap_err(), SubmitError::UnsupportedGeneration { gen });
+        assert_eq!(descriptor(gen, 0x1000, P4).unwrap_err(), SubmitError::UnsupportedGeneration { gen });
     }
 }
 
@@ -196,7 +232,7 @@ const DESCRIPTORS: [(u8, u32, u32, u32); 8] = [
 #[test]
 fn descriptors_equal_lrc_descriptor() {
     for (gen, lrca, desc, forced) in DESCRIPTORS {
-        assert_eq!(descriptor(gen, lrca).unwrap(), desc, "gen{gen} lrca {lrca:#x}");
+        assert_eq!(descriptor(gen, lrca, P4).unwrap(), desc, "gen{gen} lrca {lrca:#x}");
         assert_eq!(desc | CTX_DESC_FORCE_RESTORE as u32, forced);
     }
 }
@@ -204,9 +240,9 @@ fn descriptors_equal_lrc_descriptor() {
 #[test]
 fn a_descriptor_for_an_unaligned_lrca_is_refused() {
     for lrca in [1u32, 0x800, 0x1001, 0xfff] {
-        assert_eq!(descriptor(9, lrca).unwrap_err(), SubmitError::LrcaUnaligned { lrca });
+        assert_eq!(descriptor(9, lrca, P4).unwrap_err(), SubmitError::LrcaUnaligned { lrca });
     }
-    assert_eq!(descriptor(9, 0x7000_0000).unwrap(), 0x7000_0119);
+    assert_eq!(descriptor(9, 0x7000_0000, P4).unwrap(), 0x7000_0119);
 }
 
 /// (ring size, RING_CTL_SIZE(size) | RING_VALID): intel_lrc.c:1550.

@@ -43,8 +43,8 @@ pub struct ContextSpec<'a> {
     pub ring_size: u32,
     /// `i915_ggtt_offset(ring->vma)`.
     pub ring_ggtt: u32,
-    /// The PML4's device address from `i915_memory_core::PpgttInit::pml4` (`px_dma(ppgtt->pd)`).
-    pub pml4: u64,
+    /// What the context loads to reach its address space: `i915_memory_core::Gtt::ppgtt_roots` (the PML4, or CHV's four PDs).
+    pub ppgtt: i915_memory_core::PpgttRoots,
     /// `intel_sseu_make_rpcs(...)` for a render engine (`i915_gt_core::sseu::make_rpcs_gen9`); ignored on the others.
     pub rpcs: u32,
     /// This context's timeline: GGTT address of its seqno dword, and whether it has an initial breadcrumb.
@@ -193,7 +193,7 @@ impl Engine {
             gen: self.gen,
             render: self.is_render(),
             mmio_base: self.info.mmio_base,
-            pml4: spec.pml4,
+            ppgtt: spec.ppgtt,
             ring_ggtt: spec.ring_ggtt,
             rpcs: spec.rpcs,
             runtime_last: 0,

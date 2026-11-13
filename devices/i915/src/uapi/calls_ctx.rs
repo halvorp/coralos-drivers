@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 //! Contexts, address spaces and reset statistics.
 use super::fail::Fail;
-use super::service::{vm_init, Done, Hw, VM_BASE_PAGES};
+use super::service::{vm_init, Done, Hw};
 use super::UapiService;
 use crate::exec::dma::CpuMem;
 use crate::log::Log;
@@ -50,8 +50,9 @@ impl UapiService {
                     params.push(ContextParam { param: *param, size: *size, value: *value, engines });
                 }
                 self.vms.try_reserve(1).map_err(|_| Fail::oom("vm-records"))?;
-                let base = self.pool.alloc(hw.gm, VM_BASE_PAGES)?;
-                let init = vm_init(&base);
+                let layout = self.vm_layout()?;
+                let base = self.pool.alloc(hw.gm, layout.base_pages())?;
+                let init = vm_init(layout, &base);
                 let (res, err) = self.with_sink(hw, inc, |gem, sink| gem.context_create(sid, flags, &params, Some(init), sink));
                 // the pages belong to a new address space only if the planner used them (no PARAM_VM named an existing one)
                 self.record_vm(base, init.pml4);
@@ -83,8 +84,9 @@ impl UapiService {
             Opcode::VmCreate => {
                 let r = VmCreateReq::from_payload(p)?;
                 self.vms.try_reserve(1).map_err(|_| Fail::oom("vm-records"))?;
-                let base = self.pool.alloc(hw.gm, VM_BASE_PAGES)?;
-                let init = vm_init(&base);
+                let layout = self.vm_layout()?;
+                let base = self.pool.alloc(hw.gm, layout.base_pages())?;
+                let init = vm_init(layout, &base);
                 let (res, err) = self.with_sink(hw, inc, |gem, sink| gem.vm_create(sid, r.flags, r.extensions, init, sink));
                 match res {
                     Ok(id) => {
