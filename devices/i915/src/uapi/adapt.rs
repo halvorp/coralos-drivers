@@ -137,6 +137,9 @@ pub struct Eng<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
     pub gate: &'a Cell<bool>,
     /// The request this submission built.
     pub built: Option<RequestRef>,
+    /// The batch it was built for: kept with the request, so an innocent request a reset lost is built again
+    /// ([`super::replay`]).
+    pub batch: Option<BatchSpec>,
     /// The real error behind a `SubmitError` the trait could not carry.
     pub err: Option<ExecError>,
 }
@@ -149,6 +152,7 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
         let r = rig.build_request(hw.gm, engine_ctx, batch);
         if let Ok(b) = r {
             self.built = Some(b);
+            self.batch = Some(*batch);
         }
         r.map_err(|e| match e {
             ExecError::Submit(s) => s,

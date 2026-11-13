@@ -40,7 +40,7 @@ impl UapiService {
         let sid = SessionId(inc);
         let req = decode_execbuf2(p, &ExecLimits::DEFAULT)?;
         // the video engines are routed to the media seat alone: the engine choice below sees this session's view
-        self.gem.set_media_seat(self.media_seat == Some(inc));
+        self.gem.set_media_seat(self.holds_media_seat(inc));
         // D18: a write into a scanout image the display holds (COMMITTED / SCANNING_OUT) or the authority never began is refused before
         // anything is reserved
         #[cfg(feature = "p4-present")]
@@ -86,7 +86,7 @@ impl UapiService {
         let have_uses = self.gem.vma_uses(&mut uses).is_ok();
         let gate = Cell::new(gate_cells);
         let taken = RefCell::new(Vec::new());
-        let (res, fx, sink_err, eng_err) = {
+        let (res, fx, sink_err, eng_err, batch) = {
             let UapiService { gem, sync, rigs, pool, objs, .. } = &mut *self;
             let hwx = RefCell::new(Hwx { ex: &mut *hw.ex, gm: &mut *hw.gm, log: &mut *hw.log });
             let pool_cell = RefCell::new(&mut *pool);
@@ -94,11 +94,11 @@ impl UapiService {
             let mut pages = Pages { pool: &pool_cell, objs, hw: &hwx };
             let mut tables = Tables { pool: &pool_cell, taken: &taken, hw: &hwx };
             let rigs = RefCell::new(rigs.as_mut_slice());
-            let mut eng = Eng { rigs: &rigs, engine: engine.0, hw: &hwx, gate: &gate, built: None, err: None };
+            let mut eng = Eng { rigs: &rigs, engine: engine.0, hw: &hwx, gate: &gate, built: None, batch: None, err: None };
             let uses = have_uses.then_some(uses.as_slice());
             let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, gate: &gate, sync: &*sync, session: inc, rigs: &rigs, uses, now_ms: hw.now_ms };
             let r = gem.execbuffer2(sid, &view, &req, &mut pages, &mut tables, &mut eng, &mut sink, hw.now_ms);
-            (r, sink.fx, sink.err, eng.err)
+            (r, sink.fx, sink.err, eng.err, eng.batch)
         };
         self.adopt_tables(vm, taken.into_inner());
 
@@ -120,7 +120,7 @@ impl UapiService {
         // the request is registered in gem-core now: it is tracked whatever else went wrong
         let fence = acc.req_fence.take().expect("made above");
         let e = done.engine;
-        self.inflight.push(Inflight { req: done.request, engine: e, ectx: done.engine_ctx, seqno: done.seqno, fence }); // reserved above
+        self.inflight.push(Inflight { req: done.request, engine: e, ectx: done.engine_ctx, seqno: done.seqno, fence, batch }); // reserved above
         // the request's gate is exactly the fences still pending now (the planner's view may have been one fence earlier); a request
         // the planner's dequeue already handed to a port cannot be gated any more (it had no pending fence then)
         let gated = !acc.gate.is_empty();
@@ -183,17 +183,26 @@ impl UapiService {
     /// Cheap when idle. Call it from the device's loop whenever the engine interrupts and at least every few milliseconds.
     pub fn poll<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) {
         if !self.hwctx.is_empty() {
-            // each engine is serviced and judged on its own: a hang on one is recovered without touching the other's work
+            // every engine is serviced and its completions taken BEFORE any engine is judged: a request whose breadcrumb already
+            // landed is complete, never lost to a reset and replayed a second time (on this engine or, after an escalation, another)
             for e in 0..self.rigs.len() {
                 if let Err(err) = self.rigs[e].service(hw.ex, hw.gm, hw.log, hw.now_ms) {
                     emit(hw.log, format_args!("[I915-UAPI service failed name={} engine={}]", err.name(), e));
                 }
+            }
+            self.observe_and_complete(hw);
+            // each engine is judged on its own: a hang on one is recovered without touching the other's work
+            let mut recovered = false;
+            for e in 0..self.rigs.len() {
                 if let Err(err) = self.rigs[e].check_hang(hw.now_ms) {
                     emit(hw.log, format_args!("[I915-UAPI HANG name={} engine={}]", err.name(), e));
                     self.recover_hang(hw, e);
+                    recovered = true;
                 }
             }
-            self.observe_and_complete(hw);
+            if recovered {
+                self.observe_and_complete(hw); // gem-core retires what the reset failed
+            }
         }
         // then the gates: a request whose fences all signalled - on any engine, this tick's completions included - becomes READY and
         // is dequeued now, not one timer period later (a decode on the video engine feeding the compositor's request on the render engine)
@@ -251,14 +260,16 @@ impl UapiService {
     /// THE RESET COORDINATOR. Engine `e` declared a hang. Gen8/9 reset an engine on its own (its `GEN6_GRDOM_*` bit,
     /// gt/intel_reset.c `gen8_reset_engines`): engine `e` is reset ALONE and only its requests are lost, so the other engines' work
     /// (the compositor's on the render engine while the video engine hung) runs on. Only when that engine reset fails is the whole GT
-    /// reset (`GEN6_GRDOM_FULL`): then every other rig resumes from it too and EVERY engine's in-flight work is lost. A lost request is
-    /// failed with `-EIO`; the first one on the hung engine is charged as guilty (GET-RESET-STATS). A failed GT reset leaves the
-    /// engines as they are and says so: nothing is submitted to them until the next hang check.
+    /// reset (`GEN6_GRDOM_FULL`): then every other rig resumes from it too and EVERY engine's in-flight work is lost. Of the lost
+    /// requests only the one the hung engine was executing is GUILTY (charged for GET-RESET-STATS, failed `-EIO`); the others are
+    /// innocent and replayed ([`super::replay`]). A failed GT reset leaves the engines as they are and says so (WEDGED).
     fn recover_hang<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, e: usize) {
         let engines = match engines_for(&self.gem.device().desc.info) {
             Ok(v) => v,
             Err(_) => return,
         };
+        // the request the engine was executing, read before the reset clears the ports: the one guilty request
+        let hung = self.hung_request(e);
         let scope = match self.rigs[e].recover(hw.ex, hw.gm, hw.log, ResetScope::Engines, engines.as_slice()) {
             Ok(_) => ResetScope::Engines,
             Err(err) => {
@@ -288,32 +299,7 @@ impl UapiService {
                 ResetScope::AllEngines
             }
         };
-        let lost = |f: &Inflight| scope == ResetScope::AllEngines || f.engine == e;
-        // a gate of a lost request waits for nothing any more: its fences are given back (the request itself is gone from its engine)
-        let mut g = 0;
-        while g < self.gates.len() {
-            if scope == ResetScope::AllEngines || self.gates[g].engine == e {
-                for f in self.gates.swap_remove(g).fences {
-                    self.sync.put_fence(f);
-                }
-            } else {
-                g += 1;
-            }
-        }
-        let mut first = true;
-        let mut i = 0;
-        while i < self.inflight.len() {
-            if !lost(&self.inflight[i]) {
-                i += 1;
-                continue;
-            }
-            let f = self.inflight.swap_remove(i);
-            let _ = self.gem.request_reset(f.engine, f.ectx, f.seqno, first && f.engine == e, hw.now_ms);
-            first &= f.engine != e;
-            let _ = self.gem.observe_seqno(f.engine, f.ectx, f.seqno); // lost: gem-core retires it
-            self.sync.signal_fence(f.fence, -errno::EIO);
-            self.sync.put_fence(f.fence);
-        }
+        self.settle_lost(hw, e, scope, hung);
         emit(hw.log, format_args!("[I915-UAPI RESET engine={} scope={}]", e, if scope == ResetScope::AllEngines { "gt" } else { "engine" }));
     }
 }

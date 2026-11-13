@@ -58,32 +58,34 @@ fn close(live: &mut L, t: &FakeT, id: ConnId, inc: u64) {
 }
 
 #[test]
-fn only_a_session_opened_over_the_media_endpoint_holds_the_seat_and_it_is_held_once() {
+fn only_sessions_opened_over_the_media_endpoint_hold_the_seat_and_each_loses_it_at_its_own_end() {
     let (mut live, t) = world();
     // an ordinary client's session: no seat, whatever it asks
     let plain = t.connect();
     run(&mut live);
     let p = open(&mut live, &t, plain);
-    assert_eq!(live.svc.media_seat(), None, "a session on the client listen endpoint never holds the seat");
+    assert!(live.svc.media_seats().is_empty(), "a session on the client listen endpoint never holds the seat");
     // the media service's connection binds the seat, by the endpoint it arrived on
     let m1 = t.connect_media();
     run(&mut live);
     let i1 = open(&mut live, &t, m1);
-    assert_eq!(live.svc.media_seat(), Some(i1));
+    assert_eq!(live.svc.media_seats(), &[i1]);
     assert!(live.log.has(&format!("[I915-MEDIA seat bound inc={}]", i1)), "{:?}", live.log.0);
-    assert_ne!(Some(p), live.svc.media_seat());
-    // a second media connection while the first lives is refused the seat, by name; the holder keeps it
+    assert!(!live.svc.holds_media_seat(p));
+    // a second media connection while the first lives (the maintenance witness beside the service) binds too: the authority is
+    // the endpoint grant, so there is nothing to race for
     let m2 = t.connect_media();
     run(&mut live);
     let i2 = open(&mut live, &t, m2);
-    assert_eq!(live.svc.media_seat(), Some(i1));
-    assert!(live.log.has(&format!("[I915-MEDIA seat NOT bound inc={} name=MEDIA-SEAT-HELD]", i2)), "{:?}", live.log.0);
-    // the holder's session ends: the seat ends with it, and the next media session binds
+    assert_eq!(live.svc.media_seats(), &[i1, i2]);
+    assert!(live.log.has(&format!("[I915-MEDIA seat bound inc={}]", i2)), "{:?}", live.log.0);
+    // the first holder's session ends: its seat ends with it, the other keeps its own
     close(&mut live, &t, m1, i1);
-    assert_eq!(live.svc.media_seat(), None);
+    assert_eq!(live.svc.media_seats(), &[i2]);
     assert!(live.log.has(&format!("[I915-MEDIA seat ended inc={}]", i1)), "{:?}", live.log.0);
     let m3 = t.connect_media();
     run(&mut live);
     let i3 = open(&mut live, &t, m3);
-    assert_eq!(live.svc.media_seat(), Some(i3));
+    assert_eq!(live.svc.media_seats(), &[i2, i3]);
+    assert!(!live.svc.holds_media_seat(p), "the plain session never gained it");
 }

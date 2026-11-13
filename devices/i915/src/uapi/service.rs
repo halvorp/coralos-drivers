@@ -23,7 +23,7 @@ use i915_gt_core::emit::FlushQuirks;
 use i915_gt_core::engine::{engines_for, EngineClass};
 use i915_memory_core::probe::GgttGeometry;
 use i915_memory_core::{Gtt, PpgttLayout, VmaId};
-use i915_submit_core::EngineConfig;
+use i915_submit_core::{BatchSpec, EngineConfig};
 use i915_syncobj_core::{FenceId, Sync};
 use i915_uapi_core::UapiDevice;
 use i915_wire::msg::session::{SessionOpenRep, SessionOpenReq, CAPS_KNOWN, CAP_SYS_ADMIN, CAP_SYS_NICE};
@@ -137,6 +137,8 @@ pub(crate) struct Inflight {
     pub ectx: u32,
     pub seqno: u32,
     pub fence: FenceId,
+    /// The batch the request runs (`None`: the engine did not report it, and the request cannot be built again after a reset).
+    pub batch: Option<BatchSpec>,
 }
 
 /// A queued request waits for these fences before the engine may start it.
@@ -210,8 +212,10 @@ pub struct UapiService {
     /// The display this device adopted from the firmware (D18), and which session, if any, is its AUTHORITY.
     pub(crate) display: crate::display::Adoption,
     pub(crate) authority: Option<u64>,
-    /// The session holding the MEDIA SEAT: opened over the MEDIA listen endpoint, the one session the video engines are routed to.
-    pub(crate) media_seat: Option<u64>,
+    /// The sessions holding the MEDIA SEAT: every session opened over the MEDIA listen endpoint, the sessions the video engines are
+    /// routed to. The authority is the endpoint: only the media service's row and its maintenance witness's hold SEND on it, so the
+    /// seat is a set (the service and the witness each hold it, as coral-drm's SERVICE and WITNESS seats), never a race for one.
+    pub(crate) media_seats: alloc::vec::Vec<u64>,
     /// The firmware's scanout as the readout found it: where the scanout pair's flips start (D18).
     pub(crate) firmware: Option<i915_display_modeset_core::adopt::FirmwareScanout>,
     /// The display authority's scanout pair (D18, feature `p4-present`).
@@ -260,7 +264,7 @@ impl UapiService {
     /// Bring up the VIDEO engine (VCS0) as the device's second execlists engine, after [`bring_up_render`]: its own status page bound
     /// in the GGTT, its rig (the same submit-core model at `GEN6_BSD_RING_BASE`, the xcs context layout and flush), execlists enabled
     /// with its MOCS block where the part programs engine MOCS. Then the device routes RCS0 + VCS0: the video engine's ONE client is
-    /// the media seat (`UapiDevice::media_seat`). Its rig is index 1 - the device engine index of VCS0 once both are routed.
+    /// a media-seat session (`UapiDevice::media_seat`). Its rig is index 1 - the device engine index of VCS0 once both are routed.
     #[cfg(feature = "p5-video")]
     pub fn bring_up_video<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, quirks: FlushQuirks, stall_bound_ms: u64) -> Result<(), Fail> {
         use i915_devinfo_core::engine::{RCS0, VCS0};
@@ -345,7 +349,7 @@ impl UapiService {
             quarantined: 0,
             display: crate::display::Adoption::NoReadout,
             authority: None,
-            media_seat: None,
+            media_seats: alloc::vec::Vec::new(),
             firmware: None,
             #[cfg(feature = "p4-present")]
             scanout: None,
@@ -421,17 +425,22 @@ impl UapiService {
         if self.session_idx(inc).is_none() {
             return Err(Fail::new(errno::ENOENT, "MEDIA-SEAT-NO-SESSION"));
         }
-        match self.media_seat {
-            Some(cur) if cur != inc && self.session_idx(cur).is_some() => return Err(Fail::new(errno::EBUSY, "MEDIA-SEAT-HELD")),
-            _ => {}
+        if !self.media_seats.contains(&inc) {
+            self.media_seats.try_reserve(1).map_err(|_| Fail::new(errno::ENOMEM, "MEDIA-SEAT-NO-MEMORY"))?;
+            self.media_seats.push(inc);
         }
-        self.media_seat = Some(inc);
         emit(log, format_args!("[I915-MEDIA seat bound inc={}]", inc));
         Ok(())
     }
 
-    pub fn media_seat(&self) -> Option<u64> {
-        self.media_seat
+    /// Does the session `inc` hold the media seat?
+    pub fn holds_media_seat(&self, inc: u64) -> bool {
+        self.media_seats.contains(&inc)
+    }
+
+    /// The sessions holding the media seat, in bind order.
+    pub fn media_seats(&self) -> &[u64] {
+        &self.media_seats
     }
 
     // ---- observation (the tests' and the markers' view) ----------------------------------------------------------------------
@@ -721,9 +730,9 @@ impl UapiService {
             self.authority = None;
             emit(hw.log, format_args!("[I915-DISPLAY authority ended inc={}]", inc));
         }
-        if self.media_seat == Some(inc) {
-            // the video engines are routed to nobody until the next media session binds the seat
-            self.media_seat = None;
+        if let Some(at) = self.media_seats.iter().position(|&m| m == inc) {
+            // this session's routes end with it; every other seat holder keeps its own
+            self.media_seats.remove(at);
             emit(hw.log, format_args!("[I915-MEDIA seat ended inc={}]", inc));
         }
         self.trim_pool(hw);

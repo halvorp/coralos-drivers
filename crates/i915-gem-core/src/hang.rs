@@ -63,6 +63,27 @@ impl Gem {
         Ok(ResetVerdict { banned, cancelled })
     }
 
+    /// The error a reset set on request `(engine, engine_ctx, seqno)`, if any: `-EIO` for the guilty one and for the queue of a
+    /// context its hang banned (`__i915_request_skip`), `-EAGAIN` for an innocent active one. A request with an error is not
+    /// replayed.
+    pub fn request_error(&self, engine: usize, engine_ctx: u32, seqno: u32) -> Result<Option<i32>, GemError> {
+        let ri = self.active.find(engine as u8, engine_ctx, seqno).ok_or(GemError::RequestUnknown { engine, engine_ctx, seqno })?;
+        Ok(self.active.reqs[ri].as_ref().and_then(|r| r.error))
+    }
+
+    /// An engine reset lost request `(engine, engine_ctx, seqno)` although it was innocent, and its engine built it again as
+    /// `new_seqno`. Linux unwinds such a request and resubmits it with its seqno (`__unwind_incomplete_requests`,
+    /// gt/intel_execlists_submission.c:373; `execlists_reset_rewind` :3117); here the reset completed the context's timeline, so the
+    /// replay is a NEW seqno on it. The request keeps its id, its context and its objects: only its completion point moves, and every
+    /// GEM_BUSY / GEM_WAIT / retirement question about it is answered against `new_seqno` from now on.
+    pub fn request_replayed(&mut self, engine: usize, engine_ctx: u32, seqno: u32, new_seqno: u32) -> Result<(), GemError> {
+        let ri = self.active.find(engine as u8, engine_ctx, seqno).ok_or(GemError::RequestUnknown { engine, engine_ctx, seqno })?;
+        if let Some(r) = self.active.reqs[ri].as_mut() {
+            r.seqno = new_seqno;
+        }
+        Ok(())
+    }
+
     /// `mark_guilty` (gt/intel_reset.c:63-112). Returns whether the context is banned.
     fn mark_guilty(&mut self, cslot: usize, now_ms: u64) -> bool {
         let Some(mut ctx) = self.contexts[cslot] else { return true };
