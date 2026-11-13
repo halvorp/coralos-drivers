@@ -25,7 +25,9 @@ pub fn dev() -> UapiDevice {
     let desc = lookup(0x591c).unwrap();
     let sseu = gen9_sseu_info((0b001 << 25) | (0b1000 << 20), [0, 0, 0]);
     let Gen9Clock::Hz(hz) = gen9_clock_from_ctc(2 << 1) else { panic!("crystal expected") };
-    UapiDevice::new(desc, 0x09, sseu, hz, 8 * GIB).unwrap()
+    let mut d = UapiDevice::new(desc, 0x09, sseu, hz, 8 * GIB).unwrap();
+    d.set_media_seat(true); // the Linux view these tests port: the asking session reaches every engine, the video engine included
+    d
 }
 
 pub fn gem() -> Gem {
