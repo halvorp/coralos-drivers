@@ -32,6 +32,8 @@ impl StepId {
     pub const ELSP_SUBMIT: StepId = StepId(0x3003);
     pub const ENGINE_RESET: StepId = StepId(0x3004);
     pub const FULL_RESET: StepId = StepId(0x3005);
+    /// Another engine's software state after a GT-wide reset the hung engine's rig executed (`reset_finish` for every engine).
+    pub const GT_RESET_RESUME: StepId = StepId(0x3006);
     pub const DISPLAY_CLOCK: StepId = StepId(0x4001);
     pub const DISPLAY_LINK: StepId = StepId(0x4002);
 }

@@ -62,6 +62,12 @@ pub fn assemble<B: Mmio, D: Dma, M: CpuMem, L: Log>(bar: B, dma: D, mem: M, proo
     let geom = GgttGeometry::probe_for(&proof.desc, facts.gmch_ctl, facts.bar0_len, facts.gmadr_len).map_err(|e| Fail::new(errno::EIO, e.name()))?;
     let cfg = RenderConfig { quirks: facts.quirks, stall_bound_ms: facts.stall_bound_ms, keep: facts.adoption.keep() };
     let mut svc = bring_up_render(&mut Hw { ex: &mut ex, gm: &mut gm, log, now_ms: 0 }, dev, &geom, cfg)?;
+    // P5: the video engine as the second engine. A bring-up that fails leaves the render engine serving (the desktop) and says why:
+    // the video engine is then routed to nobody, so the media seat is told there is no BSD ring
+    #[cfg(feature = "p5-video")]
+    if let Err(f) = svc.bring_up_video(&mut Hw { ex: &mut ex, gm: &mut gm, log, now_ms: 0 }, facts.quirks, facts.stall_bound_ms) {
+        crate::log::emit(log, format_args!("[I915-UAPI video engine NOT up name={} - rcs0 serves alone]", f.name));
+    }
     svc.set_display(facts.adoption);
     svc.set_firmware_scanout(facts.firmware);
     svc.set_scanout_size(log, &facts.display_caps, facts.geometry.as_ref(), facts.logical);

@@ -124,10 +124,13 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> TablePageSource for Tables<'_, '_, B, D
     }
 }
 
-/// Request construction and the ELSP dequeue on the one routed engine.
+/// Request construction and the ELSP dequeue on the engine the planner chose.
 pub struct Eng<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
-    /// Shared with the [`Sink`] (which services the engine while it waits for a victim); each method borrows it for its own span.
-    pub rig: &'a RefCell<&'a mut EngineRig>,
+    /// Every engine rig by device engine index. Shared with the [`Sink`] (which services the engines while it waits for a victim);
+    /// each method borrows it for its own span.
+    pub rigs: &'a RefCell<&'a mut [EngineRig]>,
+    /// The device engine index of this submission (what `Gem::exec_engine` resolved): the planner's `(class, instance)` maps to it.
+    pub engine: usize,
     pub hw: &'a RefCell<Hwx<'h, B, D, M, L>>,
     /// THIS submission has a fence that is not signalled yet (set by the sink as it sees the await effects): its request is marked
     /// gated in the engine before the dequeue, so the dequeue skips it (and its context's later requests) and publishes the rest.
@@ -141,7 +144,9 @@ pub struct Eng<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
 impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
     fn build_request(&mut self, _class: u16, _instance: u16, engine_ctx: u32, batch: &BatchSpec) -> Result<RequestRef, SubmitError> {
         let mut hw = self.hw.borrow_mut();
-        let r = self.rig.borrow_mut().build_request(hw.gm, engine_ctx, batch);
+        let mut rigs = self.rigs.borrow_mut();
+        let rig = rigs.get_mut(self.engine).ok_or(SubmitError::NoSuchContext { id: engine_ctx })?;
+        let r = rig.build_request(hw.gm, engine_ctx, batch);
         if let Ok(b) = r {
             self.built = Some(b);
         }
@@ -154,7 +159,8 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> EngineSet for Eng<'_, '_, B, D, M, L> {
         })
     }
     fn dequeue(&mut self, _class: u16, _instance: u16, now: u64) -> Result<Option<SubmissionPlan>, SubmitError> {
-        let mut rig = self.rig.borrow_mut();
+        let mut rigs = self.rigs.borrow_mut();
+        let Some(rig) = rigs.get_mut(self.engine) else { return Ok(None) };
         if let (true, Some(b)) = (self.gate.get(), self.built) {
             rig.engine.set_gated(b.ctx, b.seqno, true)?; // waits on a fence: not READY until the service opens its gate
         }
@@ -170,8 +176,8 @@ pub struct Sink<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
     pub gate: &'a Cell<bool>,
     pub sync: &'a Sync,
     pub session: u64,
-    /// The engine, serviced between asks while a victim retires (shared with [`Eng`] in an EXECBUFFER2).
-    pub rig: &'a RefCell<&'a mut EngineRig>,
+    /// The engines, serviced between asks while a victim retires (shared with [`Eng`] in an EXECBUFFER2).
+    pub rigs: &'a RefCell<&'a mut [EngineRig]>,
     /// Every unretired use of a VMA when the planner call began (`Gem::vma_uses`). `None` = the snapshot could not be taken (no
     /// memory): a victim is then retired only once the engine has no request at all - conservative, never unsound.
     pub uses: Option<&'a [VmaUse]>,
@@ -181,21 +187,21 @@ pub struct Sink<'a, 'h, B: Mmio, D: Dma, M: CpuMem, L: Log> {
 
 /// Has VMA `vma` of address space `vm` retired? Only when EVERY listed use of it has completed: the request's seqno has been passed
 /// by the seqno the hardware wrote on that request's timeline (`hw_seqno(engine, engine_ctx)`), by the WRAPPING comparison
-/// (`i915_seqno_passed`, i915_request.h; `seqno_passed`). A use on an engine this device does not service (index != 0, the render
-/// engine) or on a timeline it cannot read is never proven complete. The ELSP is covered by the same test: a request still in a port
+/// (`i915_seqno_passed`, i915_request.h; `seqno_passed`). A use on an engine this device does not service (`hw_seqno` answers None:
+/// no rig at that index) or on a timeline it cannot read is never proven complete. The ELSP is covered by the same test: a request still in a port
 /// has not written its breadcrumb. The display's scanout is not a VMA use: it holds the OBJECT (a `prime_export` hold) through its
 /// own GGTT binding, so a PPGTT unbind never touches what is on the glass and the pages outlive it.
 pub fn vma_retired(uses: &[VmaUse], vm: VmId, vma: VmaId, hw_seqno: impl Fn(u8, u32) -> Option<u32>) -> bool {
-    uses.iter().filter(|u| u.vm == vm && u.vma == vma).all(|u| u.engine == 0 && hw_seqno(u.engine, u.engine_ctx).is_some_and(|hw| seqno_passed(hw, u.seqno)))
+    uses.iter().filter(|u| u.vm == vm && u.vma == vma).all(|u| hw_seqno(u.engine, u.engine_ctx).is_some_and(|hw| seqno_passed(hw, u.seqno)))
 }
 
 impl<B: Mmio, D: Dma, M: CpuMem, L: Log> Sink<'_, '_, B, D, M, L> {
     /// The predicate as of now (no progress): [`vma_retired`] over the snapshot and the engine's last observed seqnos.
     fn retired_now(&self, vm: VmId, vma: VmaId) -> bool {
-        let rig = self.rig.borrow();
+        let rigs = self.rigs.borrow();
         match self.uses {
-            Some(u) => vma_retired(u, vm, vma, |_, ctx| rig.engine.hw_seqno(ctx).ok()),
-            None => rig.engine.requests().is_empty(),
+            Some(u) => vma_retired(u, vm, vma, |e, ctx| rigs.get(e as usize).and_then(|r| r.engine.hw_seqno(ctx).ok())),
+            None => rigs.iter().all(|r| r.engine.requests().is_empty()),
         }
     }
 
@@ -210,7 +216,7 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> Sink<'_, '_, B, D, M, L> {
     /// read + retire + kick): the predicate can only change because this wait drives the engine. Bounded by the engine's stall bound;
     /// past it the request is hung (the next poll's hang check recovers it) and the bind is refused by name.
     fn await_victims(&mut self, vm: VmId, plan: &BindPlan<'_>) -> Result<(), ExecError> {
-        let max = self.rig.borrow().stall_bound_ms.div_ceil(COMPLETION_POLL_MS).max(1) as u32;
+        let max = self.rigs.borrow().iter().map(|r| r.stall_bound_ms).max().unwrap_or(0).div_ceil(COMPLETION_POLL_MS).max(1) as u32;
         let mut polls = 0u32;
         while let Some(vma) = self.first_pending(vm, plan) {
             if polls >= max {
@@ -221,7 +227,9 @@ impl<B: Mmio, D: Dma, M: CpuMem, L: Log> Sink<'_, '_, B, D, M, L> {
             let Hwx { ex, gm, log } = &mut *hw;
             ex.park_ms(COMPLETION_POLL_MS);
             let now = self.now_ms.saturating_add(polls as u64 * COMPLETION_POLL_MS);
-            self.rig.borrow_mut().service(ex, gm, *log, now)?;
+            for r in self.rigs.borrow_mut().iter_mut() {
+                r.service(ex, gm, *log, now)?;
+            }
         }
         Ok(())
     }

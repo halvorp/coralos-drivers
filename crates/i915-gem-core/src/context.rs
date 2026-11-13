@@ -438,7 +438,9 @@ impl Gem {
 
     /// Index of `(class, instance)` in the device's user-visible engine order.
     pub fn engine_index(&self, class: u16, instance: u16) -> Option<usize> {
-        self.dev.engines().as_slice().iter().position(|e| e.class == class && e.instance == instance)
+        // the device's engine index space, the same for every session (a per-session view would shift an index when an engine is
+        // withheld from the asking session: the media seat's video engines)
+        self.dev.engine_slots().as_slice().iter().position(|e| e.class == class && e.instance == instance)
     }
 
     /// The address space a context uses (`ctx->vm`).

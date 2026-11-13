@@ -109,6 +109,8 @@ pub(crate) struct FenceGrant {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct HwCtx {
     pub slot: u32,
+    /// The device engine index this hardware context runs on: one per (GEM context, engine), made at the context's first batch there.
+    pub engine: usize,
     pub ectx: u32,
     pub image: Run,
     pub ring: Run,
@@ -130,6 +132,8 @@ pub(crate) struct VmRec {
 #[derive(Debug)]
 pub(crate) struct Inflight {
     pub req: RequestId,
+    /// The device engine index the request runs on (`UapiDevice::engine_slots` order: the index of `UapiService::rigs`).
+    pub engine: usize,
     pub ectx: u32,
     pub seqno: u32,
     pub fence: FenceId,
@@ -139,7 +143,8 @@ pub(crate) struct Inflight {
 #[derive(Debug)]
 pub(crate) struct Gate {
     pub fences: Vec<FenceId>,
-    /// The gated request (engine context, seqno): marked not-READY in the engine until every fence above has signalled.
+    /// The gated request (engine index, engine context, seqno): marked not-READY in its engine until every fence above has signalled.
+    pub engine: usize,
     pub ectx: u32,
     pub seqno: u32,
 }
@@ -166,8 +171,12 @@ pub(crate) struct Waiter {
 pub struct UapiService {
     pub(crate) gem: Gem,
     pub(crate) sync: Sync,
-    pub(crate) rig: EngineRig,
+    /// One engine rig per routed engine, indexed by the device engine index (`UapiDevice::engine_slots` order): [0] is the render
+    /// engine, a video engine follows once it is brought up (`bring_up_video`).
+    pub(crate) rigs: Vec<EngineRig>,
     pub(crate) ggtt: Gtt,
+    /// The GT did not come back from a full reset (`intel_gt_set_wedged`): every submission fails `-EIO`, named.
+    pub(crate) wedged: bool,
     pub(crate) pool: PagePool,
     pub(crate) objs: ObjTable,
     pub(crate) sessions: Vec<Option<ClientSession>>,
@@ -247,6 +256,38 @@ pub fn bring_up_render<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D,
     Ok(UapiService::from_parts(gem, ggtt, rig))
 }
 
+impl UapiService {
+    /// Bring up the VIDEO engine (VCS0) as the device's second execlists engine, after [`bring_up_render`]: its own status page bound
+    /// in the GGTT, its rig (the same submit-core model at `GEN6_BSD_RING_BASE`, the xcs context layout and flush), execlists enabled
+    /// with its MOCS block where the part programs engine MOCS. Then the device routes RCS0 + VCS0: the video engine's ONE client is
+    /// the media seat (`UapiDevice::media_seat`). Its rig is index 1 - the device engine index of VCS0 once both are routed.
+    #[cfg(feature = "p5-video")]
+    pub fn bring_up_video<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, quirks: FlushQuirks, stall_bound_ms: u64) -> Result<(), Fail> {
+        use i915_devinfo_core::engine::{RCS0, VCS0};
+        if self.rigs.len() != 1 {
+            return Err(Fail::new(errno::EBUSY, "VIDEO-ENGINE-ALREADY-UP"));
+        }
+        let desc = self.gem.device().desc;
+        let info = *engines_for(&desc.info).map_err(|_| Fail::new(errno::ENODEV, "NO-ENGINES"))?.as_slice().iter()
+            .find(|e| e.class == EngineClass::VideoDecode && e.instance == 0).ok_or(Fail::new(errno::ENODEV, "NO-VIDEO-ENGINE"))?;
+        let hwsp = hw.gm.alloc.alloc_hwsp()?;
+        let hwsp_ggtt = bind_ggtt_grant(hw, &mut self.ggtt, &hwsp)?.0;
+        let ecfg = EngineConfig { status_page_ggtt: hwsp_ggtt, quirks, wa_ctx: None, stall_bound: stall_bound_ms };
+        let mut rig = EngineRig::new(&info, &desc, ecfg, hwsp, hwsp_ggtt)?;
+        rig.bring_up(hw.ex, hw.gm, hw.log)?;
+        self.rigs.try_reserve(1).map_err(|_| Fail::oom("engines"))?;
+        self.rigs.push(rig);
+        // GPU-ENGINES-ADVERTISED-ARE-ROUTED: the video engine has a submit row now; the media seat decides who sees it
+        self.gem.route_engines((1 << RCS0) | (1 << VCS0));
+        let slots = self.gem.device().engine_slots();
+        if slots.as_slice().iter().position(|e| e.class == i915_uapi_core::types::engine_class::VIDEO && e.instance == 0) != Some(1) {
+            return Err(Fail::new(errno::EIO, "VIDEO-ENGINE-INDEX")); // the rig order must be the device engine index order
+        }
+        emit(hw.log, format_args!("[I915-UAPI READY engines=rcs0,vcs0 timelines=page-each wire={}.{}]", i915_wire::ABI_MAJOR, i915_wire::ABI_MINOR));
+        Ok(())
+    }
+}
+
 /// Bind a granted run into the GGTT (`ggtt.plan_bind` over its pages, then execute and read back): returns the GGTT offset and the VMA.
 pub(crate) fn bind_ggtt_grant<B: Mmio, D: Dma, M: CpuMem, L: Log>(hw: &mut Hw<'_, B, D, M, L>, ggtt: &mut Gtt, g: &Grant) -> Result<(u32, VmaId), Fail> {
     let pages: Vec<u64> = {
@@ -277,7 +318,8 @@ impl UapiService {
         UapiService {
             gem,
             sync: Sync::new(),
-            rig,
+            rigs: alloc::vec![rig],
+            wedged: false,
             ggtt,
             pool: PagePool::new(),
             objs: ObjTable::default(),
@@ -402,8 +444,13 @@ impl UapiService {
     pub fn pool(&self) -> &PagePool {
         &self.pool
     }
+    /// The render engine's rig.
     pub fn rig(&self) -> &EngineRig {
-        &self.rig
+        &self.rigs[0]
+    }
+    /// Every engine rig, by device engine index.
+    pub fn rigs(&self) -> &[EngineRig] {
+        &self.rigs
     }
     pub fn live_sessions(&self) -> usize {
         self.sessions.iter().flatten().count()
@@ -527,7 +574,7 @@ impl UapiService {
         if self.scanout_wants_time() {
             want(now.saturating_add(1));
         }
-        if let Some(stall) = self.rig.next_stall_check(now) {
+        if let Some(stall) = self.rigs.iter().filter_map(|r| r.next_stall_check(now)).min() {
             want(stall);
             if !irq_armed {
                 want(now.saturating_add(COMPLETION_POLL_MS));

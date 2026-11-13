@@ -93,6 +93,12 @@ impl Gem {
         &self.dev
     }
 
+    /// Route the device's engines to `mask` (bits of `enum intel_engine_id`, narrowed to the platform's): the device widens it as it
+    /// brings an engine up (the video engine after the render engine), so a client is never told of an engine with no submit row.
+    pub fn route_engines(&mut self, mask: u32) {
+        self.dev.route_engines(mask);
+    }
+
     /// The session about to call holds the media seat (`true`) or not: the video engines are routed to it alone (`UapiDevice::media_seat`).
     pub fn set_media_seat(&mut self, held: bool) {
         self.dev.set_media_seat(held);

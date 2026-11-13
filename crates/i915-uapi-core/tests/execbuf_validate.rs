@@ -533,3 +533,14 @@ fn a_session_without_the_media_seat_is_never_routed_to_a_video_engine() {
     assert_eq!(run3(ef::I915_EXEC_BSD | ef::I915_EXEC_BSD_RING2), Err("EXEC-ENGINE-INVALID"));
     assert_eq!(run3(ef::I915_EXEC_BSD | ef::I915_EXEC_BSD_DEFAULT), Err("EXEC-ENGINE-INVALID"));
 }
+
+#[test]
+fn the_engine_index_space_is_the_same_for_every_session() {
+    // a context's per-engine slot and the request records are indexed by engine_slots(): withholding the video engines from a
+    // session must not shift any index (VECS0 would move from 3 to 2 on GT2 if the per-session view were the index space)
+    let seat = gt2();
+    let other = no_seat(gt2());
+    assert_eq!(seat.engine_slots().as_slice(), other.engine_slots().as_slice());
+    assert_eq!(seat.engine_slots().as_slice().len(), 4, "rcs0, bcs0, vcs0, vecs0");
+    assert_eq!(other.engines().as_slice().len(), 3, "the per-session view withholds vcs0");
+}

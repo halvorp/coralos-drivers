@@ -204,6 +204,22 @@ impl Gem {
         Ok(())
     }
 
+    /// The engine an EXECBUFFER2 would run on - (device engine index, class, instance) - decided exactly as [`Gem::execbuffer2`]
+    /// decides it (validate, `eb_select_engine`), with nothing reserved and nothing built. The device calls it first so the
+    /// context's hardware context on THAT engine exists before the planner asks for it (Linux pins `ce` lazily, :2558-2567).
+    pub fn exec_engine(&mut self, session: SessionId, sync: &dyn SyncTables, req: &ExecbufRequest<'_>) -> Result<(usize, u16, u16), GemError> {
+        let slot = self.session_slot(session)?;
+        let ctx_id = req.context_id();
+        let ring_slot = (req.flags & ef::I915_EXEC_RING_MASK) as u32;
+        let vm_hint = self.context_slot(slot, ctx_id).ok().and_then(|c| self.contexts[c].map(|c| c.vm));
+        let plan = {
+            let view = ExecView { gem: &*self, slot, vm: vm_hint, ring_slot, sync };
+            validate_execbuf2(&self.dev, &view, req).map_err(|e| self.reclassify(slot, e))?
+        };
+        let cslot = self.context_slot(slot, ctx_id)?;
+        self.resolve_engine(slot, cslot, plan.engine)
+    }
+
     /// `DRM_IOCTL_I915_GEM_EXECBUFFER2`: validate, place, relocate, build the request, register fences and activity, and produce
     /// the ELSP submission. `now` is the executor's clock (for the engine's stall bound).
     ///

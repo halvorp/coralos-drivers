@@ -361,12 +361,14 @@ impl UapiService {
         });
         let readable = v.iter().all(|x| x.is_some());
         let [head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0] = v.map(|x| x.unwrap_or(0));
-        let (exp_ctx, exp, hwq) = match self.inflight.first() {
-            Some(f) => (f.ectx, f.seqno, self.rig.engine.hw_seqno(f.ectx).unwrap_or(0)),
-            None => (0, 0, 0),
+        // the registers above are the render engine's: the diagnosis follows the first request in flight on the engine it runs on
+        let (exp_eng, exp_ctx, exp, hwq) = match self.inflight.first() {
+            Some(f) => (f.engine, f.ectx, f.seqno, self.rigs.get(f.engine).and_then(|r| r.engine.hw_seqno(f.ectx).ok()).unwrap_or(0)),
+            None => (0, 0, 0, 0),
         };
+        let rig = &self.rigs[exp_eng.min(self.rigs.len() - 1)];
         // was the expected request ever handed to an ELSP port? (`-` = not in the engine's table: retired, or nothing in flight)
-        let published = match self.rig.engine.requests().iter().find(|q| q.ctx == exp_ctx && q.seqno == exp) {
+        let published = match rig.engine.requests().iter().find(|q| q.ctx == exp_ctx && q.seqno == exp) {
             Some(q) if q.submitted => "1",
             Some(_) => "0",
             None => "-",
@@ -379,7 +381,7 @@ impl UapiService {
             }
             None => (None, None),
         };
-        let gated = self.rig.engine.requests().iter().filter(|q| q.gated).count();
+        let gated = rig.engine.requests().iter().filter(|q| q.gated).count();
         // the stage the completion is lost at: A = a request is gated behind a fence nothing has signalled (software), B = the ring is
         // drained (HEAD == TAIL) but the CPU still reads an old seqno (visibility), C = the command streamer has not consumed the ring,
         // D = nothing is in flight (the fence belongs to no request of ours), E = the batch finished and the CPU sees it (retire
@@ -391,7 +393,7 @@ impl UapiService {
             "D"
         } else if published == "0" {
             "P"
-        } else if !self.gates.is_empty() && head == tail && self.rig.engine.execlists().is_idle() {
+        } else if !self.gates.is_empty() && head == tail && rig.engine.execlists().is_idle() {
             "A"
         } else if !crate::uapi::calls_sync::seqno_behind(hwq, exp) {
             "E"
@@ -405,8 +407,8 @@ impl UapiService {
             hw.log,
             format_args!(
                 "[I915-STALL stage={} n={} wait={} inflight={} gates={} gated={} deferred={} reqs={} exec_idle={} exp={} published={} hw={} gate_rq={} producer={} head={:#x} tail={:#x} ctl={:#x} acthd={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
-                stage, n, kind, self.inflight.len(), self.gates.len(), gated, self.gem.closes_deferred(), self.rig.engine.requests().len(),
-                self.rig.engine.execlists().is_idle() as u8, exp, published, hwq, Req(gate_rq, "-"), producer,
+                stage, n, kind, self.inflight.len(), self.gates.len(), gated, self.gem.closes_deferred(), rig.engine.requests().len(),
+                rig.engine.execlists().is_idle() as u8, exp, published, hwq, Req(gate_rq, "-"), producer,
                 head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0
             ),
         );

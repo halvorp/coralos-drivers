@@ -45,11 +45,11 @@ impl UapiService {
         let have_uses = self.gem.vma_uses(&mut uses).is_ok();
         let gate = Cell::new(false);
         let (r, fx, err) = {
-            let UapiService { gem, sync, rig, .. } = &mut *self;
+            let UapiService { gem, sync, rigs, .. } = &mut *self;
             let hwx = RefCell::new(Hwx { ex: &mut *hw.ex, gm: &mut *hw.gm, log: &mut *hw.log });
-            let rig = RefCell::new(&mut *rig);
+            let rigs = RefCell::new(rigs.as_mut_slice());
             let uses = have_uses.then_some(uses.as_slice());
-            let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, gate: &gate, sync: &*sync, session, rig: &rig, uses, now_ms: hw.now_ms };
+            let mut sink = Sink { hw: &hwx, fx: Vec::new(), err: None, gate: &gate, sync: &*sync, session, rigs: &rigs, uses, now_ms: hw.now_ms };
             let r = f(gem, &mut sink);
             (r, sink.fx, sink.err)
         };
@@ -168,7 +168,7 @@ impl UapiService {
                     },
                     None => note(Err(Fail::new(errno::EIO, "NO-REQUEST-FENCE"))),
                 },
-                Effect::Submit { plan, .. } => match self.rig.run_submission(hw.ex, hw.gm, hw.log, &plan) {
+                Effect::Submit { engine, plan } => match self.rigs.get_mut(engine as usize).ok_or(Fail::new(errno::EIO, "NO-SUCH-ENGINE")).and_then(|r| r.run_submission(hw.ex, hw.gm, hw.log, &plan).map_err(Fail::from)) {
                     Ok(()) => acc.submitted = true,
                     Err(e) => note(Err(e.into())),
                 },
@@ -234,17 +234,22 @@ impl UapiService {
 
     // ---- hardware contexts --------------------------------------------------------------------------------------------------------
 
-    /// Make sure the GEM context `(session, ctx_id)` has its execlist context on the render engine; create and attach it if not.
-    pub(crate) fn ensure_hw_ctx<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, session: u64, ctx_id: u32) -> Result<(), Fail> {
+    /// Make sure the GEM context `(session, ctx_id)` has its execlist context on engine `(engine, class, instance)` (the device engine
+    /// index and its uAPI class/instance); create and attach it if not. One hardware context per (GEM context, engine), each with
+    /// its own image, ring and timeline page, sharing only the address space (Linux: one `intel_context` per engine, `ce->vm`).
+    pub(crate) fn ensure_hw_ctx<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, session: u64, ctx_id: u32, (engine, class, instance): (usize, u16, u16)) -> Result<(), Fail> {
         let sid = SessionId(session);
         let slot = self.gem.context_slot_of(sid, ctx_id)?;
-        if self.hwctx.iter().any(|h| h.slot == slot) {
+        if self.hwctx.iter().any(|h| h.slot == slot && h.engine == engine) {
             return Ok(());
+        }
+        if engine >= self.rigs.len() {
+            return Err(Fail::new(errno::EINVAL, "ENGINE-NOT-BROUGHT-UP"));
         }
         let vm = self.gem.context_vm(sid, ctx_id)?;
         let roots = self.gem.vm_roots(vm).ok_or(Fail::new(errno::EIO, "VM-GONE"))?;
         self.hwctx.try_reserve(1).map_err(|_| Fail::oom("hw-contexts"))?;
-        let image_pages = (self.rig.engine.info().context_size as usize).div_ceil(4096);
+        let image_pages = (self.rigs[engine].engine.info().context_size as usize).div_ceil(4096);
         // image, ring and the context's OWN timeline page (Linux hwsp_alloc, gt/intel_timeline.c:20-35): each from the pool, each bound in
         // the GGTT; a failure at any step gives back everything before it (the pool zeroes a recycled run, so the seqno starts at 0).
         let mut runs: [Option<Run>; 3] = [None; 3];
@@ -270,20 +275,20 @@ impl UapiService {
         let rg = Grant { kind: ObjKind::Ring, cpu_mapping: ring.cpu, device_addr: ring.dev, len: ring.bytes() };
         let objs = CtxObjects { image: ig, image_ggtt: ggtt_at[0], ring: rg, ring_ggtt: ggtt_at[1] };
         let own = TimelinePage { ggtt: ggtt_at[2], dev: tl.dev };
-        let ectx = match self.rig.add_context_in(hw.gm, objs, roots, own.ggtt, 0, true, Some(own)) {
+        let ectx = match self.rigs[engine].add_context_in(hw.gm, objs, roots, own.ggtt, 0, true, Some(own)) {
             Ok(id) => id,
             Err(e) => {
                 self.undo_hw_ctx(hw, &runs, &vmas);
                 return Err(e.into());
             }
         };
-        if let Err(e) = self.gem.attach_engine_context(sid, ctx_id, 0, 0, ectx) {
-            let _ = self.rig.remove_context(ectx);
+        if let Err(e) = self.gem.attach_engine_context(sid, ctx_id, class, instance, ectx) {
+            let _ = self.rigs[engine].remove_context(ectx);
             self.undo_hw_ctx(hw, &runs, &vmas);
             return Err(e.into());
         }
         let vma = |i: usize| vmas[i].expect("bound");
-        self.hwctx.push(HwCtx { slot, ectx, image, ring, image_vma: vma(0), ring_vma: vma(1), tl, tl_vma: vma(2) });
+        self.hwctx.push(HwCtx { slot, engine, ectx, image, ring, image_vma: vma(0), ring_vma: vma(1), tl, tl_vma: vma(2) });
         Ok(())
     }
 
@@ -309,15 +314,19 @@ impl UapiService {
         bind_ggtt_pages(hw, &mut self.ggtt, &pages)
     }
 
-    /// `ContextFreed`: drop the engine context, unbind its image and ring, give the pages back.
+    /// `ContextFreed`: drop the GEM context's engine contexts (one per engine it ran on), unbind their images and rings, give the
+    /// pages back. One still running a request stays until the next retire frees it.
     pub(crate) fn free_hw_ctx<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, slot: u32) {
-        let Some(i) = self.hwctx.iter().position(|h| h.slot == slot) else { return };
-        let h = self.hwctx[i];
-        if self.rig.remove_context(h.ectx).is_err() {
-            return; // still has a request in flight: the next retire frees it
+        let mut i = 0;
+        while i < self.hwctx.len() {
+            let h = self.hwctx[i];
+            if h.slot != slot || self.rigs.get_mut(h.engine).map_or(true, |r| r.remove_context(h.ectx).is_err()) {
+                i += 1;
+                continue;
+            }
+            self.undo_hw_ctx(hw, &[Some(h.image), Some(h.ring), Some(h.tl)], &[Some(h.image_vma), Some(h.ring_vma), Some(h.tl_vma)]);
+            self.hwctx.swap_remove(i);
         }
-        self.undo_hw_ctx(hw, &[Some(h.image), Some(h.ring), Some(h.tl)], &[Some(h.image_vma), Some(h.ring_vma), Some(h.tl_vma)]);
-        self.hwctx.swap_remove(i);
         self.trim_pool(hw);
     }
 }

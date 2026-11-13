@@ -53,7 +53,7 @@ fn p2_adds_exactly_the_ggtt_invalidate_register_and_the_ggtt_window() {
     assert_eq!(i915_device::regio::BAR0_NEED_BYTES, 16 << 20);
 }
 
-#[cfg(all(feature = "p3-exec", not(feature = "p4-present")))]
+#[cfg(all(feature = "p3-exec", not(feature = "p4-present"), not(feature = "p5-video")))]
 #[test]
 fn p3_adds_exactly_the_execlist_and_reset_registers() {
     let mut want = FORCEWAKE_SET.to_vec();
@@ -152,6 +152,26 @@ mod planner_write_sets {
             writes.extend(gt_init_writes(&m).unwrap().map(|w| w.reg));
             writes.extend(engine_init_writes(&m, &rcs).unwrap().map(|w| w.reg));
         }
+        // P5: the video engine - the same submit-core planners at VCS0's base, and its engine MOCS from the planner
+        #[cfg(feature = "p5-video")]
+        {
+            use i915_gt_core::mocs::{engine_init_writes, mocs_settings};
+            let vcs = *engines.as_slice().iter().find(|e| e.class == EngineClass::VideoDecode).unwrap();
+            assert_eq!(vcs.mmio_base, 0x12000);
+            writes.extend(elsp_writes(vcs.mmio_base, [1, 2]).iter().map(|w| w.reg));
+            for e in plan_enable_execlists(vcs.mmio_base, 0x1000).unwrap().as_slice() {
+                if let Effect::Write(w) = e {
+                    writes.push(w.reg);
+                }
+            }
+            for s in plan_reset_csb_pointers(vcs.mmio_base).steps.as_slice() {
+                if let Step::Mmio(Effect::Write(w)) = s {
+                    writes.push(w.reg);
+                }
+            }
+            writes.extend(engine_init_writes(&mocs_settings(&d).unwrap().unwrap(), &vcs).unwrap().map(|w| w.reg));
+            writes.extend(reset_writes(ResetScope::Engines, &[vcs]));
+        }
         // P3: the reset planner, both scopes
         writes.extend(reset_writes(ResetScope::Engines, &[rcs]));
         writes.extend(reset_writes(ResetScope::AllEngines, engines.as_slice()));
@@ -212,7 +232,7 @@ fn p4_resize_writes() -> Vec<i915_common_core::Reg> {
     out
 }
 
-#[cfg(feature = "p4-present")]
+#[cfg(all(feature = "p4-present", not(feature = "p5-video")))]
 #[test]
 fn p4_adds_exactly_plane_surf_of_the_adopted_plane() {
     let mut want = FORCEWAKE_SET.to_vec();
@@ -257,3 +277,32 @@ fn the_ggtt_window_holds_only_whole_aligned_entries_inside_it() {
     assert_eq!(GgttWindow::for_table(0x70_0000, 8), None);
     assert_eq!(GgttWindow::for_table(0x80_0000, 0), None);
 }
+
+/// P5 adds exactly the video engine's execlist registers and its MOCS block - written out from Linux, not from the list under test.
+#[cfg(feature = "p5-video")]
+#[test]
+fn p5_adds_exactly_the_video_engines_execlist_and_mocs_registers() {
+    let all = offsets(&ALLOW);
+    let want: Vec<u32> = [
+        0x12230, // RING_ELSP(GEN6_BSD_RING_BASE 0x12000), intel_engine_regs.h (+0x230)
+        0x12098, // RING_HWSTAM
+        0x1229c, // RING_MODE_GEN7
+        0x1209c, // RING_MI_MODE
+        0x12080, // RING_HWS_PGA
+        0x123a0, // RING_CONTEXT_STATUS_PTR
+    ]
+    .into_iter()
+    .chain((0..64).map(|i| 0xc900 + 4 * i)) // __GEN9_VCS0_MOCS0, intel_gt_regs.h:1025
+    .collect();
+    for w in &want {
+        assert!(all.contains(w), "{w:#x} must be writable with P5");
+    }
+    assert_eq!(P5_VIDEO_REGS.len(), want.len());
+    let mut p5 = offsets(&P5_VIDEO_REGS);
+    p5.sort();
+    let mut w = want.clone();
+    w.sort();
+    assert_eq!(p5, w, "P5 is exactly these registers");
+    assert!(P5_ON && P3_ON);
+}
+

@@ -23,6 +23,8 @@ pub const P2_ON: bool = cfg!(feature = "p2-memory");
 pub const P3_ON: bool = cfg!(feature = "p3-exec");
 /// Is increment P4 (the scanout pair's flips, D18) compiled in?
 pub const P4_ON: bool = cfg!(feature = "p4-present");
+/// Is increment P5 (the video engine VCS0 as a second execlists engine) compiled in?
+pub const P5_ON: bool = cfg!(feature = "p5-video");
 
 /// The GGTT's place in BAR0 (`gen6_gttadr_offset`, gt/intel_ggtt.c:1192: GTTMMADR is 16 MiB and the GTT starts halfway) and the
 /// most it can occupy (the upper half). The RUNTIME window is narrowed to the probed table size by [`GgttWindow`].
@@ -125,6 +127,28 @@ pub const P4_PRESENT_REGS: [Reg; 41] = {
     out
 };
 
+/// P5: the video engine VCS0 (`GEN6_BSD_RING_BASE` 0x12000, intel_engine_cs.c:139) as a second execlists engine - the SAME planners
+/// as the render engine's P3 rows run at its base (`elsp_writes`, `plan_enable_execlists`, `plan_reset_csb_pointers`); its
+/// `RING_RESET_CTL` is already in P3 (a full reset prepares every engine). Plus its MOCS control table (`init_mocs_table(vcs0)`,
+/// gt/intel_mocs.c:583-589, from `__GEN9_VCS0_MOCS0` 0xc900, intel_gt_regs.h:1025) on a part whose MOCS settings program engine MOCS
+/// (Gen9; Cherryview programs none).
+pub const P5_VIDEO_REGS: [Reg; 70] = {
+    let b = r::GEN6_BSD_RING_BASE;
+    let mut out = [Reg::new(0); 70];
+    out[0] = r::ring_elsp(b);
+    out[1] = r::ring_hwstam(b);
+    out[2] = r::ring_mode_gen7(b);
+    out[3] = r::ring_mi_mode(b);
+    out[4] = r::ring_hws_pga(b);
+    out[5] = r::ring_context_status_ptr(b);
+    let mut i = 0;
+    while i < 64 {
+        out[6 + i] = Reg::new(r::GEN9_VCS0_MOCS0 + i as u32 * 4);
+        i += 1;
+    }
+    out
+};
+
 const fn on(b: bool, n: usize) -> usize {
     if b {
         n
@@ -134,7 +158,7 @@ const fn on(b: bool, n: usize) -> usize {
 }
 
 /// How many registers the compiled-in allow-list holds.
-pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len() + P3_MOCS_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len());
+pub const N_ALLOW: usize = WRITE_ALLOWLIST.len() + on(P2_ON, P2_MEMORY_REGS.len()) + on(P3_ON, P3_EXEC_REGS.len() + P3_MOCS_REGS.len()) + on(P4_ON, P4_PRESENT_REGS.len()) + on(P5_ON, P5_VIDEO_REGS.len());
 
 const fn compose() -> [Reg; N_ALLOW] {
     let mut out = [Reg::new(0); N_ALLOW];
@@ -171,6 +195,14 @@ const fn compose() -> [Reg; N_ALLOW] {
         let mut i = 0;
         while i < P4_PRESENT_REGS.len() {
             out[n] = P4_PRESENT_REGS[i];
+            n += 1;
+            i += 1;
+        }
+    }
+    if P5_ON {
+        let mut i = 0;
+        while i < P5_VIDEO_REGS.len() {
+            out[n] = P5_VIDEO_REGS[i];
             n += 1;
             i += 1;
         }

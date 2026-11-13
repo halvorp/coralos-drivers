@@ -416,42 +416,56 @@ impl EngineRig {
         let mut planner = ResetPlanner::new(scope, engines, DEFAULT_MAX_POLLS)?;
         ex.step(log, id, name, |ex, log| {
             let out = ex.run_reset(&mut planner)?;
-            let csb = self.engine.reset_tracking()?;
-            let regs = csb.steps.as_slice().iter().filter_map(|s| if let Step::Mmio(Effect::Write(w)) = s { Some(w.reg) } else { None });
-            let d = ex.domains_for(regs);
-            {
-                let mut sink = self.hwsp_sink(gm);
-                ex.awake(d, |ex| ex.run_csb_steps(csb.steps.as_slice(), &mut sink))?;
-            }
-            // execlists_reset_cancel: whatever was outstanding is lost; mark it complete on its timeline and retire it, then scrub.
-            for ctx in 0..self.objs.len() as u32 {
-                if self.objs[ctx as usize].is_none() {
-                    continue;
-                }
-                let tl = *self.engine.context_timeline(ctx)?;
-                gm.store32(self.seqno_dword(self.tl_of(ctx), tl.hwsp_ggtt)?, tl.seqno())?;
-                if let Some(t) = self.tl_of(ctx) {
-                    gm.flush(t.dev, 4096)?; // the context's own page is not the status page flushed below
-                }
-                self.engine.observe_seqno(ctx, tl.seqno())?;
-                self.engine.retire(ctx)?;
-                self.engine.reset_context(ctx)?;
-                self.store_state(gm, ctx)?;
-            }
-            gm.flush(self.hwsp.device_addr, 4096)?;
-            // intel_gt_reset re-runs intel_gt_init_hw -> intel_mocs_init (intel_reset.c:1264), then resume(gt) -> execlists_resume (:1270);
-            // an engine reset resumes only its engine (__intel_engine_reset_bh, :1367)
-            if let (Some(s), ResetScope::AllEngines) = (&self.mocs, scope) {
-                ex.run_mocs(log, s, gt_init_writes(s)?, "gt")?;
-            }
-            self.resume_mocs(ex, log)?;
-            let resume = self.engine.plan_resume()?;
-            let d = ex.domains_for(Executor::<B>::gt_regs(resume.as_slice()));
-            ex.awake(d, |ex| ex.gt_effects_awake(resume.as_slice()))?;
-            self.epoch += 1;
-            self.proof.recovered = false;
+            self.scrub_after_reset(ex, gm, log, scope)?;
             Ok(out)
         })
+    }
+
+    /// A GT-wide reset another engine's rig executed reset this engine too: bring its software state back the way [`EngineRig::recover`]
+    /// does after its own reset (`reset_finish` runs for every engine of the GT, intel_reset.c:1264-1270). Its requests in flight are
+    /// lost, exactly as the hung engine's are.
+    pub fn resume_after_gt_reset<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, ex: &mut Executor<B>, gm: &mut GpuMem<D, M>, log: &mut L) -> Result<(), ExecError> {
+        ex.step(log, StepId::GT_RESET_RESUME, "GT-RESET-RESUME", |ex, log| self.scrub_after_reset(ex, gm, log, ResetScope::Engines))
+    }
+
+    /// After a reset of this engine: reset its CSB tracking, complete and retire every outstanding request on its timeline, scrub
+    /// each context's register state, re-program MOCS (the GT's, too, when `scope` is the whole GT) and resume execlists.
+    fn scrub_after_reset<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, ex: &mut Executor<B>, gm: &mut GpuMem<D, M>, log: &mut L, scope: ResetScope) -> Result<(), ExecError> {
+        let csb = self.engine.reset_tracking()?;
+        let regs = csb.steps.as_slice().iter().filter_map(|s| if let Step::Mmio(Effect::Write(w)) = s { Some(w.reg) } else { None });
+        let d = ex.domains_for(regs);
+        {
+            let mut sink = self.hwsp_sink(gm);
+            ex.awake(d, |ex| ex.run_csb_steps(csb.steps.as_slice(), &mut sink))?;
+        }
+        // execlists_reset_cancel: whatever was outstanding is lost; mark it complete on its timeline and retire it, then scrub.
+        for ctx in 0..self.objs.len() as u32 {
+            if self.objs[ctx as usize].is_none() {
+                continue;
+            }
+            let tl = *self.engine.context_timeline(ctx)?;
+            gm.store32(self.seqno_dword(self.tl_of(ctx), tl.hwsp_ggtt)?, tl.seqno())?;
+            if let Some(t) = self.tl_of(ctx) {
+                gm.flush(t.dev, 4096)?; // the context's own page is not the status page flushed below
+            }
+            self.engine.observe_seqno(ctx, tl.seqno())?;
+            self.engine.retire(ctx)?;
+            self.engine.reset_context(ctx)?;
+            self.store_state(gm, ctx)?;
+        }
+        gm.flush(self.hwsp.device_addr, 4096)?;
+        // intel_gt_reset re-runs intel_gt_init_hw -> intel_mocs_init (intel_reset.c:1264), then resume(gt) -> execlists_resume (:1270);
+        // an engine reset resumes only its engine (__intel_engine_reset_bh, :1367)
+        if let (Some(s), ResetScope::AllEngines) = (&self.mocs, scope) {
+            ex.run_mocs(log, s, gt_init_writes(s)?, "gt")?;
+        }
+        self.resume_mocs(ex, log)?;
+        let resume = self.engine.plan_resume()?;
+        let d = ex.domains_for(Executor::<B>::gt_regs(resume.as_slice()));
+        ex.awake(d, |ex| ex.gt_effects_awake(resume.as_slice()))?;
+        self.epoch += 1;
+        self.proof.recovered = false;
+        Ok(())
     }
 
     /// Record the isolation proof: the planner's page-walk model denied context A's buffer to context B AND B's to A.

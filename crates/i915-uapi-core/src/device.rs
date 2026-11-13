@@ -150,10 +150,21 @@ impl UapiDevice {
         mask
     }
 
-    /// The user-visible engines, derived from `PlatformDescriptor::info.engine_mask` (a bit per `enum intel_engine_id`).
+    /// The user-visible engines for the ASKING session, derived from `PlatformDescriptor::info.engine_mask` (a bit per
+    /// `enum intel_engine_id`), the routed mask and the media seat.
     pub fn engines(&self) -> UabiEngines {
         let seat = if self.media_seat { u32::MAX } else { !VIDEO_ENGINE_BITS };
-        let mask = self.desc.info.engine_mask & self.routed_engine_mask & seat;
+        self.engines_of(self.desc.info.engine_mask & self.routed_engine_mask & seat)
+    }
+
+    /// The routed engines whoever asks, in the same order: the device's ENGINE INDEX space. An index taken from it is the same for
+    /// every session (a context's per-engine slot, the request records), which the per-session view of [`UapiDevice::engines`]
+    /// cannot promise once an engine is withheld from some sessions.
+    pub fn engine_slots(&self) -> UabiEngines {
+        self.engines_of(self.desc.info.engine_mask & self.routed_engine_mask)
+    }
+
+    fn engines_of(&self, mask: u32) -> UabiEngines {
         let mut out = UabiEngines { list: [UabiEngine { class: 0, instance: 0 }; MAX_UABI_ENGINES], len: 0 };
         let mut push = |class: u16, instance: u16| {
             if out.len < MAX_UABI_ENGINES {

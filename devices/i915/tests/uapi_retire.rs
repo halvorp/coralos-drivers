@@ -202,6 +202,12 @@ fn the_retirement_predicate_compares_seqnos_across_the_wrap() {
     assert!(vma_retired(&uses, VmId(1), VmaId(4), hw(0x10)), "equal is complete");
     assert!(vma_retired(&uses, VmId(2), VmaId(3), hw(0)), "a VMA no request uses is retired (same id, other address space)");
     assert!(!vma_retired(&uses, VmId(1), VmaId(3), |_, _| None), "an unobservable timeline is never proven retired");
+    // the engine index is the device's: a use on engine 1 is read on engine 1's timeline, and an engine with no rig answers None
     let other_engine = [VmaUse { engine: 1, ..u(5, 1) }];
-    assert!(!vma_retired(&other_engine, VmId(1), VmaId(5), hw(100)), "a use on an engine this device does not service is never proven retired");
+    let only_render = |v: u32| move |e: u8, ctx: u32| (e == 0 && ctx == 7).then_some(v);
+    assert!(!vma_retired(&other_engine, VmId(1), VmaId(5), only_render(100)), "a use on an engine this device does not service is never proven retired");
+    let both = |v: u32| move |e: u8, ctx: u32| (e <= 1 && ctx == 7).then_some(v);
+    assert!(vma_retired(&other_engine, VmId(1), VmaId(5), both(100)), "a use on the video engine is read on ITS timeline");
+    assert!(!vma_retired(&[u(3, 50), VmaUse { engine: 1, ..u(3, 60) }], VmId(1), VmaId(3), move |e: u8, _| Some(if e == 0 { 100 } else { 59 })),
+        "a VMA used on two engines retires only when BOTH have passed their use");
 }
