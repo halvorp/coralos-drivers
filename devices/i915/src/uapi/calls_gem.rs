@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use coralos_hal::{Dma, Mmio};
 use i915_common_core::Reg;
+use i915_gem_core::prime_image::ImageLayout;
 use i915_gem_core::{CreateExt, Wait, WaitTimeout, SessionId};
 use i915_wire::msg::device::*;
 use i915_wire::msg::gem::*;
@@ -48,8 +49,8 @@ pub(crate) fn error_body_len(op: Opcode) -> usize {
         SyncFileMerge | SyncFileRedeem => sync::SyncFileTokenRep::SIZE,
         SyncFileGrant => sync::SyncFileGrantRep::SIZE,
         SyncFileWait => sync::SyncFileWaitRep::SIZE,
-        PrimeHandleToFd | PrimeGrant => PrimeTokenRep::SIZE,
-        PrimeFdToHandle => PrimeHandleRep::SIZE,
+        PrimeHandleToFd | PrimeGrant | PrimeGrantImage => PrimeTokenRep::SIZE,
+        PrimeFdToHandle | PrimeRedeemImage => PrimeHandleRep::SIZE,
         DmabufExportSyncFile => DmabufSyncFileRep::SIZE,
         DisplayQuery | ScanoutAcquire | ScanoutPresent | ScanoutWait => crate::display::answer::reply_body_len(op),
         _ => 0,
@@ -226,33 +227,27 @@ impl UapiService {
             }
             Opcode::PrimeHandleToFd => {
                 let r = PrimeHandleToFdReq::from_payload(p)?;
-                self.primes.try_reserve(1).map_err(|_| Fail::oom("prime-grants"))?;
-                let obj = self.gem.prime_export(sid, r.handle)?;
-                let token = self.next_prime;
-                self.next_prime += 1;
-                self.primes.push(PrimeRec { token, obj, owner: inc, recipient: inc }); // a plain export is redeemable by its exporter only
+                let token = self.prime_grant(sid, r.handle, inc, None, 0)?; // a plain export is redeemable by its exporter only
                 ok!(PrimeTokenRep { token })
             }
             Opcode::PrimeGrant => {
                 let r = PrimeGrantReq::from_payload(p)?;
-                if r.recipient == 0 || self.session_idx(r.recipient).is_none() {
-                    return Err(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-RECIPIENT"));
-                }
-                self.primes.try_reserve(1).map_err(|_| Fail::oom("prime-grants"))?;
-                let obj = self.gem.prime_export(sid, r.handle)?;
-                let token = self.next_prime;
-                self.next_prime += 1;
-                self.primes.push(PrimeRec { token, obj, owner: inc, recipient: r.recipient });
+                let token = self.prime_grant(sid, r.handle, r.recipient, None, 0)?;
+                ok!(PrimeTokenRep { token })
+            }
+            Opcode::PrimeGrantImage => {
+                let r = PrimeGrantImageReq::from_payload(p)?;
+                let token = self.prime_grant(sid, r.handle, r.recipient, Some(image_layout(&r.image)), r.tag)?;
                 ok!(PrimeTokenRep { token })
             }
             Opcode::PrimeFdToHandle => {
                 let r = PrimeFdToHandleReq::from_payload(p)?;
-                let g = self.primes.iter().find(|g| g.token == r.token).ok_or(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-TOKEN"))?;
-                if g.recipient != inc {
-                    return Err(Fail::new(errno::EINVAL, "PRIME-NOT-RECIPIENT")); // same errno as an unknown token: no oracle for which tokens exist
-                }
-                let obj = g.obj;
-                let handle = self.gem.prime_import(sid, obj)?;
+                let handle = self.prime_redeem(sid, r.token, None, 0)?;
+                ok!(PrimeHandleRep { handle, ..Default::default() })
+            }
+            Opcode::PrimeRedeemImage => {
+                let r = PrimeRedeemImageReq::from_payload(p)?;
+                let handle = self.prime_redeem(sid, r.token, Some(image_layout(&r.image)), r.tag)?;
                 ok!(PrimeHandleRep { handle, ..Default::default() })
             }
             Opcode::DmabufExportSyncFile => {
@@ -277,6 +272,50 @@ impl UapiService {
                 ok_empty!()
             }
         }
+    }
+
+    /// Mint a PRIME token for `handle` addressed to `recipient` (the exporter itself for `PRIME-HANDLE-TO-FD`). An image grant's image
+    /// is checked against the object BEFORE the hold is taken: a refused grant leaves nothing behind. `tag` is the recipient's binding
+    /// stamp (image grants only).
+    fn prime_grant(&mut self, sid: SessionId, handle: u32, recipient: u64, image: Option<ImageLayout>, tag: u32) -> Result<u64, Fail> {
+        if recipient == 0 || self.session_idx(recipient).is_none() {
+            return Err(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-RECIPIENT"));
+        }
+        if let Some(img) = &image {
+            let obj = self.gem.lookup_object(sid, handle)?;
+            self.gem.prime_image_check(obj, img).map_err(|e| Fail::new(errno::EINVAL, e.name()))?;
+        }
+        self.primes.try_reserve(1).map_err(|_| Fail::oom("prime-grants"))?;
+        let obj = self.gem.prime_export(sid, handle)?;
+        let token = self.next_prime;
+        self.next_prime += 1;
+        self.primes.push(PrimeRec { token, obj, owner: sid.0, recipient, image, tag });
+        Ok(token)
+    }
+
+    /// Redeem `token` into a handle of `sid`'s own. Who may redeem is checked FIRST (an outsider learns nothing about the image); an
+    /// image grant needs `PRIME-REDEEM-IMAGE` stating its tag and expecting exactly its image, re-checked against the object as it is now.
+    fn prime_redeem(&mut self, sid: SessionId, token: u64, expected: Option<ImageLayout>, tag: u32) -> Result<u32, Fail> {
+        let g = self.primes.iter().find(|g| g.token == token).ok_or(Fail::new(errno::EINVAL, "PRIME-NO-SUCH-TOKEN"))?;
+        if g.recipient != sid.0 {
+            return Err(Fail::new(errno::EINVAL, "PRIME-NOT-RECIPIENT")); // same errno as an unknown token: no oracle for which tokens exist
+        }
+        match (&g.image, &expected) {
+            (None, None) => {}
+            (Some(_), None) => return Err(Fail::new(errno::EINVAL, "PRIME-IMAGE-NEEDS-REDEEM-IMAGE")),
+            (None, Some(_)) => return Err(Fail::new(errno::EINVAL, "PRIME-NO-IMAGE")),
+            (Some(granted), Some(want)) => {
+                if g.tag != tag {
+                    return Err(Fail::new(errno::EINVAL, "PRIME-TAG-MISMATCH")); // the binding before the image
+                }
+                if let Some(name) = i915_gem_core::prime_image::image_mismatch(granted, want) {
+                    return Err(Fail::new(errno::EINVAL, name));
+                }
+                self.gem.prime_image_check(g.obj, granted).map_err(|e| Fail::new(errno::EINVAL, e.name()))?;
+            }
+        }
+        let obj = g.obj;
+        Ok(self.gem.prime_import(sid, obj)?)
     }
 
     /// A sync_file that signals when every request still touching `obj` has (the implicit-sync read side of `dma_buf` export).
@@ -333,6 +372,11 @@ impl UapiService {
             }
         }
     }
+}
+
+/// The wire's image as gem-core's (field for field).
+fn image_layout(i: &PrimeImage) -> ImageLayout {
+    ImageLayout { fourcc: i.fourcc, width: i.width, height: i.height, planes: i.planes, pitches: i.pitches, offsets: i.offsets, modifier: i.modifier }
 }
 
 /// The kernel tick `wait_finish` rounds sub-tick remainders against: 1 ms (HZ=1000).

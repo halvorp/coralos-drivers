@@ -69,6 +69,8 @@ fn every_opcode_number_is_pinned_and_introduced_by_the_right_minor() {
         (Opcode::PrimeGrant, 0x164, 4, "PRIME-GRANT"),
         (Opcode::SyncFileGrant, 0x165, 4, "SYNC-FILE-GRANT"),
         (Opcode::SyncFileRedeem, 0x166, 4, "SYNC-FILE-REDEEM"),
+        (Opcode::PrimeGrantImage, 0x167, 6, "PRIME-GRANT-IMAGE"),
+        (Opcode::PrimeRedeemImage, 0x168, 6, "PRIME-REDEEM-IMAGE"),
         (Opcode::DisplayQuery, 0x170, 5, "DISPLAY-QUERY"),
         (Opcode::DisplaySetMode, 0x171, 5, "DISPLAY-SET-MODE"),
         (Opcode::ScanoutAcquire, 0x172, 5, "SCANOUT-ACQUIRE"),
@@ -184,9 +186,9 @@ fn every_fixed_message_is_transactional_and_ignores_no_byte() {
         SyncobjWaitRep, SyncobjArrayHead, SyncobjQueryRepHead, SyncobjTransferReq, SyncobjHandleToFdReq, SyncobjTokenRep, SyncobjFdToHandleReq, FdCloseReq, SyncFileMergeReq,
         SyncFileTokenRep, SyncFileWaitReq, SyncFileWaitRep, PrimeHandleToFdReq, PrimeTokenRep, PrimeFdToHandleReq, PrimeHandleRep, DmabufExportSyncFileReq, DmabufSyncFileRep,
         DmabufImportSyncFileReq, PrimeGrantReq, SyncFileGrantReq, SyncFileGrantRep, SyncFileRedeemReq, DisplayQueryRep, DisplayModeReq, ScanoutAcquireRep,
-        ScanoutBeginReq, ScanoutPresentReq, ScanoutPresentRep, ScanoutWaitReq, ScanoutStatusRep,
+        ScanoutBeginReq, ScanoutPresentReq, ScanoutPresentRep, ScanoutWaitReq, ScanoutStatusRep, PrimeImage, PrimeGrantImageReq, PrimeRedeemImageReq,
     );
-    assert_eq!(n, 84, "the message count is pinned: a message added or dropped changes this");
+    assert_eq!(n, 87, "the message count is pinned: a message added or dropped changes this");
 }
 
 #[test]
@@ -200,6 +202,44 @@ fn the_documented_sizes_are_the_wire_sizes() {
     assert_eq!(<GemCreateExtHead as Body>::SIZE, 32);
     assert_eq!(QUERY_ITEM_BYTES, 32);
     assert_eq!(REPLY_HEAD_BYTES, 8);
+}
+
+#[test]
+fn an_image_grant_is_written_out_field_by_field() {
+    // ABI 1.6: the image is drm_mode_fb_cmd2's shape, 56 bytes; the grant is handle, tag, recipient + the image (no flags: no
+    // descriptor is made); the redeem is the token, the tag and a zero pad + the image
+    assert_eq!((<PrimeImage as Body>::SIZE, <PrimeGrantImageReq as Body>::SIZE, <PrimeRedeemImageReq as Body>::SIZE), (56, 72, 72));
+    assert_eq!(ABI_MINOR, 6);
+    // the codes are drm_fourcc.h's: fourcc_code('X','R','2','4'), ('N','V','1','2'); fourcc_mod_code(INTEL, 1) / (INTEL, 2)
+    assert_eq!((fourcc::XRGB8888, fourcc::ARGB8888, fourcc::XBGR8888, fourcc::ABGR8888, fourcc::NV12), (0x3432_5258, 0x3432_5241, 0x3432_4258, 0x3432_4241, 0x3231_564e));
+    assert_eq!((modifier::LINEAR, modifier::I915_X_TILED, modifier::I915_Y_TILED), (0, 0x0100_0000_0000_0001, 0x0100_0000_0000_0002));
+    // 1280x720 NV12, linear: Y pitch 1280 at 0, CbCr pitch 1280 at 1280*720
+    let image = PrimeImage { fourcc: fourcc::NV12, width: 1280, height: 720, planes: 2, pitches: [1280, 1280, 0, 0], offsets: [0, 921_600, 0, 0], modifier: modifier::LINEAR };
+    let rq = PrimeRedeemImageReq { token: 9, tag: 0x4242, image, ..Default::default() };
+    let mut o = [0u8; 72];
+    assert_eq!(rq.to_payload(&mut o).unwrap(), 72);
+    let mut want = vec![];
+    want.extend_from_slice(&9u64.to_le_bytes());
+    want.extend_from_slice(&0x4242u32.to_le_bytes());
+    want.extend_from_slice(&0u32.to_le_bytes()); // pad
+    for v in [fourcc::NV12, 1280, 720, 2, 1280, 1280, 0, 0, 0, 921_600, 0, 0] {
+        want.extend_from_slice(&v.to_le_bytes());
+    }
+    want.extend_from_slice(&0u64.to_le_bytes());
+    assert_eq!(&o[..], &want[..]);
+    assert_eq!(PrimeRedeemImageReq::from_payload(&o), Ok(rq));
+    let g = PrimeGrantImageReq { handle: 3, tag: 0x4242, recipient: 0x55, image };
+    let mut o = [0u8; 72];
+    assert_eq!(g.to_payload(&mut o).unwrap(), 72);
+    assert_eq!(&o[..16], &[3, 0, 0, 0, 0x42, 0x42, 0, 0, 0x55, 0, 0, 0, 0, 0, 0, 0], "handle, tag, recipient");
+    assert_eq!(&o[16..], &want[16..], "then the same 56-byte image");
+    assert_eq!(PrimeGrantImageReq::from_payload(&o), Ok(g));
+    // under ABI 1.5 the opcode does not exist yet
+    let mut buf = [0u8; i915_wire::HEADER_BYTES];
+    let mut h = Header::request(Opcode::PrimeGrantImage, 1, 1, 72);
+    h.minor = 5;
+    h.encode(&mut buf).unwrap();
+    assert_eq!(Header::decode_header(&buf).unwrap_err(), WireError::OpcodeNewerThanMinor { opcode: 0x167, since: 6, got: 5 });
 }
 
 #[test]

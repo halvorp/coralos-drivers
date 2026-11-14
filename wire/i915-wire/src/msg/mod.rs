@@ -47,6 +47,17 @@ int_field!(i32, 4, i32, i32);
 int_field!(u64, 8, u64, u64);
 int_field!(i64, 8, i64, i64);
 
+/// Four u32s in order (a plane table: `drm_mode_fb_cmd2`'s `pitches[4]` / `offsets[4]` shape).
+impl Field for [u32; 4] {
+    const SIZE: usize = 16;
+    fn put(&self, w: &mut Writer<'_>) -> Result<(), WireError> {
+        self.iter().try_for_each(|v| w.u32(*v))
+    }
+    fn get(r: &mut Reader<'_>, what: &'static str) -> Result<Self, WireError> {
+        Ok([r.u32(what)?, r.u32(what)?, r.u32(what)?, r.u32(what)?])
+    }
+}
+
 /// A zero padding word.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Pad32;

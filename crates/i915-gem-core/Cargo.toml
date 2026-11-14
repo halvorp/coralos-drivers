@@ -18,6 +18,7 @@ i915-devinfo-core = { path = "../i915-devinfo-core" }
 i915-memory-core = { path = "../i915-memory-core" }
 i915-submit-core = { path = "../i915-submit-core" }
 i915-uapi-core = { path = "../i915-uapi-core" }
+i915-wire = { path = "../../wire/i915-wire" }
 
 [dev-dependencies]
 i915-gt-core = { path = "../i915-gt-core" }

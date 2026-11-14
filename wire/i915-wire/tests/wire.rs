@@ -23,7 +23,7 @@ fn frame() -> Vec<u8> {
 fn constants_are_the_documented_values() {
     assert_eq!(MAGIC, 0x3531_3949);
     assert_eq!(&MAGIC.to_le_bytes(), b"I915");
-    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 5)); // minor 1: the uAPI messages; minor 2: the payload region; minor 3: reply region + mmap lease handle; minor 4: grants to a named session; minor 5: display ownership + presentation
+    assert_eq!((ABI_MAJOR, ABI_MINOR), (1, 6)); // minor 1: the uAPI messages; minor 2: the payload region; minor 3: reply region + mmap lease handle; minor 4: grants to a named session; minor 5: display ownership + presentation; minor 6: image grants
     assert_eq!(HEADER_BYTES, 40);
     assert_eq!(MAX_PAYLOAD, 65536);
     assert_eq!(FLAG_REPLY, 1);

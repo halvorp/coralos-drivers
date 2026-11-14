@@ -93,6 +93,11 @@ pub(crate) struct PrimeRec {
     pub owner: u64,
     /// The one session that may redeem it (ABI 1.4). `PRIME-HANDLE-TO-FD` addresses it to the exporter itself.
     pub recipient: u64,
+    /// The image the exporter stated (`PRIME-GRANT-IMAGE`, ABI 1.6): such a grant is redeemed only by `PRIME-REDEEM-IMAGE` expecting
+    /// exactly this image. `None` for a plain export or grant.
+    pub image: Option<i915_gem_core::prime_image::ImageLayout>,
+    /// The recipient's binding stamp an image grant carries (opaque to the device; the redeem must state the same). 0 otherwise.
+    pub tag: u32,
 }
 
 /// An offer of one fence to ONE named session (`SYNC-FILE-GRANT`, ABI 1.4). It holds a reference on the fence until it is redeemed,
@@ -624,7 +629,7 @@ impl UapiService {
             }
             GetParam | Query | RegRead => self.call_device(hw, h.opcode, inc, p, out),
             GemCreate | GemCreateExt | GemClose | GemMmapOffset | GemMmapOpen | GemMmapLegacy | GemMmapClose | GemSetDomain | GemSetTiling | GemGetTiling | GemBusy | GemWait
-            | GemMadvise | GemSetCaching | GemGetCaching | PrimeHandleToFd | PrimeFdToHandle | PrimeGrant | DmabufExportSyncFile | DmabufImportSyncFile => self.call_gem(hw, h, inc, p, out),
+            | GemMadvise | GemSetCaching | GemGetCaching | PrimeHandleToFd | PrimeFdToHandle | PrimeGrant | PrimeGrantImage | PrimeRedeemImage | DmabufExportSyncFile | DmabufImportSyncFile => self.call_gem(hw, h, inc, p, out),
             ContextCreate | ContextCreateExt | ContextDestroy | ContextGetParam | ContextSetParam | VmCreate | VmDestroy | GetResetStats => self.call_ctx(hw, h.opcode, inc, p, out),
             Execbuffer2 => self.call_exec(hw, inc, p, out),
             SyncobjCreate | SyncobjDestroy | SyncobjWait | SyncobjTimelineWait | SyncobjSignal | SyncobjReset | SyncobjTimelineSignal | SyncobjQuery | SyncobjTransfer

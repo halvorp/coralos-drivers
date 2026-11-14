@@ -91,6 +91,7 @@ dependencies = [
  "i915-memory-core",
  "i915-submit-core",
  "i915-uapi-core",
+ "i915-wire",
 ]
 
 [[package]]

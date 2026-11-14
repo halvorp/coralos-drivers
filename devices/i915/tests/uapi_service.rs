@@ -772,3 +772,86 @@ fn an_unredeemed_grant_dies_with_its_exporter_and_frees_the_object() {
     assert_eq!(w.svc.gem().object_count(), 0, "no grant keeps the exporter's pages alive");
     assert_eq!(w.svc.live_primes(), 0);
 }
+
+/// 1280x720 XRGB8888, linear, pitch 5120 (wire ABI 1.6's image of a converted video frame).
+fn rgbx_image() -> PrimeImage {
+    PrimeImage { fourcc: fourcc::XRGB8888, width: 1280, height: 720, planes: 1, pitches: [5120, 0, 0, 0], offsets: [0; 4], modifier: modifier::LINEAR }
+}
+
+#[test]
+fn an_image_grant_is_checked_against_its_object_and_redeemed_only_by_the_recipient_expecting_that_image() {
+    let mut w = world();
+    let (a, b, c) = (open(&mut w), open(&mut w), open(&mut w));
+    let img = rgbx_image();
+    let ha = create(&mut w, a, 5120 * 720);
+    // an image the object cannot hold is refused at grant, by name, and holds nothing
+    let live = w.svc.live_primes();
+    let small = create(&mut w, a, 4096);
+    assert!(call(&mut w, a, Opcode::PrimeGrantImage, &PrimeGrantImageReq { handle: small, tag: 7, recipient: b, image: img }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-IMAGE-OBJECT-TOO-SMALL"));
+    let bad_pitch = PrimeImage { pitches: [5120 + 32, 0, 0, 0], ..img };
+    assert!(call(&mut w, a, Opcode::PrimeGrantImage, &PrimeGrantImageReq { handle: ha, tag: 7, recipient: b, image: bad_pitch }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-IMAGE-PITCH-ALIGN"));
+    assert!(call(&mut w, a, Opcode::PrimeGrantImage, &PrimeGrantImageReq { handle: ha, tag: 7, recipient: 9_999, image: img }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-NO-SUCH-RECIPIENT"));
+    assert_eq!(w.svc.live_primes(), live, "a refused grant leaves no token behind");
+    let tok = call(&mut w, a, Opcode::PrimeGrantImage, &PrimeGrantImageReq { handle: ha, tag: 7, recipient: b, image: img }).body::<PrimeTokenRep>().token;
+    assert_eq!(w.svc.live_primes(), live + 1);
+    // WHO first: an outsider stating the right image learns nothing (the 1.4 refusal, the same errno as an unknown token)
+    assert!(call(&mut w, c, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 7, image: img, ..Default::default() }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-NOT-RECIPIENT"));
+    // the recipient must state the image: the 1.4 redeem is refused, and so is every difference, each by its name
+    assert!(call(&mut w, b, Opcode::PrimeFdToHandle, &PrimeFdToHandleReq { token: tok }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-IMAGE-NEEDS-REDEEM-IMAGE"));
+    let cases = [
+        (PrimeImage { fourcc: fourcc::ARGB8888, ..img }, "PRIME-FORMAT-MISMATCH"),
+        (PrimeImage { width: 1920, ..img }, "PRIME-SIZE-MISMATCH"),
+        (PrimeImage { pitches: [5184, 0, 0, 0], ..img }, "PRIME-PITCH-MISMATCH"),
+        (PrimeImage { modifier: modifier::I915_X_TILED, ..img }, "PRIME-MODIFIER-MISMATCH"),
+    ];
+    // the binding first: the right image under another layer's tag is refused before the image is looked at
+    assert!(call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 8, image: img, ..Default::default() }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-TAG-MISMATCH"));
+    for (want, name) in cases {
+        assert!(call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 7, image: want, ..Default::default() }).is_err(errno::EINVAL), "{name}");
+        assert!(refused(&w, name), "{name}");
+    }
+    // the exact image redeems it: B's own handle on the same object
+    let hb = call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 7, image: img, ..Default::default() }).body::<PrimeHandleRep>().handle;
+    assert_ne!(hb, 0);
+    assert_eq!(call(&mut w, b, Opcode::GemBusy, &GemBusyReq { handle: hb, ..Default::default() }).errno, 0);
+    // a plain grant carries no image: an image redeem of it is refused
+    let plain = call(&mut w, a, Opcode::PrimeGrant, &PrimeGrantReq { handle: ha, flags: 0, recipient: b }).body::<PrimeTokenRep>().token;
+    assert!(call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: plain, tag: 0, image: img, ..Default::default() }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-NO-IMAGE"));
+}
+
+#[test]
+fn an_image_grant_outlives_the_exporters_handle() {
+    // the producer's ordinary hand-off: grant the frame, close its own handle; the grant's hold keeps the object and its image
+    let mut w = world();
+    let (a, b) = (open(&mut w), open(&mut w));
+    let img = rgbx_image();
+    let ha = create(&mut w, a, 5120 * 720);
+    let tok = call(&mut w, a, Opcode::PrimeGrantImage, &PrimeGrantImageReq { handle: ha, tag: 7, recipient: b, image: img }).body::<PrimeTokenRep>().token;
+    assert_eq!(call(&mut w, a, Opcode::GemClose, &GemCloseReq { handle: ha, ..Default::default() }).errno, 0);
+    let hb = call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 7, image: img, ..Default::default() }).body::<PrimeHandleRep>().handle;
+    assert_eq!(call(&mut w, b, Opcode::GemBusy, &GemBusyReq { handle: hb, ..Default::default() }).errno, 0);
+}
+
+#[test]
+fn an_image_grant_whose_object_was_fenced_after_the_grant_is_refused_at_redeem() {
+    let mut w = world();
+    let (a, b) = (open(&mut w), open(&mut w));
+    let img = rgbx_image();
+    let ha = create(&mut w, a, 5120 * 720);
+    let tok = call(&mut w, a, Opcode::PrimeGrantImage, &PrimeGrantImageReq { handle: ha, tag: 7, recipient: b, image: img }).body::<PrimeTokenRep>().token;
+    // the exporter puts an X fence on it after the grant: the linear image is no longer what the object holds
+    let t = call(&mut w, a, Opcode::GemSetTiling, &GemSetTilingReq { handle: ha, tiling_mode: 1, stride: 5120, swizzle_mode: 0 }).body::<TilingRep>();
+    assert_eq!((t.tiling_mode, t.stride), (1, 5120));
+    assert!(call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 7, image: img, ..Default::default() }).is_err(errno::EINVAL));
+    assert!(refused(&w, "PRIME-IMAGE-TILING"));
+    // back to linear: the same redeem now succeeds
+    call(&mut w, a, Opcode::GemSetTiling, &GemSetTilingReq { handle: ha, tiling_mode: 0, stride: 0, swizzle_mode: 0 }).body::<TilingRep>();
+    assert_ne!(call(&mut w, b, Opcode::PrimeRedeemImage, &PrimeRedeemImageReq { token: tok, tag: 7, image: img, ..Default::default() }).body::<PrimeHandleRep>().handle, 0);
+}

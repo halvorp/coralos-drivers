@@ -52,7 +52,10 @@ pub const ABI_MAJOR: u16 = 1;
 /// 5: DISPLAY OWNERSHIP (D18, Astra's Kaby Lake single-owner ruling 2026-10-16): the adopted display and its one mode (`DISPLAY-QUERY`,
 /// `DISPLAY-SET-MODE`) and the presentation path (`SCANOUT-ACQUIRE`, `SCANOUT-BEGIN`, `SCANOUT-PRESENT`, `SCANOUT-WAIT`), [`msg::display`];
 /// additive - no opcode changed.
-pub const ABI_MINOR: u16 = 5;
+/// 6: image grants: `PRIME-GRANT-IMAGE` states the image the granted object holds (format, size, per-plane pitch and offset, modifier;
+/// [`msg::prime::PrimeImage`]) and the device checks it against the object; `PRIME-REDEEM-IMAGE` redeems it only when the recipient
+/// expects exactly that image. Additive - `PRIME-GRANT` and `PRIME-FD-TO-HANDLE` are unchanged.
+pub const ABI_MINOR: u16 = 6;
 pub const HEADER_BYTES: usize = 40;
 /// The largest payload a frame may declare (64 KiB): a submit carries object and dependency tables, never GPU data.
 pub const MAX_PAYLOAD: u32 = 64 * 1024;
@@ -155,6 +158,9 @@ opcodes! {
     PrimeGrant = 0x164, 4, "PRIME-GRANT";
     SyncFileGrant = 0x165, 4, "SYNC-FILE-GRANT";
     SyncFileRedeem = 0x166, 4, "SYNC-FILE-REDEEM";
+    // ---- image grants (msg::prime; ABI 1.6)
+    PrimeGrantImage = 0x167, 6, "PRIME-GRANT-IMAGE";
+    PrimeRedeemImage = 0x168, 6, "PRIME-REDEEM-IMAGE";
     // ---- display ownership and presentation (msg::display; ABI 1.5)
     DisplayQuery = 0x170, 5, "DISPLAY-QUERY";
     DisplaySetMode = 0x171, 5, "DISPLAY-SET-MODE";
