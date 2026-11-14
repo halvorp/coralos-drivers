@@ -34,6 +34,20 @@ fn deadline(now_ms: u64, timeout_ns: i64) -> Option<u64> {
     (timeout_ns >= 0).then(|| now_ms.saturating_add((timeout_ns as u64).div_ceil(1_000_000)))
 }
 
+fn timeout_log_due(count: u64) -> bool {
+    count > 0 && count & (count - 1) == 0
+}
+
+fn timeout_kind_token(k: &WaitKind) -> &'static str {
+    match k {
+        WaitKind::Gem { .. } => "gem",
+        WaitKind::Syncobj { .. } => "syncobj",
+        WaitKind::SyncFile { .. } => "sync_file",
+        #[cfg(feature = "p4-present")]
+        WaitKind::Scanout { .. } => "scanout",
+    }
+}
+
 impl UapiService {
     pub(crate) fn call_sync<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, h: &Header, inc: u64, p: &[u8], out: &mut [u8]) -> Result<Done, Fail> {
         macro_rules! ok {
@@ -227,12 +241,19 @@ impl UapiService {
         let mut i = 0;
         while i < self.waiters.len() {
             let w = self.waiters.remove(i);
-            match self.eval_waiter(&w, hw.now_ms) {
+            let now_ms = hw.now_ms;
+            match self.eval_waiter(hw, &w, now_ms) {
                 None => {
                     self.waiters.insert(i, w); // there is room: one was just removed
                     i += 1;
                 }
                 Some((status, errno, body)) => {
+                    if errno == i915_wire::errno::ETIME && w.deadline_ms.is_some() {
+                        let timeout_ms = w.deadline_ms.unwrap_or(0).saturating_sub(w.start_ms);
+                        let waited_ms = now_ms.saturating_sub(w.start_ms);
+                        let kind = timeout_kind_token(&w.kind);
+                        self.log_wait_timeout(hw, kind, timeout_ms, waited_ms);
+                    }
                     if errno == i915_wire::errno::ETIME {
                         self.stall_snapshot(hw, Self::wait_kind_name(&w.kind));
                     }
@@ -264,7 +285,7 @@ impl UapiService {
     }
 
     /// `Some((status, positive errno, body))` once the parked call is decided.
-    fn eval_waiter(&mut self, w: &Waiter, now_ms: u64) -> Option<(Status, i32, ([u8; 24], usize))> {
+    fn eval_waiter<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>, w: &Waiter, now_ms: u64) -> Option<(Status, i32, ([u8; 24], usize))> {
         let inc = w.hdr.session_incarnation;
         let late = w.deadline_ms.is_some_and(|d| now_ms >= d);
         let fail = |e: i32| Some((Status::Ok, e, ([0u8; 24], 0)));
@@ -300,14 +321,26 @@ impl UapiService {
             }
             WaitKind::Syncobj { handles, points, flags, timeline, first } => match self.sync.wait_eval(inc, handles, points.as_deref(), *flags, *timeline, Some(*first)) {
                 Ok(WaitEval::Done { first }) => Some((Status::Ok, 0, body8(first))),
-                Ok(WaitEval::Pending { .. }) => late.then(|| (Status::Ok, errno::ETIME, ([0u8; 24], 8))),
+                Ok(WaitEval::Pending { .. }) => {
+                    if late {
+                        Some((Status::Ok, errno::ETIME, ([0u8; 24], 8)))
+                    } else {
+                        None
+                    }
+                }
                 Err(e) => fail(e.errno()),
             },
             #[cfg(feature = "p4-present")]
             WaitKind::Scanout { seq } => self.eval_scanout_wait(*seq, late),
             WaitKind::SyncFile { token } => match self.sync.file_status(inc, *token) {
                 Ok(FenceStatus::Signalled(e)) => Some((Status::Ok, 0, body8(e as u32))),
-                Ok(FenceStatus::Pending) => late.then(|| (Status::Ok, errno::ETIME, ([0u8; 24], 8))),
+                Ok(FenceStatus::Pending) => {
+                    if late {
+                        Some((Status::Ok, errno::ETIME, ([0u8; 24], 8)))
+                    } else {
+                        None
+                    }
+                }
                 Err(e) => fail(e.errno()),
             },
         }
@@ -315,6 +348,39 @@ impl UapiService {
 }
 
 impl UapiService {
+    fn stall_diag<B: Mmio, D: Dma, M: CpuMem, L: Log>(&mut self, hw: &mut Hw<'_, B, D, M, L>) -> (u32, u32, usize) {
+        let _ = &mut *hw;
+        match self.inflight.first() {
+            Some(q) => (
+                self.rig.engine.hw_seqno(q.ectx).unwrap_or(0),
+                q.seqno,
+                self.inflight.len(),
+            ),
+            None => (0, 0, 0),
+        }
+    }
+
+    fn log_wait_timeout<B: Mmio, D: Dma, M: CpuMem, L: Log>(
+        &mut self,
+        hw: &mut Hw<'_, B, D, M, L>,
+        kind: &'static str,
+        timeout_ms: u64,
+        waited_ms: u64,
+    ) {
+        self.wait_timeouts = self.wait_timeouts.saturating_add(1);
+        if !timeout_log_due(self.wait_timeouts) {
+            return;
+        }
+        let (hw_seqno, exp_seqno, inflight) = self.stall_diag(hw);
+        crate::log::emit(
+            hw.log,
+            format_args!(
+                "[I915-WAIT-TIMEOUT kind={} timeout_ms={} waited_ms={} hw={} exp={} inflight={}]",
+                kind, timeout_ms, waited_ms, hw_seqno, exp_seqno, inflight
+            ),
+        );
+    }
+
     /// A parked wait ran to its timeout: say WHERE the render engine is, once per power of two. The line separates the stages a
     /// completion can be lost at: nothing was ever submitted (`reqs=0 inflight=0`), a request sits behind a fence that never signals
     /// (`gates`/`gated`, `gate_rq` and the `producer` of its fence), was never handed to a port (`published=0`), the ELSP was never acknowledged (`xlo` idle with `tail != head`), the batch never finished (`head` short of `tail`;
@@ -361,10 +427,8 @@ impl UapiService {
         });
         let readable = v.iter().all(|x| x.is_some());
         let [head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0] = v.map(|x| x.unwrap_or(0));
-        let (exp_ctx, exp, hwq) = match self.inflight.first() {
-            Some(f) => (f.ectx, f.seqno, self.rig.engine.hw_seqno(f.ectx).unwrap_or(0)),
-            None => (0, 0, 0),
-        };
+        let (hw_seqno, exp, inflight_len) = self.stall_diag(hw);
+        let exp_ctx = self.inflight.first().map_or(0, |f| f.ectx);
         // was the expected request ever handed to an ELSP port? (`-` = not in the engine's table: retired, or nothing in flight)
         let published = match self.rig.engine.requests().iter().find(|q| q.ctx == exp_ctx && q.seqno == exp) {
             Some(q) if q.submitted => "1",
@@ -393,7 +457,7 @@ impl UapiService {
             "P"
         } else if !self.gates.is_empty() && head == tail && self.rig.engine.execlists().is_idle() {
             "A"
-        } else if !crate::uapi::calls_sync::seqno_behind(hwq, exp) {
+        } else if !crate::uapi::calls_sync::seqno_behind(hw_seqno, exp) {
             "E"
         } else if head & 0x1f_fffc == tail & 0x1f_fffc {
             "B"
@@ -401,13 +465,15 @@ impl UapiService {
             "C"
         };
         let producer = Req(producer, if gate_rq.is_some() { "ext" } else { "-" });
+        let age_ms = self.inflight.iter().map(|i| i.submit_ms).min().map_or(0, |s| hw.now_ms.saturating_sub(s));
+        let (parks, late5, max_late_ms) = crate::service::wake_lateness();
         emit(
             hw.log,
             format_args!(
-                "[I915-STALL stage={} n={} wait={} inflight={} gates={} gated={} deferred={} reqs={} exec_idle={} exp={} published={} hw={} gate_rq={} producer={} head={:#x} tail={:#x} ctl={:#x} acthd={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x}]",
-                stage, n, kind, self.inflight.len(), self.gates.len(), gated, self.gem.closes_deferred(), self.rig.engine.requests().len(),
-                self.rig.engine.execlists().is_idle() as u8, exp, published, hwq, Req(gate_rq, "-"), producer,
-                head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0
+                "[I915-STALL stage={} n={} wait={} inflight={} gates={} gated={} deferred={} reqs={} exec_idle={} exp={} published={} hw={} gate_rq={} producer={} head={:#x} tail={:#x} ctl={:#x} acthd={:#x} xlo={:#x} xhi={:#x} csb={:#x} eir={:#x} isr0={:#x} age_ms={} parks={} late5={} max_late_ms={}]",
+                stage, n, kind, inflight_len, self.gates.len(), gated, self.gem.closes_deferred(), self.rig.engine.requests().len(),
+                self.rig.engine.execlists().is_idle() as u8, exp, published, hw_seqno, Req(gate_rq, "-"), producer,
+                head, tail, ctl, acthd, xlo, xhi, csb, eir, isr0, age_ms, parks, late5, max_late_ms
             ),
         );
     }
@@ -428,4 +494,37 @@ impl core::fmt::Display for Req {
 /// Is the GPU's seqno `hw` still short of the one expected (`exp`), by the wrapping comparison the engine uses?
 pub(crate) fn seqno_behind(hw: u32, exp: u32) -> bool {
     (hw.wrapping_sub(exp) as i32) < 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_log_due_powers_of_two() {
+        assert!(timeout_log_due(1));
+        assert!(timeout_log_due(2));
+        assert!(!timeout_log_due(3));
+        assert!(timeout_log_due(4));
+        assert!(!timeout_log_due(5));
+        assert!(!timeout_log_due(6));
+        assert!(!timeout_log_due(7));
+        assert!(timeout_log_due(8));
+        assert!(!timeout_log_due(9));
+        assert!(timeout_log_due(1024));
+        assert!(!timeout_log_due(1023));
+    }
+
+    #[test]
+    fn wake_lateness_stats() {
+        let stats = crate::service::WakeLatenessStats::new();
+        stats.record_park(10, 12); // 2ms late — not late5
+        stats.record_park(10, 20); // 10ms late — late5
+        stats.record_park(10, 14); // 4ms late — not late5
+        stats.record_park(10, 16); // 6ms late — late5
+        let (parks, late5, max_late) = stats.get();
+        assert_eq!(parks, 4);
+        assert_eq!(late5, 2);
+        assert_eq!(max_late, 10);
+    }
 }

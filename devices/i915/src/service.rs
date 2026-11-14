@@ -11,19 +11,81 @@ use crate::wire::{exit_code, SERVICE_EP};
 use crate::wire::DISPLAY_EP;
 use coralos_rt::mmio::{Kernel, ReadWindow, WriteWindow};
 use coralos_rt::{exit, write};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 /// The kernel's `TICKS` (system call 24), read as milliseconds (kernel/src/arch/x86_64/apic.rs documents `TIMER_TICKS` as ms).
 struct Ticks;
+
+pub struct WakeLatenessStats {
+    parks: AtomicU64,
+    late5: AtomicU64,
+    max_late_ms: AtomicU64,
+}
+
+impl WakeLatenessStats {
+    pub const fn new() -> Self {
+        Self {
+            parks: AtomicU64::new(0),
+            late5: AtomicU64::new(0),
+            max_late_ms: AtomicU64::new(0),
+        }
+    }
+
+    pub fn record_park(&self, requested_ms: u64, elapsed_ms: u64) {
+        self.parks.fetch_add(1, Ordering::Relaxed);
+        let late = elapsed_ms.saturating_sub(requested_ms);
+        if late > 5 {
+            self.late5.fetch_add(1, Ordering::Relaxed);
+        }
+        loop {
+            let cur = self.max_late_ms.load(Ordering::Relaxed);
+            if late <= cur {
+                break;
+            }
+            if self
+                .max_late_ms
+                .compare_exchange(cur, late, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
+    pub fn get(&self) -> (u64, u64, u64) {
+        (
+            self.parks.load(Ordering::Relaxed),
+            self.late5.load(Ordering::Relaxed),
+            self.max_late_ms.load(Ordering::Relaxed),
+        )
+    }
+}
+
+static WAKE_LATENESS_STATS: WakeLatenessStats = WakeLatenessStats::new();
+
+pub fn wake_lateness() -> (u64, u64, u64) {
+    WAKE_LATENESS_STATS.get()
+}
+
+impl Ticks {
+    fn timed_park(&mut self, ms: u64) {
+        let before = coralos_rt::ticks();
+        coralos_rt::wait_any_irq(0, 0, ms, 0);
+        let after = coralos_rt::ticks();
+        WAKE_LATENESS_STATS.record_park(ms, after.saturating_sub(before));
+    }
+}
+
 impl Clock for Ticks {
     fn now_ms(&mut self) -> u64 {
         coralos_rt::ticks()
     }
     /// A timed wait on nothing (the same call the parked loop paces itself with): a poll never spins.
     fn relax(&mut self) {
-        coralos_rt::wait_any_irq(0, 0, 1, 0);
+        self.timed_park(1)
     }
     fn park_ms(&mut self, ms: u64) {
-        coralos_rt::wait_any_irq(0, 0, ms, 0);
+        self.timed_park(ms)
     }
 }
 
@@ -210,4 +272,38 @@ fn serve<M: crate::exec::dma::CpuMem>(host: UapiHost<M>, logical: i915_display_m
     live.run();
     emit(&mut lg, format_args!("[I915-KBL-DEV UAPI-LIVE END waits={}]", live.stats.waits));
     exit(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WakeLatenessStats;
+
+    struct FakeClock {
+        now_ms: u64,
+    }
+
+    impl FakeClock {
+        fn advance(&mut self, ms: u64) {
+            self.now_ms += ms;
+        }
+    }
+
+    fn park(stats: &WakeLatenessStats, clock: &mut FakeClock, requested_ms: u64, elapsed_ms: u64) {
+        let before = clock.now_ms;
+        clock.advance(elapsed_ms);
+        stats.record_park(requested_ms, clock.now_ms.saturating_sub(before));
+    }
+
+    #[test]
+    fn wake_lateness_counts_overshoot() {
+        let stats = WakeLatenessStats::new();
+        let mut clock = FakeClock { now_ms: 0 };
+        park(&stats, &mut clock, 1, 8);
+        assert_eq!(stats.get(), (1, 1, 7));
+        park(&stats, &mut clock, 4, 5);
+        assert_eq!(stats.get(), (2, 1, 7));
+        park(&stats, &mut clock, 2, 2);
+        park(&stats, &mut clock, 10, 12);
+        assert_eq!(stats.get(), (4, 1, 7));
+    }
 }

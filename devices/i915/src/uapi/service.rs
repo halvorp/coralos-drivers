@@ -133,6 +133,8 @@ pub(crate) struct Inflight {
     pub ectx: u32,
     pub seqno: u32,
     pub fence: FenceId,
+    /// The time (ms) the request was submitted.
+    pub submit_ms: u64,
 }
 
 /// A queued request waits for these fences before the engine may start it.
@@ -181,6 +183,8 @@ pub struct UapiService {
     pub(crate) inflight: Vec<Inflight>,
     /// Stall snapshots printed so far (the cadence is powers of two: the first, second, fourth ... never a line per timeout).
     pub(crate) stall_dumps: u32,
+    /// Wait timeouts seen; their diagnostics are logged at a power-of-two cadence.
+    pub(crate) wait_timeouts: u64,
     /// GEM_CLOSEs that left a busy object for retirement to free: `(object, close time ms)`. TELEMETRY ONLY - gem-core owns the
     /// object's lifetime (`Gem::close_deferred`); this is what the `[I915-RETIRE-DEFER/DRAIN]` markers measure.
     pub(crate) deferred: Vec<(ObjId, u64)>,
@@ -290,6 +294,7 @@ impl UapiService {
             vms: Vec::new(),
             inflight: Vec::new(),
             stall_dumps: 0,
+            wait_timeouts: 0,
             deferred: Vec::new(),
             defer_marks: 0,
             drain_marks: 0,

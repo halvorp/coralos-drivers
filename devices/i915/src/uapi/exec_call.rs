@@ -112,7 +112,7 @@ impl UapiService {
 
         // the request is registered in gem-core now: it is tracked whatever else went wrong
         let fence = acc.req_fence.take().expect("made above");
-        self.inflight.push(Inflight { req: done.request, ectx: done.engine_ctx, seqno: done.seqno, fence }); // reserved above
+        self.inflight.push(Inflight { req: done.request, ectx: done.engine_ctx, seqno: done.seqno, fence, submit_ms: hw.now_ms }); // reserved above
         // the request's gate is exactly the fences still pending now (the planner's view may have been one fence earlier); a request
         // the planner's dequeue already handed to a port cannot be gated any more (it had no pending fence then)
         let gated = !acc.gate.is_empty();
